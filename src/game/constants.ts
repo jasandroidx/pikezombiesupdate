@@ -22,6 +22,8 @@ export const INITIAL_WEAPONS: Weapon[] = [
     unlocked: true,
     cost: 0,
     upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags — support-gem linking vocabulary.
+    tags: ["sidearm", "precise"],
   },
   {
     id: "shotgun",
@@ -44,6 +46,8 @@ export const INITIAL_WEAPONS: Weapon[] = [
     unlocked: true,
     cost: 0,
     upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags.
+    tags: ["scatter", "tube-fed"],
   },
   {
     id: "lever_rifle",
@@ -66,6 +70,8 @@ export const INITIAL_WEAPONS: Weapon[] = [
     unlocked: false,
     cost: 350,
     upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags.
+    tags: ["lever", "tube-fed", "precise"],
   },
   {
     id: "carbine",
@@ -88,6 +94,8 @@ export const INITIAL_WEAPONS: Weapon[] = [
     unlocked: false,
     cost: 650,
     upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags.
+    tags: ["rapid", "precise"],
   },
   {
     id: "crossbow",
@@ -110,6 +118,8 @@ export const INITIAL_WEAPONS: Weapon[] = [
     unlocked: false,
     cost: 500,
     upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags.
+    tags: ["silent", "precise"],
   },
   {
     id: "chainsaw",
@@ -132,6 +142,8 @@ export const INITIAL_WEAPONS: Weapon[] = [
     unlocked: false,
     cost: 800,
     upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags.
+    tags: ["heavy"],
   },
 ];
 
@@ -811,6 +823,23 @@ export const WEAPON_FAMILIES: Record<string, { name: string; members: string[]; 
   heavy: { name: "Mill Saw", members: ["chainsaw"], blurb: "One loud saw, perfected." },
 };
 
+// Batch 8 (Lane D): affinity tags — the support-gems vocabulary. Weapons and
+// support boons carry tag lists; a support boon's bonus links to a weapon only
+// when they share at least one tag (tagsMatch below, supportApplies in
+// boons.ts). This is DATA ONLY for now — the damage path is untouched, so no
+// balance changes until the coordinator wires the helpers into playerDamageMul.
+export const AFFINITY_TAGS = [
+  "sidearm", "scatter", "lever", "rapid", "silent", "heavy",
+  "precise", "tube-fed",
+] as const;
+export type AffinityTag = (typeof AFFINITY_TAGS)[number];
+
+// Pure: true when the weapon and the support boon share at least one tag.
+export function tagsMatch(weaponTags: readonly string[] | undefined, boonTags: readonly string[] | undefined): boolean {
+  if (!weaponTags || !boonTags || weaponTags.length === 0 || boonTags.length === 0) return false;
+  return boonTags.some((t) => weaponTags.includes(t));
+}
+
 export interface WaveWindowDef {
   id: string;
   name: string;
@@ -820,8 +849,7 @@ export interface WaveWindowDef {
 }
 
 // VS-2: data-driven named wave windows — the visible run schedule.
-export const WAVE_WINDOWS: WaveWindowDef[] = [
-  { id: "dusk", name: "Dusk Settles", waveStart: 1, waveEnd: 2, blurb: "The county goes quiet. Then it doesn't." },
+export const WAVE_WINDOWS: WaveWindowDef[] = [  { id: "dusk", name: "Dusk Settles", waveStart: 1, waveEnd: 2, blurb: "The county goes quiet. Then it doesn't." },
   { id: "golden", name: "Golden Swarm", waveStart: 3, waveEnd: 3, blurb: "The creek bed glitters — double grit for the wave." },
   { id: "howl", name: "The Trace Howls", waveStart: 4, waveEnd: 5, blurb: "Fast ones on the Buffalo Trace. Keep moving." },
   { id: "blood", name: "Blood Moon", waveStart: 6, waveEnd: 6, blurb: "Red moon over the county. Faster, meaner, double XP." },
@@ -829,6 +857,58 @@ export const WAVE_WINDOWS: WaveWindowDef[] = [
   { id: "damp", name: "Black Damp", waveStart: 10, waveEnd: 12, blurb: "Bad air from the old shafts. Heavies in the dark." },
   { id: "ben", name: "Old Ben Wakes", waveStart: 13, waveEnd: 999, blurb: "Old Ben don't sleep no more. Endless." },
 ];
+
+export interface WaveTimelineEntry {
+  id: string;
+  from: number;      // first wave of the window
+  to: number;        // last wave of the window (Infinity = endless)
+  pool: string[];    // zombie types the director may spawn in this window
+  spawnMult: number; // window spawn-count multiplier (1 = no window tuning today)
+  label: string;     // display name
+  blurb: string;
+}
+
+// Batch 8 (Lane D): spawn pools per named window, extracted from
+// spawnRandomZombie's per-wave conditionals + spawnGuaranteedElite's pool in
+// engine.ts. (The haint is a behemoth-phase spawn, not a director-window spawn,
+// so it appears in no pool.) Pools are cumulative by design — later windows
+// keep everything earlier windows could field.
+const WAVE_POOLS: Record<string, string[]> = {
+  dusk: ["shambler", "sprinter", "crawler"], // w1-2: w1 shambler/sprinter; crawlers via holes or when the lantern's out
+  golden: ["shambler", "sprinter", "crawler", "bomber", "miner_brute"], // w3: +bombers, +miners
+  howl: ["shambler", "sprinter", "crawler", "bomber", "miner_brute", "bloater_spitter", "riot", "riot_shield", "behemoth"], // w4-5: +bloaters, +riots; w5's last spawn is a behemoth
+  blood: ["shambler", "sprinter", "crawler", "bomber", "miner_brute", "bloater_spitter", "riot", "riot_shield"], // w6
+  hartwell: ["shambler", "sprinter", "crawler", "bomber", "miner_brute", "bloater_spitter", "riot", "riot_shield"], // w7-9
+  damp: ["shambler", "sprinter", "crawler", "bomber", "miner_brute", "bloater_spitter", "riot", "riot_shield", "behemoth"], // w10-12: w10's last spawn is a behemoth
+  ben: ["shambler", "sprinter", "crawler", "bomber", "miner_brute", "bloater_spitter", "riot", "riot_shield", "behemoth"], // w13+: behemoth on every 5th wave
+};
+
+// Batch 8 (Lane D): the director's timeline as data — the SAME 7 named wave
+// windows as WAVE_WINDOWS (built from that table so labels/ranges can't drift),
+// recast for the director: from/to bounds, the per-window spawn pool, and
+// spawnMult. The director has no per-window spawn tuning today, so spawnMult is
+// 1 everywhere — startNextWave's count formula is untouched (no balance change).
+export const WAVES: WaveTimelineEntry[] = WAVE_WINDOWS.map((w) => ({
+  id: w.id,
+  from: w.waveStart,
+  to: w.waveEnd >= 999 ? Infinity : w.waveEnd,
+  pool: WAVE_POOLS[w.id] ?? ["shambler"],
+  spawnMult: 1,
+  label: w.name,
+  blurb: w.blurb,
+}));
+
+// Pure: the named window active at a given wave. Same lookup semantics as the
+// old windowFor: first entry whose [from, to] contains the wave, falling back
+// to the last (endless) entry.
+export function windowAt(wave: number): WaveTimelineEntry {
+  return WAVES.find((e) => wave >= e.from && wave <= e.to) ?? WAVES[WAVES.length - 1];
+}
+
+// Pure: the director's spawn-count multiplier at a given wave.
+export function spawnMultAt(wave: number): number {
+  return windowAt(wave).spawnMult;
+}
 
 export interface RunEventDef {
   id: string;

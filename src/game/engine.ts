@@ -22,11 +22,11 @@ import {
   NoisePulse,
 } from "../types/game";
 import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG } from "./boons";
-import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVE_WINDOWS, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS } from "./constants";
+import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVES, windowAt, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS } from "./constants";
 import { loadMeta, saveMeta, recordRun, topRuns } from "./meta";
 import * as metaNS from "./meta";
 import { soundEngine } from "../audio/soundEngine";
-import { renderEnvironment, drawBlobShadow, registerZombieHit, zombieFlashIntensity, applyZombieTint, clearZombieTint, drawZombieHitFlash, render7, renderTelegraphs } from "./mapRenderer";
+import { renderEnvironment, drawBlobShadow, registerZombieHit, zombieFlashIntensity, applyZombieTint, clearZombieTint, drawZombieHitFlash, render7, renderTelegraphs, drawGlowSprite, drawSparkSprite, drawSmokeSprite } from "./mapRenderer";
 import { DynamicLighting } from "./lighting";
 import { radioFor } from "./radio";
 import { drawSprite, drawWildLabel, loadArt, ZOMBIE_LABELS } from "./art";
@@ -77,7 +77,9 @@ export class GameEngine {
 		molotovs: 3,
 		maxMolotovs: 5,
 		flares: 2,
-		maxFlares: 4
+		maxFlares: 4,
+		atkT: 0, // Batch 8 (Lane B): bash squash-and-stretch pulse timer (50ms), decayed in render.
+		bobPhase: Math.random() * Math.PI * 2 // Batch 8 (Lane B): idle-bob phase, randomized per run.
 	};
 	weapons = JSON.parse(JSON.stringify(INITIAL_WEAPONS));
 	currentWeaponIndex = 0;
@@ -194,6 +196,15 @@ export class GameEngine {
 	questMoveMul = 1;
 	shrines: { x: number; y: number; attuned: boolean }[] = [];
 	hitstop = 0;
+	deathCineT = 0; // Batch 8 (Lane B): post-death cinematic window (seconds), ticked by the loop after death.
+	deathFlash = 0; // Batch 8 (Lane B): full-screen white flash alpha, decayed in the cinematic.
+	_lastGameOver: { stats: any; score: number; killer: string } | null = null; // Batch 8 (Lane B): last death payload for tests.
+	_renderDt = 1 / 60; // Batch 8 (Lane B): last render frame delta, used to decay render-side timers.
+	_lastRenderNow = 0; // Batch 8 (Lane B): timestamp of the last render, for _renderDt.
+	_lastPlayerPulse = { sx: 1, sy: 1 }; // Batch 8 (Lane B): test probe — peak bash pulse scale latched.
+	_lastZombiePulse = { sx: 1, sy: 1 }; // Batch 8 (Lane B): test probe — peak lunge pulse scale latched.
+	_lastPlayerBob = 0; // Batch 8 (Lane B): test probe — last applied player idle bob.
+	_lastZombieBob = 0; // Batch 8 (Lane B): test probe — last applied zombie idle bob.
 	floaters = [];
 	simTime = 0;
 	lastMoveSpeed = 0;
@@ -524,6 +535,22 @@ export class GameEngine {
 			trackedHp: () => this._tracked ? Math.round(this._tracked.health) : -999,
 			trackedInfo: () => this._tracked ? { hp: Math.round(this._tracked.health), elite: !!this._tracked.elite, affix: this._tracked.affix || null, wave: this.wave } : null,
 			zInfo: (i) => { const z = this.zombies[i]; return z ? { type: z.type, x: Math.round(z.x), y: Math.round(z.y), elite: !!z.elite, affix: z.affix || null, hp: Math.round(z.health) } : null; },
+			// Batch 8 (Lane B) probes: attack pulses, idle bob, death stack.
+			setA11y: (o) => this.setA11y(o),
+			forceDeath: () => { this.lastKiller = `shambler`; this.lastStandUsed = true; this.invuln = 0; this.player.health = 1; this.damagePlayer(99999); return { dead: this.player.health <= 0 }; },
+			deathState: () => ({ dead: this.player.health <= 0, running: this.isRunning, hitstop: +this.hitstop.toFixed(3), flash: +this.deathFlash.toFixed(3), particles: this.particles.filter((p) => p.type === `blood`).length, cine: +this.deathCineT.toFixed(3), slowmo: this.deathSlowmoFactor() }),
+			atkPulse: () => ({ p: +((this.player.atkT || 0).toFixed(3)), zs: this.zombies.map((z) => +((z.atkT || 0).toFixed(3))) }),
+			bashPulse: () => { this.bashCd = 0; this.dodgeTimer = 0; const ok = this.tryBash(); return { ok, atkT: +((this.player.atkT || 0).toFixed(3)) }; },
+			bobState: () => ({ player: +(this._lastPlayerBob || 0).toFixed(2), zombie: +(this._lastZombieBob || 0).toFixed(2), ms: this.motionScale(), moving: this.lastMoveSpeed > .35 }),
+			stunAll: () => { for (const z of this.zombies) z.stunUntil = this.simTime + 999; return this.zombies.length; },
+			pulseFactors: () => {
+				const pt = Math.max(0, (this.player.atkT || 0) / .05);
+				const z = this.zombies.find((zz) => (zz.atkT || 0) > 0);
+				const zt = z ? Math.max(0, z.atkT / .05) : 0;
+				return { pSx: +(1 + .22 * pt).toFixed(3), pSy: +(1 - .14 * pt).toFixed(3), zSx: +(1 + .25 * zt).toFixed(3), zSy: +(1 - .14 * zt).toFixed(3) };
+			},
+			pulseRender: () => ({ p: this._lastPlayerPulse || { sx: 1, sy: 1 }, z: this._lastZombiePulse || { sx: 1, sy: 1 } }),
+			lastGameOver: () => this._lastGameOver || null,
 			simFrames: () => this._simFrames || 0,
 			runState: () => ({ running: this.isRunning, paused: this.isPaused, waveState: this.waveState, draft: !!this.draft }),
 			fireOnce: () => { const before = this.particles.length; this.fireCurrentWeapon(); return this.particles.filter((p) => p.type === `casing`).length; },
@@ -705,6 +732,14 @@ export class GameEngine {
 			isLitAt: (x, y) => this.isLit(x, y),
 			runMods: () => ({ dmg: this.runDamageMul || 1, hp: this.runHpMul || 1, spd: this.runSpeedMul || 1, xp: this.runXpMul || 1 }),
 			reapplyRunMods: () => { this.applyRunStatMods(); return { mods: { dmg: this.runDamageMul, hp: this.runHpMul, spd: this.runSpeedMul, xp: this.runXpMul }, hp: Math.round(this.player.maxHealth), spd: +this.player.speed.toFixed(4) }; },
+			// Batch 8 (Lane A) probes: accel/friction, AI LOD, separation, arrive.
+			stepPlayer: (n = 1) => { for (let k = 0; k < n; k++) this.updatePlayer(1 / 60); return { x: +this.player.x.toFixed(1), y: +this.player.y.toFixed(1) }; },
+			pvel: () => ({ x: +this.moveVX.toFixed(3), y: +this.moveVY.toFixed(3), sp: +this.lastMoveSpeed.toFixed(3) }),
+			dodge: () => this.tryDodge(),
+			dodgeState: () => ({ timer: +this.dodgeTimer.toFixed(3), cd: +this.dodgeCd.toFixed(3), stam: Math.round(this.player.stamina) }),
+			zSpd: (i) => this.zombies[i] ? +((this.zombies[i].lastSpd || 0).toFixed(3)) : -1,
+			zLod: (i) => { const z = this.zombies[i]; return z ? { think: !!z.lodThink, off: z.lodOff ?? -1, ai: z.ai } : null; },
+			zVel: (i) => { const z = this.zombies[i]; return z ? { vx: +((z.vx || 0).toFixed(3)), vy: +((z.vy || 0).toFixed(3)) } : null; },
 		};
 		let e = window.__controlsTest;
 		e.teleport = (e, t) => {
@@ -1025,7 +1060,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.codexSeen = new Set(), this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.bloodSplats = [], this.slashBursts = [], this.hitFlashes = [], this.muzzlePunch = 0, this.gunKick = 0, this.gunKickT = 0, this.camPunchX = 0, this.camPunchY = 0, this.camPunchT = 0, this.whiffSlowT = 0, this.lastWhiff = null, this.lastKillWord = null, this.killWordCount = 0, this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.r7camInit = false, this.lastPx = null, this.lastPy = null, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.resetB7State(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.ensureB7Weapons(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.codexSeen = new Set(), this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.bloodSplats = [], this.slashBursts = [], this.hitFlashes = [], this.muzzlePunch = 0, this.gunKick = 0, this.gunKickT = 0, this.camPunchX = 0, this.camPunchY = 0, this.camPunchT = 0, this.whiffSlowT = 0, this.lastWhiff = null, this.lastKillWord = null, this.killWordCount = 0, this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.r7camInit = false, this.lastPx = null, this.lastPy = null, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.resetB7State(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.ensureB7Weapons(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.deathCineT = 0, this.deathFlash = 0, this.player.atkT = 0, this.player.bobPhase = Math.random() * Math.PI * 2, this._lastGameOver = null, this._lastPlayerPulse = { sx: 1, sy: 1 }, this._lastZombiePulse = { sx: 1, sy: 1 }, this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -2028,7 +2063,17 @@ export class GameEngine {
 		this.startNextWave();
 	}
 	loop = (e) => {
-		if (!this.isRunning) return;
+		// Batch 8 (Lane B): post-death cinematic — keep rendering (no simulation)
+		// until the window ends, then let the loop rest.
+		if (!this.isRunning) {
+			if (this.deathCineT <= 0) return;
+			const d = Math.min((e - this.lastTimestamp) / 1e3, .1);
+			this.lastTimestamp = e;
+			this.updateDeathCine(d);
+			this.render();
+			this.animationFrameId = this.deathCineT > 0 ? requestAnimationFrame(this.loop) : null;
+			return;
+		}
 		// Fire a pending queued draft once its grace period of live play has elapsed.
 		if (!this.isPaused && !this.draft && this.queuedLevels > 0 && this.draftGraceUntil > 0 && Date.now() >= this.draftGraceUntil) {
 			this.openQueuedDraft();
@@ -2208,16 +2253,30 @@ export class GameEngine {
 			else if (Math.abs(side) > Math.abs(fwd) + .12) gait *= .84;
 		}
 		const c = this.player.speed * gait;
-		const accel = this.player.isSneaking ? 9 : r > 0 ? 20 : 10;
+		// Batch 8: acceleration / friction movement — velocity eases toward the
+		// target instead of snapping. ~1800 u/s^2 accel toward input, ~2200 u/s^2
+		// friction decay with no input. (moveVX is u per 1/60s tick, so the
+		// per-second rates are divided by 60.) Roll/dash impulses below still
+		// override velocity directly while their timers run.
+		const ACCEL = 1800 / 60, FRICTION = 2200 / 60;
 		if (r > 0) {
-			this.moveVX += (t * c - this.moveVX) * (1 - Math.exp(-accel * e));
-			this.moveVY += (n * c - this.moveVY) * (1 - Math.exp(-accel * e));
+			const dvx = t * c - this.moveVX, dvy = n * c - this.moveVY;
+			const dv = Math.hypot(dvx, dvy);
+			if (dv > 0) {
+				const step = Math.min(dv, ACCEL * e);
+				this.moveVX += dvx / dv * step;
+				this.moveVY += dvy / dv * step;
+			}
 		} else {
-			this.moveVX += (0 - this.moveVX) * (1 - Math.exp(-12 * e));
-			this.moveVY += (0 - this.moveVY) * (1 - Math.exp(-12 * e));
-			if (Math.hypot(this.moveVX, this.moveVY) < .12) {
-				this.moveVX = 0;
-				this.moveVY = 0;
+			const sp = Math.hypot(this.moveVX, this.moveVY);
+			if (sp > 0) {
+				const step = Math.min(sp, FRICTION * e);
+				this.moveVX -= this.moveVX / sp * step;
+				this.moveVY -= this.moveVY / sp * step;
+				if (Math.hypot(this.moveVX, this.moveVY) < .05) {
+					this.moveVX = 0;
+					this.moveVY = 0;
+				}
 			}
 		}
 		this.lastMoveSpeed = Math.hypot(this.moveVX, this.moveVY);
@@ -2363,6 +2422,7 @@ export class GameEngine {
 		if (this.bashCd > 0 || this.dodgeTimer > 0) return false;
 		this.bashCd = .7;
 		this.bashSwing = .2;
+		this.player.atkT = .05; // Batch 8 (Lane B): bash squash-and-stretch pulse.
 		this.recoilKick = Math.max(this.recoilKick, 8);
 		this.screenShake = Math.max(this.screenShake, 4);
 		this.hitstop = Math.max(this.hitstop, (.045) * this.tune('hitstop'));
@@ -3055,13 +3115,14 @@ export class GameEngine {
 		soundEngine.playWaveHorn();
 		return z;
 	}
-	// VS-2: named wave windows — data-driven schedule.
+	// VS-2: named wave windows — data-driven schedule (Batch 8 Lane D: WAVES timeline table).
 	windowFor(wave) {
-		return WAVE_WINDOWS.find((w) => wave >= w.waveStart && wave <= w.waveEnd) || WAVE_WINDOWS[WAVE_WINDOWS.length - 1];
+		const e = windowAt(wave);
+		return { ...e, name: e.label };
 	}
 	waveSchedule() {
 		const cur = Math.max(1, this.wave);
-		return WAVE_WINDOWS.map((w) => ({ id: w.id, name: w.name, waves: w.waveEnd >= 999 ? `${w.waveStart}+` : `${w.waveStart}-${w.waveEnd}`, blurb: w.blurb, current: cur >= w.waveStart && cur <= w.waveEnd }));
+		return WAVES.map((e) => ({ id: e.id, name: e.label, waves: e.to === Infinity ? `${e.from}+` : `${e.from}-${e.to}`, blurb: e.blurb, current: cur >= e.from && cur <= e.to }));
 	}
 	checkWindowChange() {
 		const w = this.windowFor(Math.max(1, this.wave));
@@ -3135,6 +3196,7 @@ export class GameEngine {
 			damage: a,
 			attackCooldown: 900,
 			lastAttackTime: 0,
+			atkT: 0, // Batch 8 (Lane B): lunge squash-and-stretch pulse timer (50ms), decayed in render.
 			radius: o,
 			color: s,
 			hasHelmet: c,
@@ -3206,6 +3268,8 @@ export class GameEngine {
 	}
 	updateZombies(e, t) {
 		this.cullZombies(e);
+		// Batch 8: AI LOD tick — far zombies think on staggered 3rd ticks.
+		this.zLodTick = (this.zLodTick || 0) + 1;
 		for (let n = this.zombies.length - 1; n >= 0; n--) {
 			let r = this.zombies[n];
 			// Batch 3: spawn pop — nothing appears instantly.
@@ -3269,11 +3333,20 @@ export class GameEngine {
 			if (r.type === `bomber` && !this.tickFuse(r, o, e, n)) continue;
 			// Batch 6 (Lane A): structure-chewing utility decision (throttled inside).
 			if (r.type !== `bomber` && (r.ai === `chase` || r.ai === `investigate` || r.ai === `chew`)) this.tickChew(r, o, e);
+			// Batch 8: AI LOD — zombies farther than ~900u from the player run
+			// their think (personality targeting, target selection, state changes)
+			// every 3rd tick with a per-zombie stagger offset; movement integration
+			// below still runs every tick. Timed behaviors (fuse, telegraphs,
+			// spitter, chew attacks, boss ticks) are NOT gated.
+			if (r.lodOff === undefined) r.lodOff = (((r.id.charCodeAt(0) || 7) * 31 + (r.id.charCodeAt(2) || 13)) % 3 + 3) % 3;
+			const think = o <= 900 || (this.zLodTick + r.lodOff) % 3 === 0;
+			r.lodThink = think;
 			r.hitFlash > 0 && (r.hitFlash -= e);
 			// Batch 5: body reactions decay — pop settles, squash yoyo + spin run out.
 			r.yOff = (r.yOff || 0) * Math.max(0, 1 - e * 8);
 			r.squashT = Math.max(0, (r.squashT || 0) - e);
 			r.spinT = Math.max(0, (r.spinT || 0) - e);
+			if (think) {
 			let s = Math.hypot(r.hearX - r.x, r.hearY - r.y), c = this.simTime < this.bellLureUntil && this.currentLocation.bell;
 			const lantern = this.currentLocation.lantern;
 			if (this.lanternLit && lantern && r.type === `shambler` && r.ai === `wander`) r.wanderAngle = Math.atan2(lantern.y - r.y, lantern.x - r.x) + (Math.random() - .5) * .7;
@@ -3302,9 +3375,18 @@ export class GameEngine {
 				r.angle = Math.atan2(flare.y - r.y, flare.x - r.x);
 			}
 			r.ai === `wander` && Math.random() < e * .1 && this.spawnFloater(r.x, r.y - 18, `...`, `#5b6470`);
+			}
+			r.type === `bloater_spitter` && this.tickSpitter(r, i, a, o, e);
 			let u = r.speed;
 			r.type === `behemoth` && r.health < r.maxHealth * .4 && (u *= 1.4), r.type === `behemoth` && r.enraged && (u *= this.behemothPhases.enrageSpeedMul), r.bossPhase === `charge` && (r.chargeWindupT > 0) && (u = 0), r.ai === `wander` && (u *= .35), r.ai === `investigate` && (u *= .7), r.type === `bloater_spitter` && (r.ai === `chase` || r.ai === `attack`) && o <= 420 && o >= 260 && (u *= .5);
-			if ((r.ai === `chase` || r.ai === `attack`) && o < r.radius + this.player.radius + 26) u *= .42;
+			// Batch 8: arrive steering — damps approach speed within ~60u of the
+			// target so the horde eases in instead of pile-driving at full speed.
+			const stopD = r.radius + this.player.radius;
+			if ((r.ai === `chase` || r.ai === `attack`) && o < stopD + 60) {
+				const ak = Math.max(0, Math.min(1, (o - stopD) / 60));
+				u *= .25 + .75 * ak;
+			}
+			r.lastSpd = u;
 			if (r.stunUntil && this.simTime < r.stunUntil) u = 0;
 			else if (this.worldSlow > 0) u *= .4;
 			let d = e * 60, f, p;
@@ -3312,36 +3394,18 @@ export class GameEngine {
 				const flow = this.flow.dir(r.x, r.y);
 				let dx = flow ? flow.x : Math.cos(r.angle);
 				let dy = flow ? flow.y : Math.sin(r.angle);
-				const pt = this.personalityTarget(r, i, a, o);
-				r.tx = pt[0]; r.ty = pt[1];
-				const pb = pt[2];
+				// Batch 8: personality targeting is think-gated (AI LOD) — on off
+				// ticks the cached target + blend steer the body. Separation is
+				// now a capped steering force (below), not a direction blend.
+				if (think) {
+					const pt = this.personalityTarget(r, i, a, o);
+					r.tx = pt[0]; r.ty = pt[1]; r.pb = pt[2];
+				}
+				const pb = r.pb || 0;
 				if (pb > 0) {
-					const vx = pt[0] - r.x, vy = pt[1] - r.y, vl = Math.hypot(vx, vy) || 1;
+					const vx = r.tx - r.x, vy = r.ty - r.y, vl = Math.hypot(vx, vy) || 1;
 					dx = dx * (1 - pb) + (vx / vl) * pb;
 					dy = dy * (1 - pb) + (vy / vl) * pb;
-				}
-				let sx = 0, sy = 0, sn = 0;
-				const reach = r.radius + 28;
-				const reach2 = reach * reach;
-				const zq = this.queryZombies(r.x, r.y, reach, []);
-				zq.sort((x, y) => x - y);
-				for (const k of zq) {
-					if (sn >= 5) break;
-					if (k === n) continue;
-					const oth = this.zombies[k];
-					if (!oth) continue;
-					const ix = r.x - oth.x, iy = r.y - oth.y;
-					const d2 = ix * ix + iy * iy;
-					if (d2 >= reach2 || d2 < 1) continue;
-					const d = Math.sqrt(d2);
-					sx += ix / d;
-					sy += iy / d;
-					sn++;
-				}
-				if (sn) {
-					const sl = Math.hypot(sx, sy) || 1;
-					dx = dx * 0.58 + (sx / sl) * 0.42;
-					dy = dy * 0.58 + (sy / sl) * 0.42;
 				}
 				if (o < 240 && o > 8 && r.type !== `behemoth` && r.type !== `miner_brute`) {
 					const slot = ((r.id.charCodeAt(0) || 1) % 5) - 2;
@@ -3387,6 +3451,31 @@ export class GameEngine {
 					}
 				} else r.stuck = 0;
 			} else r.stuck = 0;
+			// Batch 8: separation steering — capped repulsion force from neighbors
+			// within ~26u, queried via the 64u spatial hash. Applied as a steering
+			// impulse on the knockback velocity channel (the drag below decays it),
+			// so horde members drift apart instead of stacking.
+			let sepx = 0, sepy = 0, snb = 0;
+			const sq = this.queryZombies(r.x, r.y, 26 + (this.zhashMaxR || 0), []);
+			for (const k of sq) {
+				if (k === n || snb >= 6) continue;
+				const oth = this.zombies[k];
+				if (!oth || oth === r) continue;
+				const ox = r.x - oth.x, oy = r.y - oth.y;
+				const od2 = ox * ox + oy * oy;
+				if (od2 >= 676 || od2 < 1) continue;
+				const od = Math.sqrt(od2);
+				const ow = 1 - od / 26;
+				sepx += ox / od * ow;
+				sepy += oy / od * ow;
+				snb++;
+			}
+			const sepl = Math.hypot(sepx, sepy);
+			if (sepl > .001) {
+				const sepCap = 1.2, ssc = sepl > sepCap ? sepCap / sepl : 1;
+				r.vx = (r.vx || 0) + sepx * ssc * .35;
+				r.vy = (r.vy || 0) + sepy * ssc * .35;
+			}
 			if (r.vx || r.vy) {
 				const kx = r.x + r.vx * d;
 				const ky = r.y + r.vy * d;
@@ -3433,7 +3522,8 @@ export class GameEngine {
 				r.x = sepX;
 				r.y = sepY;
 			}
-			o <= r.radius + this.player.radius && t - r.lastAttackTime >= r.attackCooldown && (r.lastAttackTime = t, this.invuln <= 0 && (this.lastKiller = r.type, r.damage > 0 && this.damagePlayer(this.zombieMeleeDmg(r), r)));
+			// Batch 8 (Lane B): lunge squash-and-stretch pulse (r.atkT).
+			o <= r.radius + this.player.radius && t - r.lastAttackTime >= r.attackCooldown && (r.lastAttackTime = t, r.atkT = .05, this.invuln <= 0 && (this.lastKiller = r.type, r.damage > 0 && this.damagePlayer(this.zombieMeleeDmg(r), r)));
 		}
 	}
 	boneBurst(z) {
@@ -3692,8 +3782,45 @@ export class GameEngine {
 				return;
 			}
 			this.player.health = 0;
+			this.runDeathStack(); // Batch 8 (Lane B): hitstop + flash + blood burst + slow-mo cinematic.
 			this.handleGameOver();
 		}
+	}
+	// Batch 8 (Lane B): player-death stack — hitstop beat, full-screen white
+	// flash, 24-particle blood burst, and a short slow-motion cinematic window.
+	// handleGameOver() still fires immediately; the loop keeps rendering the
+	// cinematic without running the normal simulation.
+	runDeathStack() {
+		this.hitstop = Math.max(this.hitstop, .11 * this.tune('hitstop'));
+		this.deathFlash = .22;
+		this.deathCineT = .53;
+		this.createBloodParticles(this.player.x, this.player.y, Math.random() * Math.PI * 2, 24);
+		this._lastGameOver = { stats: { ...this.stats }, score: this.score, killer: this.lastKiller };
+	}
+
+	// Batch 8 (Lane B): tick the post-death cinematic — hitstop beat first,
+	// then 0.15x slow-motion particles while the flash fades.
+	updateDeathCine(e: number) {
+		if (this.deathCineT <= 0) return;
+		this.deathCineT = Math.max(0, this.deathCineT - e);
+		if (this.hitstop > 0) { this.hitstop = Math.max(0, this.hitstop - e); return; }
+		this.updateParticles(e * .15);
+		this.deathFlash = Math.max(0, this.deathFlash - e);
+	}
+
+	// Batch 8 (Lane B): slow-mo factor during the post-death cinematic.
+	deathSlowmoFactor() {
+		return !this.isRunning && this.deathCineT > 0 && this.hitstop <= 0 ? .15 : 1;
+	}
+
+	// Batch 8 (Lane B): full-screen white flash overlay, drawn last in render().
+	renderDeathFlash(e: CanvasRenderingContext2D) {
+		if (this.deathFlash <= 0) return;
+		e.save();
+		e.globalAlpha = Math.min(1, this.deathFlash * 3);
+		e.fillStyle = `#ffffff`;
+		e.fillRect(0, 0, this.canvas.width, this.canvas.height);
+		e.restore();
 	}
 	handleGameOver() {
 		this.stats.maxStreak = this.maxStreak;
@@ -4631,8 +4758,10 @@ export class GameEngine {
 			if (s.life <= 0) this.bloodSplats.splice(t, 1);
 		}
 	}
-	createBloodParticles(e, t, n) {
-		for (let r = 0; r < Math.max(1, Math.round(7 * this.tune(`particles`))); r++) {
+	createBloodParticles(e, t, n, c = 0) {
+		// Batch 8 (Lane B): optional exact count (death burst uses 24).
+		const count = c > 0 ? c : Math.max(1, Math.round(7 * this.tune(`particles`)));
+		for (let r = 0; r < count; r++) {
 			let r = n + (Math.random() - .5) * 1.2, i = 2 + Math.random() * 4;
 			this.particles.push(Object.assign(this.allocParticle(), {
 				x: e,
@@ -5469,6 +5598,8 @@ export class GameEngine {
 	}
 	render() {
 		let e = this.ctx, t = this.canvas.width, n = this.canvas.height;
+		this._renderDt = Math.min(.1, Math.max(1 / 1000, (performance.now() - (this._lastRenderNow || performance.now())) / 1000)); // Batch 8 (Lane B): render-frame delta for render-side timers.
+		this._lastRenderNow = performance.now();
 		const zoom = render7.zoom.update(this.zombies, this.player.x, this.player.y, this.lastDt || 1 / 60, this.viewZoom(), this.motionScale()) * (1 + this.zoomPunch); // Batch 7: dynamic zoom by horde density; VS-3: kill zoom punch
 		const viewW = t / zoom, viewH = n / zoom;
 		const mapW = this.currentLocation.mapWidth, mapH = this.currentLocation.mapHeight;
@@ -5617,6 +5748,7 @@ export class GameEngine {
 		}
 		this.renderHurtDir(e, t, n); // VS-3: directional hurt feedback
 		this.renderEyeshine(e, l, u);
+		this.renderDeathFlash(e); // Batch 8 (Lane B): death white flash, topmost.
 		e.restore();
 	}
 	paintFloaters(e, zoom) {
@@ -5729,7 +5861,8 @@ export class GameEngine {
 		const phase = this.walkPhase;
 		const fs = this.figureScale();
 		const body = this.player.radius * 5.6 * fs;
-		const bob = moving ? Math.abs(Math.sin(phase)) * 3.4 * fs : Math.sin(this.simTime * 2.05) * 1.05 * fs;
+		const bob = moving ? Math.abs(Math.sin(phase)) * 3.4 * fs : Math.sin(this.simTime * 2.05 + this.player.bobPhase) * 2.5 * fs * this.motionScale(); // Batch 8 (Lane B): idle bob ~2.5px, reduce-motion aware.
+		this._lastPlayerBob = bob; // Batch 8 (Lane B): test probe.
 		const stride = moving ? Math.sin(phase) * 3.2 * facing : 0;
 		const lean = moving ? Math.sin(phase) * .07 + this.moveVX * .012 : 0;
 		for (const g of this.afterimages) {
@@ -5752,7 +5885,16 @@ export class GameEngine {
 		e.save();
 		e.translate(stride * .35, -bob);
 		e.rotate(lean);
-		e.scale(facing, 1);
+		// Batch 8 (Lane B): bash squash-and-stretch — 50ms pulse set in tryBash, decayed here in render.
+		let psx = 1, psy = 1;
+		if (this.player.atkT > 0) {
+			const ap = Math.max(0, this.player.atkT / .05); // 1 → 0
+			psx = 1 + .22 * ap; psy = 1 - .14 * ap; // peak ~1.22x stretch along facing
+			this.player.atkT = Math.max(0, this.player.atkT - this._renderDt);
+		}
+		// Batch 8 (Lane B): latch the peak — a 50ms beat can fall between test polls.
+		if (psx > this._lastPlayerPulse.sx) this._lastPlayerPulse = { sx: psx, sy: psy };
+		e.scale(facing * psx, psy);
 		drawSprite(e, "player", body, 0, false);
 		e.restore();
 		e.save();
@@ -5912,6 +6054,13 @@ export class GameEngine {
 			}
 			const facingLeft = Math.cos(t.angle) < 0;
 			const limp = Math.abs(Math.sin(this.simTime * (t.type === "sprinter" ? 10 : 6) + t.x * .08)) * (t.type === "crawler" ? 1.6 : 3.2);
+			// Batch 8 (Lane B): idle bob — stationary zombies sway ~2.5px, phase-offset by entity hash, reduce-motion aware.
+			if (t.hseed === undefined) { let hs = 0; for (const c of t.id) hs = (hs * 31 + c.charCodeAt(0)) | 0; t.hseed = hs; }
+			const lastRX = t._lastRX ?? t.x, lastRY = t._lastRY ?? t.y;
+			const zMoving = Math.hypot(t.x - lastRX, t.y - lastRY) > .35;
+			t._lastRX = t.x; t._lastRY = t.y;
+			const idleBob = zMoving ? 0 : Math.sin(this.simTime * 2.05 + (t.hseed % 6.283)) * 2.5 * this.motionScale();
+			if (!this._tracked || t === this._tracked) this._lastZombieBob = idleBob; // Batch 8 (Lane B): test probe.
 			e.save();
 			e.translate(t.x, t.y);
 			// Batch 6 (Lane B): pooled baked blob shadow.
@@ -5933,7 +6082,7 @@ export class GameEngine {
 				}
 			}
 			e.save();
-			e.translate(0, -limp - (t.yOff || 0));
+			e.translate(0, -limp - (t.yOff || 0) - idleBob);
 			// Batch 3: spawn pop scale.
 			const popS = t.spawnT > 0 ? Math.max(.1, 1 - t.spawnT / .15) : 1;
 			// Batch 5: squash-and-stretch yoyo (80ms) + heavy-hit spin.
@@ -5943,11 +6092,19 @@ export class GameEngine {
 				const sk = Math.sin(sp * Math.PI * 2);
 				rsx = 1 + .3 * sk; rsy = 1 - .3 * sk;
 			}
-			e.scale((facingLeft ? -1 : 1) * popS * rsx, popS * rsy);
+			// Batch 8 (Lane B): lunge squash-and-stretch — 50ms pulse set in updateZombies, decayed here in render.
+			let asx = 1, asy = 1;
+			if (t.atkT > 0) {
+				const ap = Math.max(0, t.atkT / .05); // 1 → 0
+				asx = 1 + .25 * ap; asy = 1 - .14 * ap; // peak 1.25x stretch along facing
+				t.atkT = Math.max(0, t.atkT - this._renderDt);
+			}
+			// Batch 8 (Lane B): latch the peak — a 50ms beat can fall between test polls.
+			if ((!this._tracked || t === this._tracked) && asx > this._lastZombiePulse.sx) this._lastZombiePulse = { sx: asx, sy: asy };
+			e.scale((facingLeft ? -1 : 1) * popS * rsx * asx, popS * rsy * asy);
 			if (t.spinT > 0) e.rotate(t.hitSpin * (t.spinT / .25));
 			const tall = t.radius * (t.type === "crawler" ? 4.2 : t.type === "behemoth" ? 4.6 : 5.1) * fs;
-			// Batch 6 (Lane B): per-instance hue jitter + damage-flash bloom.
-			if (t.hseed === undefined) { let hs = 0; for (const c of t.id) hs = (hs * 31 + c.charCodeAt(0)) | 0; t.hseed = hs; }
+			// Batch 6 (Lane B): per-instance hue jitter + damage-flash bloom (hseed set above).
 			applyZombieTint(e, t.hseed);
 			drawSprite(e, t.type === "riot_shield" ? "riot" : t.type === "haint" ? "shambler" : t.type, tall, t.hitFlash, false);
 			clearZombieTint(e);
@@ -6318,11 +6475,21 @@ export class GameEngine {
 		}
 		for (const t of this.particles) {
 			if (t.x < camL || t.x > camR || t.y < camT || t.y > camB) continue;
-			e.globalAlpha = t.alpha;
-			e.fillStyle = t.color;
-			e.beginPath();
-			e.arc(t.x, t.y, t.size, 0, Math.PI * 2);
-			e.fill();
+			// Batch 8 (Lane C): hot particle kinds rasterize from baked sprites
+			// instead of per-frame arcs; size clamped so drawImage never gets
+			// a non-positive dimension. Blood tints the glow with its color.
+			const sz = !(t.size > 0) ? 0.001 : t.size;
+			if (t.type === `fire`) drawGlowSprite(e, t.x, t.y, sz * 2, t.alpha);
+			else if (t.type === `spark`) drawSparkSprite(e, t.x, t.y, sz * 2, t.alpha);
+			else if (t.type === `smoke`) drawSmokeSprite(e, t.x, t.y, sz * 2, t.alpha);
+			else if (t.type === `blood`) drawGlowSprite(e, t.x, t.y, sz * 2, t.alpha, t.color);
+			else {
+				e.globalAlpha = t.alpha;
+				e.fillStyle = t.color;
+				e.beginPath();
+				e.arc(t.x, t.y, sz, 0, Math.PI * 2);
+				e.fill();
+			}
 		}
 		e.globalAlpha = 1;
 	}

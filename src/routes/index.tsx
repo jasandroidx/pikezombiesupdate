@@ -4,6 +4,7 @@ import { GameEngine } from "@/game/engine";
 import { AVAILABLE_PERKS, GAME_LOCATIONS, INITIAL_WEAPONS, OUTBREAK_FINAL_WAVES, OUTBREAK_ORDER, OUTBREAK_WAVES_PER_MAP, locationIndexById } from "@/game/constants";
 import { soundEngine } from "@/audio/soundEngine";
 import { loadArt } from "@/game/art";
+import { dprCap } from "@/game/mapRenderer";
 import { loadSave } from "@/game/save";
 import { markDailyPlayed } from "@/game/meta";
 import { HUD } from "@/components/game/HUD";
@@ -148,8 +149,18 @@ function GameApp() {
 
   const updateCanvasDimensions = useCallback(() => {
     if (!canvasRef.current) return;
-    canvasRef.current.width = window.innerWidth;
-    canvasRef.current.height = window.innerHeight;
+    // Batch 8 (Lane C): DPR cap — the engine renders in CSS-pixel space
+    // (viewZoom/viewSize/screenToWorld read canvas.width directly), so the
+    // backing store stays at 1x CSS: always within the 1.5x desktop / 1.0x
+    // narrow-mobile cap. The capped value is recorded for a DPR-aware render
+    // loop (engine lane); qualityFactor() drives cosmetic particle budgets.
+    const cssW = window.innerWidth;
+    const cssH = window.innerHeight;
+    canvasRef.current.width = cssW;
+    canvasRef.current.height = cssH;
+    canvasRef.current.style.width = `${cssW}px`;
+    canvasRef.current.style.height = `${cssH}px`;
+    canvasRef.current.dataset.pzDpr = String(dprCap());
   }, []);
 
   useEffect(() => {

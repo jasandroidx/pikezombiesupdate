@@ -1361,7 +1361,12 @@ export class CelebrationFx {
     this.lastNow = now;
     this.x = x; this.y = y;
     this.slowmoUntil = now + 300; // 0.4x slow-mo for 300ms
-    for (const p of this.parts) {
+    // Batch 8 (Lane C): arm only qualityFactor() of the 40-particle pool —
+    // cosmetic particle budget scales down on narrow/mobile screens.
+    const budget = Math.max(8, Math.round(this.parts.length * qualityFactor()));
+    for (let i = 0; i < this.parts.length; i++) {
+      const p = this.parts[i];
+      if (i >= budget) { p.active = false; continue; }
       const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.1;
       const sp = 120 + Math.random() * 260;
       p.x = x + (Math.random() - 0.5) * 24;
@@ -1601,6 +1606,182 @@ export function cullEntities<T extends { x: number; y: number }>(list: T[], vp: 
   return out;
 }
 
+// ---- Batch 8 (Lane C): procedural particle sprites (zero-asset) ----
+// Baked once at startup to offscreen canvases: hot white-yellow glow,
+// orange spark streak, soft gray smoke puff. Per-(kind, tint) variants are
+// baked lazily via 'source-in' and cached, so particle colors are preserved.
+export type ParticleSpriteKind = 'glow' | 'spark' | 'smoke';
+export const PARTICLE_SPRITE_SIZES: Record<ParticleSpriteKind, number> = { glow: 32, spark: 24, smoke: 32 };
+
+const spriteCache = new Map<string, HTMLCanvasElement>();
+
+function bakeGlowBase(): HTMLCanvasElement {
+  const s = PARTICLE_SPRITE_SIZES.glow;
+  const c = document.createElement('canvas');
+  c.width = s; c.height = s;
+  const g = c.getContext('2d');
+  if (g) {
+    const grad = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+    grad.addColorStop(0.3, 'rgba(255, 244, 200, 0.9)');
+    grad.addColorStop(0.65, 'rgba(255, 190, 80, 0.28)');
+    grad.addColorStop(1, 'rgba(255, 170, 60, 0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, s, s);
+  }
+  return c;
+}
+
+function bakeSparkBase(): HTMLCanvasElement {
+  const s = PARTICLE_SPRITE_SIZES.spark;
+  const c = document.createElement('canvas');
+  c.width = s; c.height = s;
+  const g = c.getContext('2d');
+  if (g) {
+    // Streak: squashed vertical axis so the radial reads as an orange dash.
+    g.translate(s / 2, s / 2);
+    g.scale(1, 0.36);
+    const grad = g.createRadialGradient(0, 0, 0, 0, 0, s / 2);
+    grad.addColorStop(0, 'rgba(255, 252, 240, 1)');
+    grad.addColorStop(0.35, 'rgba(255, 176, 66, 0.9)');
+    grad.addColorStop(1, 'rgba(255, 120, 20, 0)');
+    g.fillStyle = grad;
+    g.fillRect(-s / 2, -s, s, s * 2); // covers the gradient's full extent
+  }
+  return c;
+}
+
+function bakeSmokeBase(): HTMLCanvasElement {
+  const s = PARTICLE_SPRITE_SIZES.smoke;
+  const c = document.createElement('canvas');
+  c.width = s; c.height = s;
+  const g = c.getContext('2d');
+  if (g) {
+    const puff = (cx: number, cy: number, r: number, a: number) => {
+      const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+      grad.addColorStop(0, `rgba(205, 205, 205, ${a.toFixed(3)})`);
+      grad.addColorStop(0.7, `rgba(170, 170, 170, ${(a * 0.5).toFixed(3)})`);
+      grad.addColorStop(1, 'rgba(150, 150, 150, 0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(cx, cy, r, 0, Math.PI * 2);
+      g.fill();
+    };
+    puff(s / 2, s / 2, s / 2, 0.5);
+    puff(s * 0.38, s * 0.42, s * 0.28, 0.35);
+    puff(s * 0.62, s * 0.58, s * 0.3, 0.35);
+  }
+  return c;
+}
+
+function baseSprite(kind: ParticleSpriteKind): HTMLCanvasElement {
+  const key = 'base:' + kind;
+  const hit = spriteCache.get(key);
+  if (hit) return hit;
+  const c = kind === 'glow' ? bakeGlowBase() : kind === 'spark' ? bakeSparkBase() : bakeSmokeBase();
+  spriteCache.set(key, c);
+  return c;
+}
+
+/** Backing sprite for a kind; optional tint bakes a cached color variant. */
+export function particleSprite(kind: ParticleSpriteKind, tint?: string): HTMLCanvasElement {
+  const base = baseSprite(kind);
+  if (typeof tint !== 'string' || tint.length === 0) return base;
+  const key = kind + ':' + tint;
+  const hit = spriteCache.get(key);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = base.width; c.height = base.height;
+  const g = c.getContext('2d');
+  if (g) {
+    g.drawImage(base, 0, 0);
+    g.globalCompositeOperation = 'source-in';
+    g.fillStyle = tint;
+    g.fillRect(0, 0, c.width, c.height);
+  }
+  spriteCache.set(key, c);
+  return c;
+}
+
+let particleSpriteDraws = 0;
+/** Probe: sprite draw calls since the last reset. */
+export function drawnParticleSprites() { return particleSpriteDraws; }
+export function resetParticleSpriteCount() { particleSpriteDraws = 0; }
+
+function drawParticleSprite(
+  ctx: CanvasRenderingContext2D,
+  kind: ParticleSpriteKind,
+  x: number, y: number, size: number, alpha: number, tint?: string,
+) {
+  // Negative-arc-radius hardening, sprite edition: drawImage throws on
+  // non-positive w/h, so clamp and bail on garbage instead of crashing.
+  if (!(alpha > 0) || !(size > 0) || !isFinite(x + y)) return;
+  const s = size < 0.001 ? 0.001 : size;
+  ctx.save();
+  ctx.globalAlpha = alpha > 1 ? 1 : alpha;
+  ctx.drawImage(particleSprite(kind, tint), x - s / 2, y - s / 2, s, s);
+  ctx.restore();
+  particleSpriteDraws++;
+}
+
+/** Hot white-yellow radial glow. size = full sprite width in px. */
+export function drawGlowSprite(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, alpha: number, tint?: string) {
+  drawParticleSprite(ctx, 'glow', x, y, size, alpha, tint);
+}
+/** Orange spark streak. size = full sprite width in px. */
+export function drawSparkSprite(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, alpha: number, tint?: string) {
+  drawParticleSprite(ctx, 'spark', x, y, size, alpha, tint);
+}
+/** Soft gray smoke puff. size = full sprite width in px. */
+export function drawSmokeSprite(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, alpha: number, tint?: string) {
+  drawParticleSprite(ctx, 'smoke', x, y, size, alpha, tint);
+}
+
+/** Bake all three base sprites now — called once at startup. */
+export function ensureParticleSprites(): void {
+  baseSprite('glow');
+  baseSprite('spark');
+  baseSprite('smoke');
+}
+
+/** Probe: true once the three base sprites are baked. */
+export function spriteCacheReady(): boolean {
+  return spriteCache.has('base:glow') && spriteCache.has('base:spark') && spriteCache.has('base:smoke');
+}
+/** Probe: total baked sprites in the cache (base + tint variants). */
+export function spriteCount(): number { return spriteCache.size; }
+
+// ---- Batch 8 (Lane C): DPR cap + quality scaling ----
+// The engine renders in CSS-pixel space (viewZoom/viewSize/screenToWorld all
+// read canvas.width directly), so the backing store stays at 1x CSS — always
+// within the cap. dprCap() is the enforced policy (min(raw DPR, cap)) and the
+// value a DPR-aware render loop would size the backing store with;
+// qualityFactor() scales cosmetic particle budgets (1.0 desktop, 0.6 mobile).
+export const DPR_CAP_DESKTOP = 1.5;
+export const DPR_CAP_MOBILE = 1.0;
+export const NARROW_VIEWPORT_PX = 640;
+export const QUALITY_MOBILE = 0.6;
+
+function viewportWidth(w?: number): number {
+  if (typeof w === 'number' && isFinite(w)) return w;
+  return typeof window !== 'undefined' ? window.innerWidth : 1024;
+}
+
+export function isNarrowViewport(w?: number): boolean {
+  return viewportWidth(w) < NARROW_VIEWPORT_PX;
+}
+
+/** Effective DPR allowed for the canvas backing store: min(raw, 1.5 desktop / 1.0 narrow). */
+export function dprCap(w?: number): number {
+  const raw = typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
+  return Math.min(raw, isNarrowViewport(w) ? DPR_CAP_MOBILE : DPR_CAP_DESKTOP);
+}
+
+/** 1.0 on desktop viewports, 0.6 on narrow/mobile — multiply cosmetic particle counts by this. */
+export function qualityFactor(w?: number): number {
+  return isNarrowViewport(w) ? QUALITY_MOBILE : 1.0;
+}
+
 // ---- Batch 7 probe wiring ----
 export const render7 = {
   zoom: new DynamicZoomRig(),
@@ -1615,6 +1796,24 @@ export const render7 = {
   resetCulledCount,
   zoomTargetForDensity,
   backEaseOut,
+  // Batch 8 (Lane C): procedural particle sprites + DPR cap / quality scaling
+  particleSprite,
+  ensureParticleSprites,
+  drawGlowSprite,
+  drawSparkSprite,
+  drawSmokeSprite,
+  spriteCacheReady,
+  spriteCount,
+  drawnParticleSprites,
+  resetParticleSpriteCount,
+  dprCap,
+  qualityFactor,
+  isNarrowViewport,
+  DPR_CAP_DESKTOP,
+  DPR_CAP_MOBILE,
+  NARROW_VIEWPORT_PX,
+  QUALITY_MOBILE,
+  PARTICLE_SPRITE_SIZES,
   DynamicZoomRig,
   CameraRig,
   CelebrationFx,
@@ -1631,12 +1830,21 @@ function attachRender7Probes() {
   if (!ct) return;
   if (typeof ct.drawnTelegraphs !== 'function') ct.drawnTelegraphs = () => telegraphArcs;
   if (typeof ct.culledCount !== 'function') ct.culledCount = () => culledEntities;
+  // Batch 8 (Lane C): DPR/quality + sprite probes on the engine's handle.
+  if (typeof ct.dprCap !== 'function') ct.dprCap = (w?: number) => dprCap(w);
+  if (typeof ct.qualityFactor !== 'function') ct.qualityFactor = (w?: number) => qualityFactor(w);
+  if (typeof ct.spriteCacheReady !== 'function') ct.spriteCacheReady = () => spriteCacheReady();
+  if (typeof ct.spriteCount !== 'function') ct.spriteCount = () => spriteCount();
+  if (typeof ct.drawnParticleSprites !== 'function') ct.drawnParticleSprites = () => particleSpriteDraws;
+  if (typeof ct.resetParticleSpriteCount !== 'function') ct.resetParticleSpriteCount = () => { particleSpriteDraws = 0; };
   if (!ct.render7) ct.render7 = (window as unknown as Record<string, unknown>).__pzRender7;
 }
 
 // Batch 6: test/render probe surface. Engine integration (renderZombies,
 // renderPlayer, setAmbient on map switch) is the coordinator's lane.
 if (typeof window !== 'undefined') {
+  // Batch 8 (Lane C): bake particle sprites once at startup (zero-asset).
+  ensureParticleSprites();
   (window as any).__pzRender7 = render7;
   (window as any).__pzVisual = {
     tileFor,
@@ -1667,6 +1875,24 @@ if (typeof window !== 'undefined') {
     CameraRig,
     CelebrationFx,
     CELEBRATION_TEXT,
+    // Batch 8 (Lane C): procedural particle sprites + DPR cap / quality scaling
+    particleSprite,
+    ensureParticleSprites,
+    drawGlowSprite,
+    drawSparkSprite,
+    drawSmokeSprite,
+    spriteCacheReady,
+    spriteCount,
+    drawnParticleSprites,
+    resetParticleSpriteCount,
+    dprCap,
+    qualityFactor,
+    isNarrowViewport,
+    DPR_CAP_DESKTOP,
+    DPR_CAP_MOBILE,
+    NARROW_VIEWPORT_PX,
+    QUALITY_MOBILE,
+    PARTICLE_SPRITE_SIZES,
   };
 }
 

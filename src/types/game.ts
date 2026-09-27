@@ -36,6 +36,8 @@ export interface Weapon {
   evoPelletsAdd?: number;
   evoRangeMul?: number;
   evoProjSpeedMul?: number;
+  // Batch 8 (Lane D): affinity tags for the support-gem linking pattern.
+  tags?: string[];
 }
 
 export type ZombieType = "shambler" | "sprinter" | "miner_brute" | "bloater_spitter" | "behemoth" | "crawler" | "riot_shield" | "tipple_brute" | "wompus_stalker"; // Batch 5: riot_shield (Lane A) + future boss ids (Lane C); additive, no runtime impact

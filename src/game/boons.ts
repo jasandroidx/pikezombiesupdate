@@ -1,3 +1,5 @@
+import { INITIAL_WEAPONS, tagsMatch } from "./constants";
+
 export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt" | "fork" | "ricochet" | "seeker" | "aura" | "wompus" | "nova" | "missiles" | "chainlightning" | "orbiter";
 
 export type BoonRarity = "common" | "uncommon" | "rare";
@@ -9,16 +11,20 @@ export interface BoonOffer {
   rarity: BoonRarity;
   // Batch 4: hidden offers are never drafted (e.g. Konami-code secrets).
   hidden?: boolean;
+  // Batch 8 (Lane D): affinity tags — a tagged boon is a support boon; its
+  // bonus links to a weapon only when they share a tag (supportApplies below).
+  // Untagged boons are not tag-gated and apply as they do today.
+  tags?: string[];
 }
 
 export const RARITY_WEIGHT: Record<BoonRarity, number> = { common: 60, uncommon: 30, rare: 10 };
 export const RARITY_COLOR: Record<BoonRarity, string> = { common: "#9aa3ad", uncommon: "#4cc3ff", rare: "#c77dff" };
 
 export const BOON_CATALOG: BoonOffer[] = [
-  { id: "lead", name: "Hand-loaded lead", blurb: "Everything you fire hits 8% harder. No ceiling.", rarity: "common" },
-  { id: "trigger", name: "Filed trigger", blurb: "Faster fire and a quicker reload. No ceiling.", rarity: "common" },
+  { id: "lead", name: "Hand-loaded lead", blurb: "Everything you fire hits 8% harder. No ceiling.", rarity: "common", tags: ["precise"] },
+  { id: "trigger", name: "Filed trigger", blurb: "Faster fire and a quicker reload. No ceiling.", rarity: "common", tags: ["rapid", "sidearm"] },
   { id: "hide", name: "County hide", blurb: "+16 grit. Heals what it adds.", rarity: "common" },
-  { id: "shells", name: "Box off the bench", blurb: "A pocket of rounds for every gun you own.", rarity: "common" },
+  { id: "shells", name: "Box off the bench", blurb: "A pocket of rounds for every gun you own.", rarity: "common", tags: ["tube-fed"] },
   { id: "beam", name: "Fresh cells", blurb: "The Maglite reaches farther. Stacks.", rarity: "uncommon" },
   { id: "jug", name: "Another jug", blurb: "One more mason jar of mash.", rarity: "common" },
   { id: "leavings", name: "Pocket the leavings", blurb: "45 scrap now, and the dead pay better. Stacks.", rarity: "common" },
@@ -29,9 +35,9 @@ export const BOON_CATALOG: BoonOffer[] = [
   { id: "pipe", name: "Stovepipe", blurb: "Capped pipe, black powder, a percussion cap. Lay it down. They step on it.", rarity: "uncommon" },
   { id: "storm", name: "Storm jar", blurb: "Lightning hunts the dead on its own. Chains farther. Stacks.", rarity: "rare" },
   { id: "salt", name: "Salt line", blurb: "A burning ring around your boots. Wider and hotter. Stacks.", rarity: "rare" },
-  { id: "fork", name: "Forking rounds", blurb: "On impact, rounds split into +1 spectral projectile per rank.", rarity: "rare" },
-  { id: "ricochet", name: "Bank shots", blurb: "Rounds bounce to another dead man, losing 25% damage per bounce.", rarity: "uncommon" },
-  { id: "seeker", name: "Heatseeker node", blurb: "Your rounds hunt. Every trigger pull curves toward the dead.", rarity: "rare" },
+  { id: "fork", name: "Forking rounds", blurb: "On impact, rounds split into +1 spectral projectile per rank.", rarity: "rare", tags: ["scatter"] },
+  { id: "ricochet", name: "Bank shots", blurb: "Rounds bounce to another dead man, losing 25% damage per bounce.", rarity: "uncommon", tags: ["precise"] },
+  { id: "seeker", name: "Heatseeker node", blurb: "Your rounds hunt. Every trigger pull curves toward the dead.", rarity: "rare", tags: ["precise"] },
   { id: "aura", name: "Volatile aura", blurb: "A burning plasma field around your boots. Wider and hotter per rank. Locks out Orbiting Blades.", rarity: "rare" },
   // Batch 4: hidden — never offered in drafts. Granted by the Konami code only.
   { id: "wompus", name: "Wompus Howler", blurb: "The Winslow Wompus cat yowls through a bored-out carbine. Not offered. Earned.", rarity: "rare", hidden: true },
@@ -48,6 +54,33 @@ export const LOCKOUTS: Record<string, string[]> = {
   aura: ["ring"],
   ring: ["aura"],
 };
+
+// Batch 8 (Lane D): support-gem linking — pure helpers. A support boon (one
+// carrying tags) applies its bonus to a weapon ONLY when they share at least
+// one tag. Untagged boons are not tag-gated and apply as they do today.
+// DATA ONLY for now: the coordinator wires these into the damage path
+// (playerDamageMul/familyAffinity in engine.ts); nothing rebalances until then.
+export function weaponTagsOf(weaponId: string): string[] {
+  return INITIAL_WEAPONS.find((w) => w.id === weaponId)?.tags ?? [];
+}
+
+export function boonTagsOf(boonId: string): string[] {
+  return BOON_CATALOG.find((b) => b.id === boonId)?.tags ?? [];
+}
+
+// True when boonId's bonus applies to weaponId: untagged boons always apply;
+// tagged (support) boons apply only on a shared tag.
+export function supportApplies(boonId: string, weaponId: string): boolean {
+  const boonTags = boonTagsOf(boonId);
+  if (boonTags.length === 0) return true;
+  return tagsMatch(weaponTagsOf(weaponId), boonTags);
+}
+
+// The held support boons (from a boonStacks record) whose bonuses link to the
+// given weapon — the per-weapon filter the damage path will iterate.
+export function applicableSupportBoons(boonStacks: Record<string, number>, weaponId: string): string[] {
+  return Object.keys(boonStacks).filter((boonId) => (boonStacks[boonId] ?? 0) > 0 && supportApplies(boonId, weaponId));
+}
 
 export function rollBoons(stacks: Record<string, number>, molotovs: number, maxMolotovs: number, posts = 0, pipes = 0, banished: Set<string> = new Set()): BoonOffer[] {
   const pool = BOON_CATALOG.filter((b) => {
