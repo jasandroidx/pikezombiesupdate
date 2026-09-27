@@ -7,7 +7,8 @@ export type WeaponType =
   | "chainsaw"
   | "molotov"
   | "wompus_howler" // Batch 4: Konami-code secret weapon (see constants.ts)
-  | "mortar"; // Batch 10 (Lane 1): Stendal Pit Mortar
+  | "mortar" // Batch 10 (Lane 1): Stendal Pit Mortar
+  | "arc_lance"; // Batch 11 (Lane 1): White River Arc Lance
 
 export interface Weapon {
   id: WeaponType;
@@ -26,7 +27,7 @@ export interface Weapon {
   maxReserveAmmo: number;
   reloadTime: number;
   pierce: number;
-  soundType: "magnum" | "shotgun" | "rifle" | "carbine" | "crossbow" | "chainsaw" | "molotov" | "mortar"; // Batch 10 (Lane 1): mortar
+  soundType: "magnum" | "shotgun" | "rifle" | "carbine" | "crossbow" | "chainsaw" | "molotov" | "mortar" | "arc"; // Batch 10 (Lane 1): mortar. Batch 11 (Lane 1): arc.
   unlocked: boolean;
   cost: number;
   upgradeLevel: number;

@@ -19,6 +19,7 @@ import { PauseMenu } from "@/components/game/PauseMenu";
 import { ControlsModal } from "@/components/game/ControlsModal";
 import { TailgateDraft } from "@/components/game/TailgateDraft";
 import { CacheSlots } from "@/components/game/CacheSlots";
+import { SlotMachine, SlotsBreakButton, gambleProbeAvailable, slotCostProbe } from "@/components/game/SlotMachine";
 import { TuningPanel, applyStoredTuning } from "@/components/game/TuningPanel";
 import { AccessibilityPanel, applyStoredA11y } from "@/components/game/AccessibilityPanel";
 import { CodexPanel } from "@/components/game/CodexPanel";
@@ -55,6 +56,8 @@ function GameApp() {
   const [showControls, setShowControls] = useState(false);
   const [draft, setDraft] = useState<BoonOffer[] | null>(null);
   const [cacheSymbols, setCacheSymbols] = useState<string[] | null>(null);
+  // Batch 11 (Lane 2): slot machine modal (wave break).
+  const [slotsOpen, setSlotsOpen] = useState(false);
   const [hitFeel, setHitFeel] = useState(true);
   // Batch 6 (Lane E): hidden tuning panel (backtick), settings/a11y, codex.
   const [showTuning, setShowTuning] = useState(false);
@@ -694,17 +697,37 @@ function GameApp() {
             activeEvents={hudStats.activeEvents}
             modeLabel={mode === "outbreak" ? `Outbreak ${outbreakStep + 1}/${OUTBREAK_ORDER.length}` : "Survival"}
           />
-          {hudStats.waveState === "break" && hudStats.shopOffers && hudStats.shopOffers.length > 0 && (
-            <WaveShop
-              offers={hudStats.shopOffers}
-              rerollCost={hudStats.shopRerollCost}
-              scrap={hudStats.scrap}
-              waveTimer={hudStats.waveTimer}
-              onBuy={(i) => engineRef.current?.buyShopOffer(i)}
-              onReroll={() => engineRef.current?.rerollShop()}
-              onLock={(i) => engineRef.current?.toggleShopLock(i)}
-            />
+          {/* Batch 11 (Lane 2): wave-break panel — SLOTS button stacked next to
+              the wave shop. The button degrades to disabled when the engine
+              lane's spinSlots() probe is absent. */}
+          {hudStats.waveState === "break" && !slotsOpen && (
+            <div className="pointer-events-none absolute right-2 top-20 z-30 flex w-64 flex-col gap-2 md:right-4 md:w-72">
+              <SlotsBreakButton grit={hudStats.gritBag} onOpen={() => setSlotsOpen(true)} />
+              {hudStats.shopOffers && hudStats.shopOffers.length > 0 && (
+                <WaveShop
+                  bare
+                  offers={hudStats.shopOffers}
+                  rerollCost={hudStats.shopRerollCost}
+                  scrap={hudStats.scrap}
+                  waveTimer={hudStats.waveTimer}
+                  onBuy={(i) => engineRef.current?.buyShopOffer(i)}
+                  onReroll={() => engineRef.current?.rerollShop()}
+                  onLock={(i) => engineRef.current?.toggleShopLock(i)}
+                />
+              )}
+            </div>
           )}
+          {slotsOpen && (() => {
+            const { cost, exact } = slotCostProbe();
+            return (
+              <SlotMachine
+                grit={hudStats.gritBag}
+                cost={cost}
+                costExact={exact}
+                onClose={() => setSlotsOpen(false)}
+              />
+            );
+          })()}
           {draft && draft.length > 0 && (
             <TailgateDraft
               offers={draft}
@@ -724,8 +747,9 @@ function GameApp() {
           {cacheSymbols && cacheSymbols.length > 0 && (
             <CacheSlots
               symbols={cacheSymbols}
+              canGamble={gambleProbeAvailable()}
               onTake={() => engineRef.current?.resolveCache()}
-              onGamble={() => engineRef.current?.gambleCacheUI()}
+              onGambled={() => engineRef.current?.closeCache()}
             />
           )}
           <MobileControls

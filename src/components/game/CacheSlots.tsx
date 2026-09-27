@@ -23,23 +23,31 @@ function resultText(symbols: string[]): string {
 
 export function CacheSlots({
   symbols,
+  canGamble,
   onTake,
-  onGamble,
+  onGambled,
 }: {
   symbols: string[];
+  /** Batch 11: the double-or-nothing prompt only shows when the engine lane's
+      gambleCache() probe is present; absent probes degrade to Take-it-only. */
+  canGamble: boolean;
   onTake: () => void;
-  onGamble: () => void;
+  /** Called after the gamble result flash, so the parent can close the cache. */
+  onGambled: () => void;
 }) {
   const [shown, setShown] = useState<string[]>(["diamond", "diamond", "diamond"]);
   const [stopped, setStopped] = useState(0);
   const [gambled, setGambled] = useState(false);
+  const [gambleWin, setGambleWin] = useState(false);
   const timers = useRef<number[]>([]);
 
   useEffect(() => {
     setShown(["diamond", "diamond", "diamond"]);
     setStopped(0);
     setGambled(false);
+    setGambleWin(false);
     timers.current.forEach(clearInterval);
+    timers.current.forEach(clearTimeout);
     timers.current = [];
     const spinners = ORDER.map((_, i) => {
       let k = 0;
@@ -67,12 +75,44 @@ export function CacheSlots({
     });
     return () => {
       spinners.forEach(clearInterval);
+      timers.current.forEach(clearTimeout);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbols.join(",")]);
 
   const done = stopped >= 3;
   const jackpot = symbols.filter((s) => s === "seven").length === 3;
+
+  // Batch 11: double-or-nothing goes through the engine lane's gambleCache()
+  // probe (50/50). The result flash plays here; the parent closes the cache
+  // after the player has seen it.
+  const handleGamble = () => {
+    let probe: ((syms: string[]) => unknown) | undefined;
+    try {
+      probe = (window as unknown as { __controlsTest?: { gambleCache?: (s: string[]) => unknown } })
+        .__controlsTest?.gambleCache;
+    } catch {
+      probe = undefined;
+    }
+    if (typeof probe !== "function" || gambled) return;
+    setGambled(true);
+    let win = false;
+    try {
+      win = !!probe(symbols);
+    } catch {
+      win = false;
+    }
+    setGambleWin(win);
+    if (win) {
+      soundEngine.tone({ f: 880, f2: 1320, type: "square", dur: 0.2, vol: 0.2 });
+    } else {
+      soundEngine.tone({ f: 220, f2: 110, type: "sawtooth", dur: 0.35, vol: 0.2 });
+    }
+    const id = window.setTimeout(() => {
+      onGambled();
+    }, 1500);
+    timers.current.push(id);
+  };
 
   return (
     <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center px-3">
@@ -113,9 +153,15 @@ export function CacheSlots({
                 </div>
               ))}
             </div>
+            {canGamble && !gambled && (
+              <div data-testid="cache-gamble-prompt" className="mb-2 font-mono text-[11px] uppercase tracking-widest text-muted">
+                Take it or gamble?
+              </div>
+            )}
             <div className="flex justify-center gap-2">
               <button
                 type="button"
+                data-testid="cache-take"
                 onClick={() => {
                   onTake();
                 }}
@@ -123,19 +169,31 @@ export function CacheSlots({
               >
                 Take it
               </button>
-              {!gambled && (
+              {canGamble && !gambled && (
                 <button
                   type="button"
-                  onClick={() => {
-                    setGambled(true);
-                    onGamble();
-                  }}
+                  data-testid="cache-gamble"
+                  onClick={handleGamble}
                   className="rounded border border-danger/60 bg-danger/20 px-4 py-2 font-mono text-xs uppercase tracking-widest text-danger hover:bg-danger/30"
                 >
                   Double or nothing
                 </button>
               )}
             </div>
+            {gambled && (
+              <div
+                data-testid="cache-gamble-result"
+                data-win={gambleWin ? "true" : "false"}
+                className="animate-pickup-pop mt-3 font-mono text-sm font-bold uppercase tracking-widest"
+                style={
+                  gambleWin
+                    ? { color: "#ffd700", textShadow: "0 0 18px rgba(255,215,0,0.7)" }
+                    : { color: "#8a8f98" }
+                }
+              >
+                {gambleWin ? "Doubled it" : "Lost it all"}
+              </div>
+            )}
             {gambled && (
               <div className="mt-2 font-mono text-[10px] uppercase tracking-widest text-muted">
                 win — everything doubled · lose — it all stays in the cellar

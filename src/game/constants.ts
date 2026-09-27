@@ -170,6 +170,34 @@ export const INITIAL_WEAPONS: Weapon[] = [
     // Batch 8 (Lane D): affinity tags.
     tags: ["heavy", "scatter"],
   },
+  // Batch 11 (Lane 1): the White River Arc Lance — a snapped power-line core
+  // rewound around a corn-shocker frame. Locks the densest knot of the horde
+  // and sweeps it with heat ticks. dmg = per-tick damage, cnt = ticks per
+  // trigger pull, rad = lock-on range, spd = beam half-width, cd = refire.
+  {
+    id: "arc_lance",
+    name: "White River Arc Lance",
+    category: "Special",
+    description: "Snapped power-line core off the White River bridge, rewound around a corn-shocker frame. Locks the densest knot of the horde and sweeps it with heat.",
+    damage: 34,
+    fireRate: 0.77,
+    pellets: 3,
+    spread: 0.0,
+    range: 560,
+    bulletSpeed: 90,
+    magazineSize: 100,
+    currentMag: 100,
+    reserveAmmo: 100,
+    maxReserveAmmo: 150,
+    reloadTime: 1600,
+    pierce: 99,
+    soundType: "arc",
+    unlocked: false,
+    cost: 600,
+    upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags.
+    tags: ["scatter", "precise"],
+  },
 ];
 
 export const AVAILABLE_PERKS: Perk[] = [
@@ -836,6 +864,47 @@ export const EVOLUTIONS: EvolutionRecipe[] = [
     dmgBonus: 0.10, // Ripper: +10% damage
     cdBonus: 0.05,  // Ripper: 5% faster cooldown — hotter chain, faster spin
   },
+  // Batch 11 (Lane 3): three new rows for the weapons that had no evolution
+  // (mortar, wompus_howler, chainlightning). The table is read generically by
+  // checkEvolutions()/evolutionReady(), so new rows just work.
+  {
+    baseWeapon: "mortar",
+    requiredBoon: "brinebarrel",
+    requiredBoonName: "Brine Barrel",
+    requiredStacks: 2,
+    requiredPicks: { boonId: "missiles", count: 3 }, // heavy ordnance for the pit gun
+    evolvedName: "Hartwell Thunder",
+    evolvedDescription: "Evolved: brine-barrel propellant under a Hartwell pit charge. Bigger bloom, longer legs, and the Backbone keeps the change.",
+    evolvedRadio: "The pit just talked back. That's Hartwell Thunder — mind the ring.",
+    dmgMul: 1.5, fireMul: 1.25, rangeMul: 1.3, projSpeedMul: 1.2,
+    dmgBonus: 0.10, // Thunder: +10% damage
+    cdBonus: 0.05,  // Thunder: 5% faster cooldown — the crew got quick
+  },
+  {
+    baseWeapon: "wompus_howler",
+    requiredBoon: "seeker",
+    requiredBoonName: "Heatseeker node",
+    requiredStacks: 2,
+    requiredPicks: { boonId: "stride", count: 3 }, // run with the cat
+    evolvedName: "Trace Banshee",
+    evolvedDescription: "Evolved: the Wompus yowl tuned to a killing pitch. Rounds hunt on their own now, and the Trace goes quiet after.",
+    evolvedRadio: "Thirty years it yowled on the ridge. Now the ridge yowls back.",
+    dmgMul: 1.5, fireMul: 1.3, pierceSet: 4, projSpeedMul: 1.3,
+    dmgBonus: 0.10, // Banshee: +10% damage
+  },
+  {
+    baseWeapon: "chainlightning",
+    requiredBoon: "fork",
+    requiredBoonName: "Forking rounds",
+    requiredStacks: 2,
+    requiredPicks: { boonId: "storm", count: 3 }, // bottled lightning for the leyden rig
+    evolvedName: "Patoka Maelstrom",
+    evolvedDescription: "Evolved: a leyden rig rewound with forking rounds. The arc splits on every jump and the Patoka runs white.",
+    evolvedRadio: "Storm don't strike twice — it strikes everything. The Maelstrom's loose.",
+    dmgMul: 1.6, fireMul: 1.3, rangeMul: 1.25,
+    dmgBonus: 0.10, // Maelstrom: +10% damage
+    cdBonus: 0.05,  // Maelstrom: 5% faster cooldown — the rig recharges hot
+  },
 ];
 
 // VS-2: weapon-family support affinities. Two or more unlocked weapons in a
@@ -1017,10 +1086,72 @@ export const SHOP_POOL: ShopOfferDef[] = [
   { id: "shop_unlock_carbine", name: "Carbine", desc: "Unlock the carbine", baseCost: 120, kind: "unlock", weaponId: "carbine", repeatable: false },
   { id: "shop_unlock_crossbow", name: "Crossbow", desc: "Unlock the crossbow", baseCost: 140, kind: "unlock", weaponId: "crossbow", repeatable: false },
   { id: "shop_unlock_mortar", name: "Stendal Pit Mortar", desc: "Unlock the mortar", baseCost: 200, kind: "unlock", weaponId: "mortar", repeatable: false }, // Batch 10 (Lane 1)
+  { id: "shop_unlock_arclance", name: "Arc Lance", desc: "Unlock the White River Arc Lance", baseCost: 600, kind: "unlock", weaponId: "arc_lance", repeatable: false }, // Batch 11 (Lane 1)
 ];
 
 export const SHOP_OFFER_COUNT = 4;
 export const SHOP_REROLL_BASE = 15;
+
+// ---------------------------------------------------------------------------
+// Batch 11 (Lane 1): the "Patoka Jackpot" — the second loot ritual. During
+// wave breaks the player can spend grit at the machine: 150 grit per spin,
+// escalating +50 per spin each break (resets every wave). Symbols are pure
+// data here so tests can reason about probabilities without a game instance.
+//   7-7-7 JACKPOT: three sevens — instantly maxes a random unlocked weapon's
+//   table level, then the evolution check runs after.
+//   three-of-a-kind (others): a big themed payout.
+//   two-of-a-kind: a small prize (grit shower / heal / bomb charge).
+// ---------------------------------------------------------------------------
+
+export interface SlotSymbolDef {
+  id: string;
+  name: string;
+  /** Relative reel weight; sums to 1. */
+  w: number;
+}
+
+export const SLOT_MACHINE_NAME = "Patoka Jackpot";
+
+export const SLOT_SYMBOLS: SlotSymbolDef[] = [
+  { id: "grit_bag", name: "Grit Bag", w: 0.32 },
+  { id: "moonshine", name: "Moonshine Jug", w: 0.30 },
+  { id: "horseshoe", name: "Horseshoe", w: 0.20 },
+  { id: "cylinder", name: "Revolver Cylinder", w: 0.13 },
+  { id: "seven", name: "Seven", w: 0.05 },
+];
+
+export const SLOT_SPIN_BASE = 150;
+export const SLOT_SPIN_STEP = 50;
+
+/** Roll one reel. `rng` is injectable so tests can force sequences. */
+export function rollSlotSymbol(rng: () => number = Math.random): string {
+  let r = rng();
+  for (const s of SLOT_SYMBOLS) {
+    r -= s.w;
+    if (r < 0) return s.id;
+  }
+  return SLOT_SYMBOLS[SLOT_SYMBOLS.length - 1].id;
+}
+
+/** Pure win classification for a 3-reel result. */
+export type SlotWinKind = "jackpot" | "three" | "pair" | "none";
+
+export function classifySlotWin(reels: string[]): SlotWinKind {
+  if (!Array.isArray(reels) || reels.length !== 3) return "none";
+  const [a, b, c] = reels;
+  if (a === b && b === c) return a === "seven" ? "jackpot" : "three";
+  if (a === b || b === c || a === c) return "pair";
+  return "none";
+}
+
+/** Which symbol made the pair (assumes classifySlotWin returned "pair"). */
+export function slotPairSymbol(reels: string[]): string | null {
+  const [a, b, c] = reels;
+  if (a === b) return a;
+  if (b === c) return b;
+  if (a === c) return a;
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Batch 4 (Lane B): per-level weapon stat tables + Konami secret weapon.
@@ -1074,6 +1205,9 @@ export const WEAPON_LEVELS: Record<string, WeaponLevelRow> = {
   orbiter:       { dmg: [14, 18, 23, 29, 36],   cnt: [3, 3, 4, 4, 5],   rad: [110, 115, 120, 125, 130], spd: [2.6, 2.8, 3.0, 3.2, 3.4], cd: [1.0, 1.0, 0.95, 0.9, 0.85] },
   // Batch 10 (Lane 1): mortar — cnt = shells per volley.
   mortar:        { dmg: [110, 135, 165, 200, 245], cnt: [1, 1, 1, 2, 2], rad: [700, 720, 740, 760, 780], spd: [14, 14.5, 15, 15.5, 16], cd: [1.25, 1.15, 1.05, 0.95, 0.85] },
+  // Batch 11 (Lane 1): arc lance — dmg = damage per heat tick, cnt = ticks
+  // per trigger pull, rad = lock-on range, spd = beam half-width, cd = refire.
+  arc_lance:     { dmg: [34, 42, 52, 64, 80],   cnt: [3, 3, 4, 4, 5],       rad: [560, 590, 620, 650, 680], spd: [90, 95, 100, 105, 110], cd: [1.3, 1.2, 1.1, 1.0, 0.9] },
 };
 
 export const WEAPON_MAX_TABLE_LEVEL = 5;
@@ -1331,6 +1465,164 @@ export const BOSSES: BossDef[] = [
 
 export function bossFor(id: string): BossDef | undefined {
   return BOSSES.find((b) => b.id === id);
+}
+
+// ---------------------------------------------------------------------------
+// Batch 11 — Lane 3 (data/content): ENEMY_REGISTRY.
+//
+// Documentation-grade data for every zombie type the engine can push into the
+// sim. Base stats are the pushZombie() (engine.ts ~L3427) literals, before the
+// smooth time-based HP scaling and the elite ×2.2 roll. This is the foundation
+// for future content lanes — the engine does not read it yet (additive only).
+// ---------------------------------------------------------------------------
+
+export interface EnemyRegistryEntry {
+  name: string;
+  /** Base maxHealth from pushZombie(), pre-scaling. Behemoth: +wave*250 added by the engine. */
+  hp: number;
+  /** Base speed from pushZombie() (the engine jitters ±10% per spawn). */
+  speed: number;
+  /** Base contact damage from pushZombie(). */
+  damage: number;
+  /** Short behavior sketch from the AI code (personalityTarget / tick fns). */
+  behavior: string;
+  /** True when the engine can assign an elite affix to this type (elites only). */
+  affixEligible: boolean;
+  /** Indiana-flavored flavor line. Pike County only — never Bayville/Griggsville/Illinois. */
+  description: string;
+}
+
+/** Every type id the engine actually pushes via pushZombie() today. */
+export const ENGINE_SPAWNED_TYPES: string[] = [
+  "shambler",
+  "sprinter",
+  "crawler",
+  "miner_brute",
+  "bloater_spitter",
+  "bomber",
+  "riot",
+  "riot_shield",
+  "behemoth",
+  "haint",
+  "illusionist",
+];
+
+export const ENEMY_REGISTRY: Record<string, EnemyRegistryEntry> = {
+  shambler: {
+    name: "Shambler",
+    hp: 58, speed: 2.15, damage: 14,
+    behavior: "Wander/investigate/chase noise AI; the baseline dead. Walks out of the treeline and the cellar holes.",
+    affixEligible: true,
+    description: "The county's baseline dead. Slow, dumb, and already inside the fence line.",
+  },
+  sprinter: {
+    name: "Sprinter",
+    hp: 45, speed: 3.45, damage: 12,
+    behavior: "0.4s movement-lead targeting; telegraphed dash lunge inside 280u.",
+    affixEligible: true,
+    description: "Ran the Buffalo Trace in life. Still runs it, and it learned to lead you.",
+  },
+  crawler: {
+    name: "Crawler",
+    hp: 32, speed: 2.4, damage: 8,
+    behavior: "Flanks wide around the player; pours out of open cellar holes.",
+    affixEligible: true,
+    description: "Lost its legs to the highwall or the pit. Didn't lose the hunt.",
+  },
+  miner_brute: {
+    name: "Miner Brute",
+    hp: 220, speed: 1.2, damage: 25,
+    behavior: "Objective bias — steers at objectives and structures; helmeted.",
+    affixEligible: true,
+    description: "Fifty-two men never came up from the Stendal pit. This one did.",
+  },
+  bloater_spitter: {
+    name: "Bloater Spitter",
+    hp: 130, speed: 1.05, damage: 18,
+    behavior: "Ranged kiter — holds the 260–420u band, strafes sideways while spitting.",
+    affixEligible: true,
+    description: "Full of Patoka silt and bad air. Keeps its distance and spits it at you.",
+  },
+  bomber: {
+    name: "Bomber",
+    hp: 45, speed: 2.7, damage: 12,
+    behavior: "Fuse telegraph; hunts clusters and objectives, then detonates.",
+    affixEligible: true,
+    description: "Swallowed a still-yard charge or a pocket of mash gas. Rings the bell itself.",
+  },
+  riot: {
+    name: "Riot",
+    hp: 520, speed: 0.85, damage: 30,
+    behavior: "Helmeted wall; drifts toward the densest nearby pack.",
+    affixEligible: true,
+    description: "Indiana Guard issue gear, worn by something that stopped taking orders.",
+  },
+  riot_shield: {
+    name: "Riot Shield",
+    hp: 420, speed: 0.95, damage: 26,
+    behavior: "Shield pool (35% of max HP) on top of body HP; advances behind it.",
+    affixEligible: true,
+    description: "Kept the shield. Lost the man. The shield still works.",
+  },
+  behemoth: {
+    name: "The Behemoth",
+    hp: 1400, speed: 1.55, damage: 45,
+    behavior: "Wave-5 cadence boss; charge windup telegraph, county-legend entrance. Engine adds +wave*250 HP on top.",
+    affixEligible: true,
+    description: "Something old walked out of the treeline. Eligible for affixes only through the guaranteed-elite director (excluded from the random wave-2+ elite roll).",
+  },
+  haint: {
+    name: "Haint",
+    hp: 90, speed: 2.6, damage: 12,
+    behavior: "Pale drifter; multiplies — spawns up to three 1-HP clones that eat auto-fire.",
+    affixEligible: true,
+    description: "A restless one from the Yellow Banks. Kill it twice and it thanks you.",
+  },
+  illusionist: {
+    name: "Illusionist",
+    hp: 110, speed: 2.2, damage: 10,
+    behavior: "Trickster archetype; clone tricks per the ILLUSIONIST data table.",
+    affixEligible: true,
+    description: "The fog learned a new trick. Don't trust the second one you see.",
+  },
+  // --- future bosses: rows exist in the BOSSES table but are not wired to the
+  // --- engine yet. Documented here so content lanes have the full set.
+  tipple_brute: {
+    name: "The Tipple Brute",
+    hp: 2600, speed: 1.1, damage: 60,
+    behavior: "Future boss — ground-slam radial knockback + dust ring (not wired to the engine yet).",
+    affixEligible: false,
+    description: "The tipple fell a long time ago. Something climbed out. (Future boss — not spawned yet.)",
+  },
+  wompus_stalker: {
+    name: "The Wompus Stalker",
+    hp: 2200, speed: 2.6, damage: 38,
+    behavior: "Future boss — yowl speed burst, drags a sprinter pack in (not wired to the engine yet).",
+    affixEligible: false,
+    description: "You hear it before you see it. Then you hear nothing at all. (Future boss — not spawned yet.)",
+  },
+};
+
+/** Self-check: every engine-spawned type is present, and every row's fields
+ *  are the right shape with sane numbers. */
+export function validateEnemyRegistry(): { ok: boolean; missing: string[]; invalid: string[] } {
+  const missing: string[] = [];
+  const invalid: string[] = [];
+  for (const id of ENGINE_SPAWNED_TYPES) {
+    if (!ENEMY_REGISTRY[id]) missing.push(id);
+  }
+  for (const [id, e] of Object.entries(ENEMY_REGISTRY)) {
+    const bad: string[] = [];
+    if (!e || typeof e.name !== "string" || !e.name) bad.push("name");
+    if (!e || !isFinite(e.hp) || e.hp <= 0) bad.push("hp");
+    if (!e || !isFinite(e.speed) || e.speed <= 0) bad.push("speed");
+    if (!e || !isFinite(e.damage) || e.damage < 0) bad.push("damage");
+    if (!e || typeof e.behavior !== "string" || !e.behavior) bad.push("behavior");
+    if (!e || typeof e.affixEligible !== "boolean") bad.push("affixEligible");
+    if (!e || typeof e.description !== "string" || !e.description) bad.push("description");
+    if (bad.length) invalid.push(`${id} (${bad.join(",")})`);
+  }
+  return { ok: missing.length === 0 && invalid.length === 0, missing, invalid };
 }
 
 // ---------------------------------------------------------------------------

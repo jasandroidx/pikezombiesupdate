@@ -150,6 +150,23 @@
   animation: blood-flash 0.4s ease-out forwards;
 }
 
+/* Batch 11 (Lane 2): slot-machine jackpot gold flash — mirrors the
+   celebration stack's gold radial flash, modal-side. */
+@keyframes gold-flash {
+  0% {
+    opacity: 0.85;
+    background: radial-gradient(circle, rgba(255, 215, 0, 0.55), rgba(255, 215, 0, 0));
+  }
+  100% {
+    opacity: 0;
+    background: radial-gradient(circle, rgba(255, 215, 0, 0), rgba(255, 215, 0, 0));
+  }
+}
+
+.animate-gold-flash {
+  animation: gold-flash 1.2s ease-out forwards;
+}
+
 @keyframes radio-scan {
   0% {
     transform: translateX(-100%);
@@ -170,6 +187,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .animate-blood-flash,
+  .animate-gold-flash,
   .radio-scan::after {
     animation: none;
   }

@@ -18,14 +18,17 @@ interface WaveShopProps {
   onBuy: (index: number) => void;
   onReroll: () => void;
   onLock: (index: number) => void;
+  /** Batch 11: when true, skip the absolute break-panel positioning so the
+      parent can stack the shop under the SLOTS button panel. */
+  bare?: boolean;
 }
 
-export function WaveShop({ offers, rerollCost, scrap, waveTimer, onBuy, onReroll, onLock }: WaveShopProps) {
+export function WaveShop({ offers, rerollCost, scrap, waveTimer, onBuy, onReroll, onLock, bare }: WaveShopProps) {
   const [collapsed, setCollapsed] = useState(false);
   if (offers.length === 0) return null;
 
   return (
-    <div className="pointer-events-auto absolute right-2 top-20 z-30 w-64 md:right-4 md:w-72">
+    <div className={bare ? "pointer-events-auto" : "pointer-events-auto absolute right-2 top-20 z-30 w-64 md:right-4 md:w-72"}>
       <div className="hud-plate overflow-hidden rounded">
         <button
           className="flex w-full items-center justify-between px-3 py-2 font-heading text-sm font-bold tracking-wider text-accent"
