@@ -46,6 +46,7 @@ function GameApp() {
   const [draft, setDraft] = useState<BoonOffer[] | null>(null);
   const [boonStacks, setBoonStacks] = useState<Record<string, number>>({});
   const [rerolls, setRerolls] = useState(1);
+  const [banishCharges, setBanishCharges] = useState(2);
 
   const [selectedLocationIdx, setSelectedLocationIdx] = useState(0);
   const [weapons, setWeapons] = useState<Weapon[]>(INITIAL_WEAPONS);
@@ -118,6 +119,7 @@ function GameApp() {
       wavesCompleted: 0,
       survivalTime: 0,
       notesFound: 0,
+      maxStreak: 0,
     },
     score: 0,
     wave: 1,
@@ -203,6 +205,7 @@ function GameApp() {
           setDraft(offers);
           setBoonStacks({ ...(engineRef.current?.boonStacks ?? {}) });
           setRerolls(engineRef.current?.rerolls ?? 0);
+          setBanishCharges(engineRef.current?.banishCharges ?? 0);
         },
         onGameOver: (stats: PlayerStats, finalScore: number, deathKiller: string) => {
           setKiller(deathKiller);
@@ -537,9 +540,14 @@ function GameApp() {
               stacks={boonStacks}
               level={hudStats.level ?? 1}
               rerolls={rerolls}
+              banishCharges={banishCharges}
               evolutionHints={hudStats.evolutionHints}
               onTake={(id) => engineRef.current?.takeBoon(id)}
               onReroll={() => engineRef.current?.rerollDraft()}
+              onBanish={(id) => {
+                engineRef.current?.banishBoon(id);
+                setBanishCharges(engineRef.current?.banishCharges ?? 0);
+              }}
             />
           )}
           <MobileControls

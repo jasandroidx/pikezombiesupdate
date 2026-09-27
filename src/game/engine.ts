@@ -219,6 +219,23 @@ export class GameEngine {
 	lighting;
 	comboMultiplier = 1;
 	lastKillTime = 0;
+	// VS-1: Harvest Streak — kill-chain counter with a 3s window.
+	streak = 0;
+	streakTimer = 0;
+	maxStreak = 0;
+	lastStreakKill = -99;
+	// VS-1: "Run Out of the County" banish — 2 charges per run.
+	banishedBoons = new Set();
+	banishCharges = 2;
+	// VS-1: capped fading scorch decals from explosions.
+	scorchDecals = [];
+	// VS-1: pooled damage-number throttle.
+	dmgFloaters = 0;
+	// VS-3: directional hurt feedback.
+	hurtDir = 0;
+	hurtFlash = 0;
+	lastHurtFromX = 0;
+	lastHurtFromY = 0;
 	stats = {
 		kills: 0,
 		headshots: 0,
@@ -229,7 +246,8 @@ export class GameEngine {
 		scrapCollected: 0,
 		wavesCompleted: 0,
 		survivalTime: 0,
-		notesFound: 0
+		notesFound: 0,
+		maxStreak: 0
 	};
 	gameStartTime = 0;
 	keys = {};
@@ -296,6 +314,11 @@ export class GameEngine {
 			flares: this.player.flares,
 			stats: { ...this.stats },
 			combo: this.comboMultiplier,
+			streak: this.streak,
+			streakFrac: this.streak >= 2 ? this.streakTimer / 3 : 0,
+			streakColor: this.streakColor(),
+			maxStreak: this.maxStreak,
+			banishCharges: this.banishCharges,
 			lanternWentOut: this.lanternWentOut,
 			boons: { ...this.boonStacks },
 			level: this.level,
@@ -382,7 +405,21 @@ export class GameEngine {
 			toBreak: () => { this.zombiesToSpawn = 0; this.zombies.length = 0; },
 			skipBreak: () => this.skipWaveBreak(),
 			draftOpen: () => !!this.draft,
+			openDraft: () => this.offerDraft(),
 			dismissDraft: () => { if (this.draft) this.takeBoon(this.draft[0].id); },
+			// VS-1 probes: Harvest Streak, banish, scorch, impact audio.
+			streak: () => ({ streak: this.streak, max: this.maxStreak, timer: +this.streakTimer.toFixed(2), color: this.streakColor() }),
+			killOne: (t = `shambler`) => { const z = this.pushZombie(t, this.player.x + 30, this.player.y); this.killZombie(z, this.zombies.indexOf(z)); },
+			decayStreak: (dt) => { this.streakTimer -= dt; if (this.streakTimer <= 0) { this.streak = 0; this.streakTimer = 0; } },
+			hurtMe: (n = 10) => { this.invuln = 0; this.damagePlayer(n); },
+			banish: (id) => this.banishBoon(id),
+			banishState: () => ({ charges: this.banishCharges, banished: [...this.banishedBoons], draft: (this.draft || []).map((b) => b.id) }),
+			rollPool: (banned) => rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, new Set(banned)).map((b) => b.id),
+			scorchCount: () => this.scorchDecals.length,
+			addScorchAt: (n = 1) => { for (let i = 0; i < n; i++) this.addScorch(0, 0, 50); },
+			playImpact: () => soundEngine.playImpact(),
+			playKillSub: () => soundEngine.playKillSub(),
+			playBanishSfx: () => soundEngine.playBanish(),
 			giveBoon: (id, n = 1) => { this.boonStacks[id] = (this.boonStacks[id] || 0) + n; },
 			openChest: () => this.openChest(),
 			sweepGrit: () => this.sweepGritToBag(),
@@ -708,7 +745,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -1524,9 +1561,9 @@ export class GameEngine {
 		this.trauma = Math.max(0, this.trauma - e * 1.6);
 		for (let t = this.floaters.length - 1; t >= 0; t--) {
 			let n = this.floaters[t];
-			n.y += n.vy * e, n.life -= e, n.life <= 0 && (this.floaterPool.push(n), this.floaters.splice(t, 1));
+			n.y += n.vy * e, n.life -= e, n.life <= 0 && (n.onFree?.(), n.onFree = null, this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e);
 		this.dodgeCd = Math.max(0, this.dodgeCd - e);
 		this.bashCd = Math.max(0, this.bashCd - e);
 		this.bashSwing = Math.max(0, this.bashSwing - e);
@@ -2088,7 +2125,7 @@ export class GameEngine {
 						if (r.health <= 0 && !n.isSplinter) r.shatter = true;
 						if (this.evolved === `lincoln` && n.weaponType === `revolver` && e) this.player.health = Math.min(this.player.maxHealth, this.player.health + 4);
 						let a = Math.atan2(n.vy, n.vx), o = n.weaponType === `shotgun` ? 7 : 3;
-						if (r.x += Math.cos(a) * o, r.y += Math.sin(a) * o, this.createBloodParticles(n.x, n.y, a), r.hitFlash = .08, this.spawnFloater(r.x, r.y - r.radius, e ? `HEAD` : `${Math.round(i)}`, e ? `#ff4d3a` : `#e11d2e`), i > 80 && (this.hitstop = Math.max(this.hitstop, .04)), n.pierce--, n.pierce <= 0) {
+						if (r.x += Math.cos(a) * o, r.y += Math.sin(a) * o, this.createBloodParticles(n.x, n.y, a), r.hitFlash = .08, e ? this.spawnFloater(r.x, r.y - r.radius, `HEAD`, `#ff4d3a`) : this.spawnDamageNumber(r.x, r.y - r.radius, i, `#e8b34b`), soundEngine.playImpact(), i > 80 && (this.hitstop = Math.max(this.hitstop, .04)), n.pierce--, n.pierce <= 0) {
 							this.freeBulletAt(t);
 							break;
 						}
@@ -2121,7 +2158,7 @@ export class GameEngine {
 	detonateExplosiveBarrel(e, t) {
 		this.emitNoise(e.x, e.y, 500),
 		this.addLight(e.x, e.y, 420, 1, .5),
-		this.explosiveBarrels.splice(t, 1), this.screenShake = 10, this.trauma = Math.min(1, this.trauma + .55), soundEngine.playBarrelExplosion(), this.alertZombies(e.x, e.y, 700), this.firePuddles.push({
+		this.explosiveBarrels.splice(t, 1), this.screenShake = 10, this.trauma = Math.min(1, this.trauma + .55), soundEngine.playBarrelExplosion(), this.addScorch(e.x, e.y, 90), this.alertZombies(e.x, e.y, 700), this.firePuddles.push({
 			id: Math.random().toString(),
 			x: e.x,
 			y: e.y,
@@ -2274,6 +2311,7 @@ export class GameEngine {
 		}
 		this.emitNoise(this.player.x, this.player.y, 700),
 		this.addLight(this.player.x, this.player.y, 520, 1, .6),
+		this.addScorch(this.player.x, this.player.y, 130),
 		this.screenShake = Math.max(this.screenShake, 12), this.trauma = Math.min(1, this.trauma + .8);
 		this.hitstop = Math.max(this.hitstop, .12);
 		for (let k = 0; k < 28; k++) {
@@ -2669,6 +2707,16 @@ export class GameEngine {
 	killZombie(e, t) {
 		const comboBefore = Math.floor(this.comboMultiplier);
 		this.zombies.splice(t, 1), this.stats.kills++, this.bumpLifetime(`kills`), this.lastKillTime = Date.now(), this.comboMultiplier = Math.min(5, this.comboMultiplier + .25);
+		// VS-1: Harvest Streak — 3s kill window, bonus capped at 30.
+		this.streak = this.simTime - this.lastStreakKill <= 3 ? this.streak + 1 : 1;
+		this.lastStreakKill = this.simTime;
+		this.streakTimer = 3;
+		if (this.streak > this.maxStreak) this.maxStreak = this.streak;
+		const streakBonus = Math.min(this.streak, 30);
+		this.score += streakBonus;
+		if (this.streak >= 10) this.spawnFloater(e.x, e.y - e.radius - 10, `HARVEST x${this.streak}`, this.streakColor());
+		soundEngine.playKillSub();
+		this.feelKill(e);
 		const comboAfter = Math.floor(this.comboMultiplier);
 		if (comboAfter > comboBefore && comboAfter >= 2) {
 			this.spawnFloater(this.player.x, this.player.y - 56, `STREAK x${comboAfter}`, "#ffd700");
@@ -2691,6 +2739,7 @@ export class GameEngine {
 			for (let k = 0; k < 14; k++) this.particles.push(Object.assign(this.allocParticle(), { x: e.x, y: e.y, vx: (Math.random() - .5) * 6, vy: (Math.random() - .5) * 6, size: 4, life: .5, maxLife: .5, alpha: 1 }));
 			if (Math.hypot(this.player.x - e.x, this.player.y - e.y) < R * .7) this.player.health -= 18;
 			soundEngine.playBarrelExplosion();
+			this.addScorch(e.x, e.y, 80);
 		}
 		if (e.elite && this.chestsThisMap < 3) {
 			this.chestsThisMap++;
@@ -2764,6 +2813,9 @@ export class GameEngine {
 		this.invuln = .62;
 		let t = e * (1 - this.getPerkLevel(`grit`) * .08);
 		this.player.health -= t, this.stats.damageTaken += t, this.screenShake = 5, this.trauma = Math.min(1, this.trauma + .22), soundEngine.playPlayerHurt();
+		// VS-1: getting hurt breaks the Harvest Streak.
+		if (this.streak > 0) this.spawnFloater(this.player.x, this.player.y - 40, `STREAK LOST`, `#8a8f98`);
+		this.streak = 0; this.streakTimer = 0;
 		let sx = 0, sy = -1, best = 1e9;
 		for (const z of this.zombies) {
 			const dx = this.player.x - z.x, dy = this.player.y - z.y, d = Math.hypot(dx, dy);
@@ -2781,6 +2833,9 @@ export class GameEngine {
 			}
 			this.moveVX += sx * 5;
 			this.moveVY += sy * 5;
+			// VS-3: directional hurt feedback — angle from player toward the attacker.
+			this.hurtDir = Math.atan2(-sy, -sx);
+			this.hurtFlash = .8;
 		}
 		if (this.player.health <= 0) {
 			if (!this.lastStandUsed) {
@@ -2812,8 +2867,56 @@ export class GameEngine {
 		}
 	}
 	handleGameOver() {
+		this.stats.maxStreak = this.maxStreak;
 		this.isRunning = false, this.stats.survivalTime = Math.floor((Date.now() - this.gameStartTime) / 1e3), saveMeta(this.meta), this.callbacks.onGameOver(this.stats, this.score, this.lastKiller);
 	}
+
+	// VS-1: Harvest Streak tier color — cyan <10, gold 10+, pink 20+.
+	streakColor() {
+		return this.streak >= 20 ? `#ff6ec7` : this.streak >= 10 ? `#ffd700` : `#4cc3ff`;
+	}
+
+	// VS-1: capped fading scorch decals left by explosions.
+	addScorch(x, y, radius) {
+		this.scorchDecals.push({ x, y, radius, alpha: .55, maxAlpha: .55 });
+		if (this.scorchDecals.length > 60) this.scorchDecals.shift();
+	}
+	updateScorch(dt) {
+		for (let i = this.scorchDecals.length - 1; i >= 0; i--) {
+			const s = this.scorchDecals[i];
+			s.alpha -= dt * .06;
+			if (s.alpha <= 0) this.scorchDecals.splice(i, 1);
+		}
+		if (this.hurtFlash > 0) this.hurtFlash -= dt;
+	}
+
+	// VS-1: pooled damage numbers — throttled so bullet storms don't spam floaters.
+	spawnDamageNumber(x, y, amount, color) {
+		if (this.dmgFloaters >= 12) return;
+		this.dmgFloaters++;
+		const f = this.floaterPool.pop() || {};
+		f.x = x; f.y = y; f.text = `${Math.round(amount)}`; f.color = color; f.life = .5; f.maxLife = .5; f.vy = -34; f.dmg = true;
+		f.onFree = () => { this.dmgFloaters = Math.max(0, this.dmgFloaters - 1); };
+		this.floaters.push(f);
+		if (this.floaters.length > 40) { const old = this.floaters.shift(); old.onFree?.(); this.floaterPool.push(old); }
+	}
+
+	// VS-1: "Run Out of the County" banish — permanently remove a boon from this run's draft pool.
+	banishBoon(id) {
+		if (this.banishCharges <= 0 || !this.draft?.some((b) => b.id === id)) return false;
+		this.banishedBoons.add(id);
+		this.banishCharges--;
+		this.draft = this.draft.filter((b) => b.id !== id);
+		const rest = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.banishedBoons).filter((b) => !this.draft.some((d) => d.id === b.id));
+		if (rest.length > 0) this.draft.push(rest[0]);
+		this.callbacks.onDraft?.(this.draft);
+		this.spawnFloater(this.player.x, this.player.y - 48, `RUN OUT OF THE COUNTY`, `#c77dff`);
+		soundEngine.playBanish();
+		return true;
+	}
+
+	// VS-3 hook: hit-feel reactions on kill. No-op until the feel module lands.
+	feelKill(e) {}
 	updateDrops(dt = 1 / 60) {
 		const magnet = (Math.max(280, this.viewSize().w * 0.28) + this.getPerkLevel(`scavenger`) * 36) * (1 + this.shopMagnetBonus);
 		for (let e = this.drops.length - 1; e >= 0; e--) {
@@ -3131,14 +3234,14 @@ export class GameEngine {
 	}
 	spawnFloater(e, t, n, r) {
 		const f = this.floaterPool.pop() || {};
-		f.x = e; f.y = t; f.text = n; f.color = r; f.life = .7; f.maxLife = .7; f.vy = -28;
+		f.x = e; f.y = t; f.text = n; f.color = r; f.life = .7; f.maxLife = .7; f.vy = -28; f.dmg = false; f.onFree = null;
 		this.floaters.push(f), this.floaters.length > 40 && this.floaterPool.push(this.floaters.shift());
 	}
 	boon(id: string) {
 		return this.boonStacks[id] || 0;
 	}
 	offerDraft() {
-		this.draft = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes);
+		this.draft = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.banishedBoons);
 		this.callbacks.onDraft?.(this.draft);
 	}
 	takeBoon(id: string) {
@@ -3187,7 +3290,7 @@ export class GameEngine {
 	rerollDraft() {
 		if (!this.draft || this.rerolls <= 0) return;
 		this.rerolls--;
-		this.draft = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes);
+		this.draft = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.banishedBoons);
 		this.callbacks.onDraft?.(this.draft);
 	}
 	xpToNext() {
@@ -3468,6 +3571,16 @@ export class GameEngine {
 		let d = { x: l, y: u, width: viewW, height: viewH };
 		beginWorld();
 		renderEnvironment(e, this.currentLocation, d, this.bloodDecals, this.firePuddles, this.drops, this.explosiveBarrels, this.loreNotes, this.barricades, this.extractActive, zoom);
+		// VS-1: scorch decals — dark radial burns that fade.
+		for (const s of this.scorchDecals) {
+			const g = e.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.radius);
+			g.addColorStop(0, `rgba(12, 8, 6, ${s.alpha})`);
+			g.addColorStop(1, `rgba(12, 8, 6, 0)`);
+			e.fillStyle = g;
+			e.beginPath();
+			e.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+			e.fill();
+		}
 		this.renderHoles(e), this.renderLantern(e), this.renderBell(e), this.renderParticles(e);
 		this.paintFloaters(e, zoom);
 		e.restore();
@@ -3998,6 +4111,26 @@ export class GameEngine {
 			e.fill();
 		}
 		e.restore();
+		// VS-1: Harvest Streak timer bar under the compass.
+		if (this.streak >= 2) {
+			const bw = 130, bx = w / 2 - bw / 2, by = 52, frac = Math.max(0, this.streakTimer / 3);
+			e.save();
+			e.globalAlpha = .92;
+			e.fillStyle = `rgba(12, 11, 9, 0.72)`;
+			e.beginPath();
+			if (e.roundRect) e.roundRect(bx - 6, by - 4, bw + 12, 26, 6); else e.rect(bx - 6, by - 4, bw + 12, 26);
+			e.fill();
+			e.fillStyle = this.streakColor();
+			e.font = `bold 10px "IBM Plex Mono", monospace`;
+			e.textAlign = `center`;
+			e.textBaseline = `middle`;
+			e.fillText(`HARVEST x${this.streak}`, w / 2, by + 4);
+			e.fillStyle = `rgba(255,255,255,0.18)`;
+			e.fillRect(bx, by + 12, bw, 3);
+			e.fillStyle = this.streakColor();
+			e.fillRect(bx, by + 12, bw * frac, 3);
+			e.restore();
+		}
 	}
 	stripTheDead(z) {
 		const mag = this.weapons.find((w) => w.id === "revolver");

@@ -96,6 +96,7 @@ export function GameOverModal({
           <Stat label="Time" value={`${minutes}:${seconds.toString().padStart(2, "0")}`} />
           <Stat label="Notes" value={stats.notesFound} />
           <Stat label="Scrap" value={stats.scrapCollected} />
+          <Stat label="Best harvest streak" value={`x${stats.maxStreak ?? 0}`} />
         </div>
 
         <div className="flex gap-2 p-4">

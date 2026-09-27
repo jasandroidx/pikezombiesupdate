@@ -222,6 +222,7 @@ export interface PlayerStats {
   wavesCompleted: number;
   survivalTime: number;
   notesFound: number;
+  maxStreak: number; // VS-1: best Harvest Streak this run
 }
 
 export interface Perk {

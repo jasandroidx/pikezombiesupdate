@@ -1,42 +1,56 @@
 export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt";
 
+export type BoonRarity = "common" | "uncommon" | "rare";
+
 export interface BoonOffer {
   id: BoonId;
   name: string;
   blurb: string;
+  rarity: BoonRarity;
 }
 
+export const RARITY_WEIGHT: Record<BoonRarity, number> = { common: 60, uncommon: 30, rare: 10 };
+export const RARITY_COLOR: Record<BoonRarity, string> = { common: "#9aa3ad", uncommon: "#4cc3ff", rare: "#c77dff" };
+
 export const BOON_CATALOG: BoonOffer[] = [
-  { id: "lead", name: "Hand-loaded lead", blurb: "Everything you fire hits 8% harder. No ceiling." },
-  { id: "trigger", name: "Filed trigger", blurb: "Faster fire and a quicker reload. No ceiling." },
-  { id: "hide", name: "County hide", blurb: "+16 grit. Heals what it adds." },
-  { id: "shells", name: "Box off the bench", blurb: "A pocket of rounds for every gun you own." },
-  { id: "beam", name: "Fresh cells", blurb: "The Maglite reaches farther. Stacks." },
-  { id: "jug", name: "Another jug", blurb: "One more mason jar of mash." },
-  { id: "leavings", name: "Pocket the leavings", blurb: "45 scrap now, and the dead pay better. Stacks." },
-  { id: "stride", name: "Longer stride", blurb: "You cover more ground between them. Stacks." },
-  { id: "bone", name: "Buck and bone", blurb: "When one drops, the burst is meaner and reaches farther. Stacks." },
-  { id: "ring", name: "Another round", blurb: "One more shell in the ring that swings whether you fire or not. Stacks." },
-  { id: "post", name: "Cedar post", blurb: "A fence post and a deer rifle. It watches a lane until the tube is empty." },
-  { id: "pipe", name: "Stovepipe", blurb: "Capped pipe, black powder, a percussion cap. Lay it down. They step on it." },
-  { id: "storm", name: "Storm jar", blurb: "Lightning hunts the dead on its own. Chains farther. Stacks." },
-  { id: "salt", name: "Salt line", blurb: "A burning ring around your boots. Wider and hotter. Stacks." },
+  { id: "lead", name: "Hand-loaded lead", blurb: "Everything you fire hits 8% harder. No ceiling.", rarity: "common" },
+  { id: "trigger", name: "Filed trigger", blurb: "Faster fire and a quicker reload. No ceiling.", rarity: "common" },
+  { id: "hide", name: "County hide", blurb: "+16 grit. Heals what it adds.", rarity: "common" },
+  { id: "shells", name: "Box off the bench", blurb: "A pocket of rounds for every gun you own.", rarity: "common" },
+  { id: "beam", name: "Fresh cells", blurb: "The Maglite reaches farther. Stacks.", rarity: "uncommon" },
+  { id: "jug", name: "Another jug", blurb: "One more mason jar of mash.", rarity: "common" },
+  { id: "leavings", name: "Pocket the leavings", blurb: "45 scrap now, and the dead pay better. Stacks.", rarity: "common" },
+  { id: "stride", name: "Longer stride", blurb: "You cover more ground between them. Stacks.", rarity: "uncommon" },
+  { id: "bone", name: "Buck and bone", blurb: "When one drops, the burst is meaner and reaches farther. Stacks.", rarity: "uncommon" },
+  { id: "ring", name: "Another round", blurb: "One more shell in the ring that swings whether you fire or not. Stacks.", rarity: "uncommon" },
+  { id: "post", name: "Cedar post", blurb: "A fence post and a deer rifle. It watches a lane until the tube is empty.", rarity: "rare" },
+  { id: "pipe", name: "Stovepipe", blurb: "Capped pipe, black powder, a percussion cap. Lay it down. They step on it.", rarity: "uncommon" },
+  { id: "storm", name: "Storm jar", blurb: "Lightning hunts the dead on its own. Chains farther. Stacks.", rarity: "rare" },
+  { id: "salt", name: "Salt line", blurb: "A burning ring around your boots. Wider and hotter. Stacks.", rarity: "rare" },
 ];
 
-export function rollBoons(stacks: Record<string, number>, molotovs: number, maxMolotovs: number, posts = 0, pipes = 0): BoonOffer[] {
+export function rollBoons(stacks: Record<string, number>, molotovs: number, maxMolotovs: number, posts = 0, pipes = 0, banished: Set<string> = new Set()): BoonOffer[] {
   const pool = BOON_CATALOG.filter((b) => {
+    if (banished.has(b.id)) return false;
     if ((stacks[b.id] ?? 0) >= (b.id === "hide" ? 8 : b.id === "storm" || b.id === "salt" ? 6 : 99)) return false;
     if (b.id === "jug" && molotovs >= maxMolotovs) return false;
     if (b.id === "post" && posts >= 3) return false;
     if (b.id === "pipe" && pipes >= 4) return false;
     return true;
   });
-  const bag = pool.length >= 3 ? pool : BOON_CATALOG.slice();
-  for (let i = bag.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const tmp = bag[i];
-    bag[i] = bag[j];
-    bag[j] = tmp;
+  const bag = pool.length >= 3 ? pool : BOON_CATALOG.filter((b) => !banished.has(b.id));
+  // Rarity-weighted pick: 60/30/10 common/uncommon/rare, without replacement.
+  const picks: BoonOffer[] = [];
+  const remaining = bag.slice();
+  while (picks.length < 3 && remaining.length > 0) {
+    const tiers: BoonRarity[] = ["common", "uncommon", "rare"];
+    const avail = tiers.filter((t) => remaining.some((b) => b.rarity === t));
+    const weights = avail.map((t) => RARITY_WEIGHT[t]);
+    const total = weights.reduce((a, b) => a + b, 0);
+    let roll = Math.random() * total, tier: BoonRarity = avail[0];
+    for (let i = 0; i < avail.length; i++) { roll -= weights[i]; if (roll <= 0) { tier = avail[i]; break; } }
+    const idx = remaining.findIndex((b) => b.rarity === tier);
+    picks.push(remaining.splice(idx, 1)[0]);
   }
-  return bag.slice(0, 3);
+  return picks;
 }

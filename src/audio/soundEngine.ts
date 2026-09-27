@@ -85,6 +85,98 @@ class SoundEngine {
     src.playbackRate.setValueAtTime(0.9 + Math.random() * 0.2, this.ctx!.currentTime);
     return src;
   }
+  // VS-1: 24ms throttle for layered impact sounds — bullet storms can't spam them.
+  private lastImpactAt = 0;
+
+  // VS-1: layered impact — pitched meat-thump + crack + grit, throttled to 24ms.
+  public playImpact() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    const now = performance.now();
+    if (now - this.lastImpactAt < 24) return;
+    this.lastImpactAt = now;
+    const t = this.ctx.currentTime;
+    // Meat thump: pitched-down triangle.
+    const osc = this.sfxOsc();
+    const og = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(210, t);
+    osc.frequency.exponentialRampToValueAtTime(70, t + 0.08);
+    og.gain.setValueAtTime(0.28, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+    osc.connect(og);
+    og.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.12);
+    // Crack: short noise burst.
+    const noise = this.sfxNoise();
+    const ng = this.ctx.createGain();
+    const nf = this.ctx.createBiquadFilter();
+    nf.type = 'bandpass';
+    nf.frequency.setValueAtTime(2400, t);
+    nf.Q.value = 1.2;
+    ng.gain.setValueAtTime(0.16, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    noise.buffer = this.noiseBuffer;
+    noise.connect(nf);
+    nf.connect(ng);
+    ng.connect(this.sfxGain);
+    noise.start(t);
+    noise.stop(t + 0.07);
+    // Grit: faint high click.
+    const click = this.sfxOsc();
+    const cg = this.ctx.createGain();
+    click.type = 'square';
+    click.frequency.setValueAtTime(3200, t);
+    cg.gain.setValueAtTime(0.05, t);
+    cg.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+    click.connect(cg);
+    cg.connect(this.sfxGain);
+    click.start(t);
+    click.stop(t + 0.04);
+  }
+
+  // VS-1: 42Hz kill sub-boom — a low sine that you feel more than hear.
+  public playKillSub() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.sfxOsc();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(42, t);
+    g.gain.setValueAtTime(0.5, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+    osc.connect(g);
+    g.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.3);
+  }
+
+  // VS-1: banish — a rising whistle that runs out of town.
+  public playBanish() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.sfxOsc();
+    const g = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(180, t);
+    osc.frequency.exponentialRampToValueAtTime(900, t + 0.22);
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.setValueAtTime(2400, t);
+    g.gain.setValueAtTime(0.14, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+    osc.connect(f);
+    f.connect(g);
+    g.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.3);
+  }
   public toggleMute(): boolean {
     this.isMuted = !this.isMuted;
     if (this.masterGain && this.ctx) {
