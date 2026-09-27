@@ -1,4 +1,4 @@
-export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe";
+export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt";
 
 export interface BoonOffer {
   id: BoonId;
@@ -19,11 +19,13 @@ export const BOON_CATALOG: BoonOffer[] = [
   { id: "ring", name: "Another round", blurb: "One more shell in the ring that swings whether you fire or not. Stacks." },
   { id: "post", name: "Cedar post", blurb: "A fence post and a deer rifle. It watches a lane until the tube is empty." },
   { id: "pipe", name: "Stovepipe", blurb: "Capped pipe, black powder, a percussion cap. Lay it down. They step on it." },
+  { id: "storm", name: "Storm jar", blurb: "Lightning hunts the dead on its own. Chains farther. Stacks." },
+  { id: "salt", name: "Salt line", blurb: "A burning ring around your boots. Wider and hotter. Stacks." },
 ];
 
 export function rollBoons(stacks: Record<string, number>, molotovs: number, maxMolotovs: number, posts = 0, pipes = 0): BoonOffer[] {
   const pool = BOON_CATALOG.filter((b) => {
-    if ((stacks[b.id] ?? 0) >= (b.id === "hide" ? 8 : 99)) return false;
+    if ((stacks[b.id] ?? 0) >= (b.id === "hide" ? 8 : b.id === "storm" || b.id === "salt" ? 6 : 99)) return false;
     if (b.id === "jug" && molotovs >= maxMolotovs) return false;
     if (b.id === "post" && posts >= 3) return false;
     if (b.id === "pipe" && pipes >= 4) return false;

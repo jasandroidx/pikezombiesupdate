@@ -95,6 +95,9 @@ export class GameEngine {
 	toldPipe = false;
 	lastHeat = 0;
 	chests: { x: number; y: number }[] = [];
+	stormCd = 0;
+	lightning: { x1: number; y1: number; x2: number; y2: number; life: number }[] = [];
+	mutators: string[] = [];
 	chestsThisMap = 0;
 	scrap = 150;
 	score = 0;
@@ -608,7 +611,11 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+	}
+	applyMutators() {
+		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
+		if (this.mutators.includes(`fog`)) this.fogUntil = 99999;
 	}
 	stop() {
 		this.isRunning = false, this.animationFrameId !== null && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = null), soundEngine.stopAtmosphericMusic();
@@ -766,20 +773,114 @@ export class GameEngine {
 		const rad = 56;
 		this.orbitPts = [];
 		const dmg = 11 + this.boon(`ring`) * 4;
+		const cell = 64;
+		const grid = new Map<string, typeof this.zombies>();
+		for (const z of this.zombies) {
+			const k = ((z.x / cell) | 0) + `:` + ((z.y / cell) | 0);
+			let a = grid.get(k);
+			if (!a) { a = []; grid.set(k, a); }
+			a.push(z);
+		}
+		const near = (x: number, y: number, cb: (z: (typeof this.zombies)[number]) => void) => {
+			const cx = (x / cell) | 0, cy = (y / cell) | 0;
+			for (let ix = cx - 1; ix <= cx + 1; ix++) for (let iy = cy - 1; iy <= cy + 1; iy++) {
+				const a = grid.get(ix + `:` + iy);
+				if (!a) continue;
+				for (const z of a) cb(z);
+			}
+		};
 		for (let i = 0; i < n; i++) {
 			const a = this.orbit + (Math.PI * 2 * i) / n;
 			const x = this.player.x + Math.cos(a) * rad;
 			const y = this.player.y + Math.sin(a) * rad;
 			this.orbitPts.push({ x, y, a });
-			for (const z of this.zombies) {
-				if (z.orbitHit && z.orbitHit > this.simTime) continue;
-				if (Math.hypot(z.x - x, z.y - y) > z.radius + 12) continue;
+			near(x, y, (z) => {
+				if (z.orbitHit && z.orbitHit > this.simTime) return;
+				if (Math.hypot(z.x - x, z.y - y) > z.radius + 12) return;
 				z.orbitHit = this.simTime + 0.5;
 				z.health -= dmg;
 				z.hitFlash = 0.06;
 				this.stats.damageDealt += dmg;
-			}
+			});
 		}
+	}
+	updateStorm(dt) {
+		const stacks = this.boon(`storm`);
+		if (!stacks) return;
+		this.stormCd -= dt;
+		if (this.stormCd > 0) return;
+		this.stormCd = Math.max(0.9, 2.2 - stacks * 0.25);
+		const dmg = 26 + stacks * 14;
+		let from = { x: this.player.x, y: this.player.y };
+		let cur = null, best = 1e9;
+		for (const z of this.zombies) {
+			const d = Math.hypot(z.x - from.x, z.y - from.y);
+			if (d < 520 && d < best) { best = d; cur = z; }
+		}
+		if (!cur) return;
+		const hit = new Set();
+		const chains = 2 + stacks;
+		for (let c = 0; c < chains && cur; c++) {
+			hit.add(cur);
+			cur.health -= dmg;
+			cur.hitFlash = 0.08;
+			this.stats.damageDealt += dmg;
+			this.lightning.push({ x1: from.x, y1: from.y, x2: cur.x, y2: cur.y, life: 0.18 });
+			from = cur;
+			let nxt = null, bd = 1e9;
+			for (const z of this.zombies) {
+				if (hit.has(z)) continue;
+				const d = Math.hypot(z.x - from.x, z.y - from.y);
+				if (d < 200 && d < bd) { bd = d; nxt = z; }
+			}
+			cur = nxt;
+		}
+	}
+	updateSalt(dt) {
+		const stacks = this.boon(`salt`);
+		if (!stacks) return;
+		const R = 95 + stacks * 18;
+		const dps = 9 + stacks * 5;
+		for (const z of this.zombies) {
+			const d = Math.hypot(z.x - this.player.x, z.y - this.player.y);
+			if (d > R + z.radius) continue;
+			z.health -= dps * dt;
+			this.stats.damageDealt += dps * dt;
+			z.saltTick = (z.saltTick || 0) + dt;
+			if (z.saltTick > 0.4) { z.saltTick = 0; z.hitFlash = 0.05; }
+		}
+	}
+	updateLightning(dt) {
+		for (let i = this.lightning.length - 1; i >= 0; i--) {
+			this.lightning[i].life -= dt;
+			if (this.lightning[i].life <= 0) this.lightning.splice(i, 1);
+		}
+	}
+	renderLightning(e) {
+		if (!this.lightning.length) return;
+		e.save();
+		e.strokeStyle = `rgba(147, 197, 253, 0.9)`;
+		e.lineWidth = 2.5;
+		for (const l of this.lightning) {
+			e.globalAlpha = Math.max(0, l.life / 0.18);
+			e.beginPath();
+			e.moveTo(l.x1, l.y1);
+			e.lineTo((l.x1 + l.x2) / 2 + (Math.random() - .5) * 30, (l.y1 + l.y2) / 2 + (Math.random() - .5) * 30);
+			e.lineTo(l.x2, l.y2);
+			e.stroke();
+		}
+		e.restore();
+	}
+	renderSalt(e) {
+		const stacks = this.boon(`salt`);
+		if (!stacks) return;
+		e.save();
+		e.strokeStyle = `rgba(163, 230, 53, ${0.22 + Math.sin(this.simTime * 4) * 0.08})`;
+		e.lineWidth = 3;
+		e.beginPath();
+		e.arc(this.player.x, this.player.y, 95 + stacks * 18, 0, Math.PI * 2);
+		e.stroke();
+		e.restore();
 	}
 	updateBeacon(dt) {
 		if (!this.beacon || this.beacon.done || this.waveState !== `active`) return;
@@ -1094,7 +1195,7 @@ export class GameEngine {
 			let n = this.floaters[t];
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && this.floaters.splice(t, 1);
 		}
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e);
 		this.dodgeCd = Math.max(0, this.dodgeCd - e);
 		this.bashCd = Math.max(0, this.bashCd - e);
 		this.bashSwing = Math.max(0, this.bashSwing - e);
@@ -1437,7 +1538,7 @@ export class GameEngine {
 			return;
 		}
 		const hunting = !this.isMouseDown && !this.player.isSneaking && !!this.nearestTarget(this.aimReach());
-		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + this.boon(`trigger`) * .1) * r);
+		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + this.boon(`trigger`) * .1) * (1 + (this.comboMultiplier - 1) * .06) * r);
 		i && e - this.lastShotTime >= a && (t.currentMag > 0 || n ? (this.fireCurrentWeapon(), this.lastShotTime = e) : t.reserveAmmo > 0 ? this.reloadCurrentWeapon() : this.autoSwapFromDry());
 	}
 	nearestTarget(range) {
@@ -1720,7 +1821,7 @@ export class GameEngine {
 			e - this.lastBreakTick >= 1e3 && (this.lastBreakTick = e, this.waveBreakCountdown--, this.waveBreakCountdown <= 0 && this.startNextWave());
 			return;
 		}
-		const gap = this.lanternLit ? 480 : this.wave <= 1 ? 340 : 240;
+		const gap = this.lanternLit ? 480 : this.wave === 1 ? 220 : this.wave === 2 ? 200 : 240;
 		if (this.zombiesToSpawn > 0 && e - this.lastZombieSpawnTime > gap) {
 			this.spawnRandomZombie();
 			this.zombiesToSpawn--;
@@ -1732,17 +1833,24 @@ export class GameEngine {
 		}
 		if (this.zombiesToSpawn === 0 && this.zombies.length === 0) {
 			this.packBetweenWaves();
-			if (this.waveState = `break`, this.waveBreakCountdown = 6, this.stats.wavesCompleted++, this.scrap += 120 + this.wave * 25, soundEngine.playWaveHorn(), this.callbacks.onWaveComplete(this.wave), this.outbreakWaves > 0 && this.stats.wavesCompleted >= this.outbreakWaves) this.currentLocation.bell && !this.bellRung ? (this.bellReady = true, this.callbacks.onRadio?.(`WJPS Petersburg`, `The square is yours if you can ring it. Get to the tower before they take the steps.`)) : (this.extractActive = true, this.callbacks.onExtractReady?.());
+			if (this.waveState = `break`, this.waveBreakCountdown = 6, this.stats.wavesCompleted++, this.endlessMilestone(), this.scrap += 120 + this.wave * 25, soundEngine.playWaveHorn(), this.callbacks.onWaveComplete(this.wave), this.outbreakWaves > 0 && this.stats.wavesCompleted >= this.outbreakWaves) this.currentLocation.bell && !this.bellRung ? (this.bellReady = true, this.callbacks.onRadio?.(`WJPS Petersburg`, `The square is yours if you can ring it. Get to the tower before they take the steps.`)) : (this.extractActive = true, this.callbacks.onExtractReady?.());
 			else {
 				let e = radioFor(this.currentLocation.id, this.wave);
 				this.callbacks.onRadio?.(e.call, e.body);
 			}
 		}
 	}
+	endlessMilestone() {
+		if (this.outbreakWaves > 0 || this.wave % 5 !== 0) return;
+		this.chests.push({ x: this.player.x + 60, y: this.player.y });
+		this.player.health = Math.min(this.player.maxHealth, this.player.health + 30);
+		this.spawnFloater(this.player.x, this.player.y - 56, `WAVE ${this.wave} — THE COUNTY PROVIDES`, "#ffd700");
+		soundEngine.playPowerup();
+	}
 	startNextWave() {
 		this.wave++, this.waveState = `active`;
 		this.eventCd = this.wave === 1 ? 99 : 14 + Math.random() * 8;
-		let e = this.wave === 1 ? Math.floor(18 * this.difficultyMultiplier) : Math.floor((16 + this.wave * 6) * this.difficultyMultiplier);
+		let e = this.wave === 1 ? Math.floor(18 * this.difficultyMultiplier) : Math.floor((16 + this.wave * 6 + Math.max(0, this.wave - 10) * 4) * this.difficultyMultiplier);
 		if (this.wave > 1) e += 4;
 		this.lanternWentOut && (e = Math.floor(e * 1.22)), this.zombiesToSpawn = e, soundEngine.playWaveHorn();
 		soundEngine.setHeat(Math.min(1, Math.max(0, this.wave - 1) / 7));
@@ -1798,13 +1906,15 @@ export class GameEngine {
 		else if (this.wave >= 5 && this.wave % 5 == 0 && this.zombiesToSpawn === 1) a = `behemoth`;
 		else if (this.lanternWentOut && o < .18) a = `crawler`;
 		else if (this.wave >= 4 && o < .2) a = `bloater_spitter`;
-		else if (this.wave >= 3 && o < .45) a = `miner_brute`;
-		else if (this.wave >= 2 && o < .7) a = `sprinter`;
+		else if (this.wave >= 4 && o < .3) a = `bomber`;
+		else if (this.wave >= 5 && o < .4) a = `riot`;
+		else if (this.wave >= 3 && o < .5) a = `miner_brute`;
+		else if (this.wave >= 2 && o < .72) a = `sprinter`;
 		this.pushZombie(a, n, r);
 	}
 	pushZombie(e, t, n) {
 		let r = 58, i = 2.15, a = 14, o = 17, s = `#475569`, c = false, l = 100, u = 15;
-		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `behemoth` && (r = 1400 + this.wave * 250, i = 1.55, a = 45, o = 38, s = `#581c87`, l = 1500, u = 250);
+		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `bomber` ? (r = 45, i = 2.7, a = 12, o = 15, s = `#b45309`, l = 120, u = 18) : e === `riot` ? (r = 520, i = 0.85, a = 30, o = 24, s = `#3f3f46`, c = true, l = 300, u = 60) : e === `behemoth` && (r = 1400 + this.wave * 250, i = 1.55, a = 45, o = 38, s = `#581c87`, l = 1500, u = 250);
 		let d = {
 			id: Math.random().toString(),
 			type: e,
@@ -1832,7 +1942,15 @@ export class GameEngine {
 			wanderAngle: Math.random() * Math.PI * 2,
 			hitFlash: 0
 		};
-		this.zombies.push(d), soundEngine.playZombieGroan(e === `crawler` ? `shambler` : e);
+		if (this.wave >= 2 && e !== `behemoth` && Math.random() < 0.12) {
+			d.elite = true;
+			d.maxHealth = Math.round(d.maxHealth * 2.2);
+			d.health = d.maxHealth;
+			d.speed = d.speed * 1.15;
+			d.scoreValue = d.scoreValue * 3;
+			d.scrapValue = Math.round(d.scrapValue * 2);
+		}
+		this.zombies.push(d), soundEngine.playZombieGroan(e === `crawler` ? `shambler` : e === `bomber` ? `bloater_spitter` : e === `riot` ? `miner_brute` : e);
 	}
 	updateZombies(e, t) {
 		for (let n = this.zombies.length - 1; n >= 0; n--) {
@@ -2060,11 +2178,36 @@ export class GameEngine {
 		this.screenShake = Math.max(this.screenShake, 4);
 	}
 	killZombie(e, t) {
+		const comboBefore = Math.floor(this.comboMultiplier);
 		this.zombies.splice(t, 1), this.stats.kills++, this.lastKillTime = Date.now(), this.comboMultiplier = Math.min(5, this.comboMultiplier + .25);
+		const comboAfter = Math.floor(this.comboMultiplier);
+		if (comboAfter > comboBefore && comboAfter >= 2) {
+			this.spawnFloater(this.player.x, this.player.y - 56, `STREAK x${comboAfter}`, "#ffd700");
+			for (let i = 0; i < 4; i++) {
+				const a = Math.random() * Math.PI * 2;
+				this.grit.push({ x: this.player.x, y: this.player.y, vx: Math.cos(a) * 160, vy: Math.sin(a) * 160, value: comboAfter });
+			}
+			soundEngine.playPowerup();
+		}
 		this.spawnGrit(e);
+		if (e.type === `bomber`) {
+			const R = 110;
+			this.screenShake = Math.max(this.screenShake, 7);
+			for (const z of this.zombies) {
+				if (Math.hypot(z.x - e.x, z.y - e.y) < R) { z.health -= 90; z.hitFlash = 0.08; }
+			}
+			for (let k = 0; k < 14; k++) this.particles.push({ x: e.x, y: e.y, vx: (Math.random() - .5) * 6, vy: (Math.random() - .5) * 6, size: 4, life: .5, maxLife: .5, alpha: 1 });
+			if (Math.hypot(this.player.x - e.x, this.player.y - e.y) < R * .7) this.player.health -= 18;
+			soundEngine.playBarrelExplosion();
+		}
+		if (e.elite && this.chestsThisMap < 3) {
+			this.chestsThisMap++;
+			this.chests.push({ x: e.x, y: e.y });
+			this.spawnFloater(e.x, e.y - e.radius - 14, "ELITE DOWN — CHEST", "#ffd700");
+		}
 		this.tickBounty(`kill`);
 		if (e.shatter) this.boneBurst(e);
-		if ((e.type === `behemoth` || e.type === `miner_brute` || e.type === `bloater_spitter`) && this.chestsThisMap < 2) {
+		if (!e.elite && (e.type === `behemoth` || e.type === `miner_brute` || e.type === `bloater_spitter`) && this.chestsThisMap < 2) {
 			this.chestsThisMap++;
 			this.chests.push({ x: e.x, y: e.y });
 			this.spawnFloater(e.x, e.y - e.radius - 14, "CHEST", "#f6c453");
@@ -2453,23 +2596,33 @@ export class GameEngine {
 		return 44 + (this.level - 3) * 14;
 	}
 	gritValue(type) {
-		if (type === `behemoth`) return 8;
-		if (type === `miner_brute` || type === `bloater_spitter`) return 3;
-		if (type === `sprinter`) return 2;
-		return 1;
+		const m = this.mutators.includes(`rich`) ? 2 : 1;
+		if (type === `behemoth`) return 8 * m;
+		if (type === `riot`) return 4 * m;
+		if (type === `miner_brute` || type === `bloater_spitter`) return 3 * m;
+		if (type === `sprinter` || type === `bomber`) return 2 * m;
+		return 1 * m;
 	}
 	spawnGrit(z) {
 		const value = this.gritValue(z.type);
 		const bits = value > 3 ? 4 : value > 1 ? 2 : 1;
 		for (let i = 0; i < bits; i++) {
 			const a = Math.random() * Math.PI * 2;
+			const lucky = Math.random() < 0.06;
 			this.grit.push({
 				x: z.x,
 				y: z.y,
 				vx: Math.cos(a) * (40 + Math.random() * 50),
 				vy: Math.sin(a) * (40 + Math.random() * 50),
-				value: value / bits
+				value: (value / bits) * (lucky ? 5 : 1),
+				lucky
 			});
+		}
+		if (z.elite) {
+			for (let i = 0; i < 6; i++) {
+				const a = Math.random() * Math.PI * 2;
+				this.grit.push({ x: z.x, y: z.y, vx: Math.cos(a) * 120, vy: Math.sin(a) * 120, value: 2 });
+			}
 		}
 	}
 	addXp(n) {
@@ -2564,9 +2717,15 @@ export class GameEngine {
 		const rad = Math.max(6, 12 / this.viewZoom());
 		for (const g of this.grit) {
 			if (g.x < camL || g.x > camR || g.y < camT || g.y > camB) continue;
-			e.fillStyle = "#f6c453";
+			if (g.lucky) {
+				e.fillStyle = "rgba(255, 215, 0, 0.25)";
+				e.beginPath();
+				e.arc(g.x, g.y, rad * 2.4, 0, Math.PI * 2);
+				e.fill();
+			}
+			e.fillStyle = g.lucky ? "#ffd700" : "#f6c453";
 			e.beginPath();
-			e.arc(g.x, g.y, rad, 0, Math.PI * 2);
+			e.arc(g.x, g.y, g.lucky ? rad * 1.6 : rad, 0, Math.PI * 2);
 			e.fill();
 		}
 		for (const c of this.chests) {
@@ -2721,8 +2880,18 @@ export class GameEngine {
 			e.fillRect(0, 0, t, n);
 			e.restore();
 		}
+		if (this.player.health < this.player.maxHealth * .3 && this.player.health > 0) {
+			e.save();
+			const pulse = .12 + Math.sin(this.simTime * 6) * .05;
+			const vg = e.createRadialGradient(t / 2, n / 2, Math.min(t, n) * .32, t / 2, n / 2, Math.max(t, n) * .72);
+			vg.addColorStop(0, "rgba(140,18,24,0)");
+			vg.addColorStop(1, `rgba(140,18,24,${pulse.toFixed(3)})`);
+			e.fillStyle = vg;
+			e.fillRect(0, 0, t, n);
+			e.restore();
+		}
 		beginWorld();
-		this.renderZombies(e), this.renderProjectiles(e), this.renderGrit(e), this.renderTraps(e), this.renderPlayer(e), this.renderRig(e), this.renderNoisePulses(e), this.renderFlares(e), this.renderHoleMarkers(e), this.renderLantern(e), this.renderBell(e), this.renderZombieLabels(e);
+		this.renderZombies(e), this.renderProjectiles(e), this.renderGrit(e), this.renderTraps(e), this.renderPlayer(e), this.renderLightning(e), this.renderSalt(e), this.renderRig(e), this.renderNoisePulses(e), this.renderFlares(e), this.renderHoleMarkers(e), this.renderLantern(e), this.renderBell(e), this.renderZombieLabels(e);
 		this.paintFloaters(e, zoom);
 		e.restore();
 		if (this.interactHint) {
@@ -2998,6 +3167,13 @@ export class GameEngine {
 			e.beginPath();
 			e.ellipse(2, t.radius * .72, t.radius * 1.05, t.radius * .38, 0, 0, Math.PI * 2);
 			e.fill();
+			if (t.elite) {
+				e.strokeStyle = "#ffd700";
+				e.lineWidth = 3;
+				e.beginPath();
+				e.ellipse(2, t.radius * .72, t.radius * 1.35, t.radius * .55, 0, 0, Math.PI * 2);
+				e.stroke();
+			}
 			e.save();
 			e.translate(0, -limp);
 			e.scale(facingLeft ? -1 : 1, 1);

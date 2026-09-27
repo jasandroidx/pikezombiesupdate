@@ -4,7 +4,7 @@ import { buyRank, loadSave, rankCost } from "@/game/save";
 import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield } from "lucide-react";
 
 interface StartScreenProps {
-  onStartGame: (locationIndex: number, difficulty: number, mode: "survival" | "outbreak") => void;
+  onStartGame: (locationIndex: number, difficulty: number, mode: "survival" | "outbreak", mutators?: string[]) => void;
   isMuted: boolean;
   onToggleMute: () => void;
 }
@@ -12,6 +12,7 @@ interface StartScreenProps {
 export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenProps) {
   const [selectedLocation, setSelectedLocation] = useState(0);
   const [difficulty, setDifficulty] = useState(1);
+  const [mutators, setMutators] = useState<string[]>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
   const [save, setSave] = useState(() => loadSave());
@@ -54,6 +55,12 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
       </div>
 
       <div className="relative z-10 mx-auto my-4 w-full max-w-6xl md:my-2">
+        <img
+          src="/winslow-eskimos-patch.png"
+          alt="Winslow Eskimos"
+          title="Winslow Eskimos — county champs, 1983"
+          className="pointer-events-none absolute -top-4 right-2 hidden w-28 rotate-6 rounded-full opacity-90 drop-shadow-[0_6px_20px_rgba(0,0,0,0.8)] md:block md:w-36"
+        />
         <p className="font-mono text-xs uppercase tracking-[0.35em] text-accent drop-shadow">Patoka River · Yellow Banks Trace</p>
         <h1 className="mt-2 font-display text-5xl font-bold tracking-[0.14em] text-fg drop-shadow-[0_4px_18px_rgba(0,0,0,0.85)] md:text-7xl">PIKE COUNTY</h1>
         <div className="wild-title mt-1 mb-3 w-fit font-drip text-5xl md:text-8xl">Zombies</div>
@@ -101,6 +108,26 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
             ))}
           </div>
 
+          <div className="flex gap-2">
+            {[
+              { id: "rich", label: "Rich ground", detail: "Double grit" },
+              { id: "dry", label: "Dry county", detail: "Half ammo" },
+              { id: "fog", label: "Bottom fog", detail: "Fog all night" },
+            ].map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                title={m.detail}
+                onClick={() => setMutators((s) => (s.includes(m.id) ? s.filter((x) => x !== m.id) : [...s, m.id]))}
+                className={`flex-1 rounded border px-2 py-2 font-mono text-[11px] uppercase tracking-widest ${
+                  mutators.includes(m.id) ? "border-accent bg-surface-2 text-accent" : "border-border bg-surface text-muted"
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+
           <div className="rounded border border-[#6b5428]/80 bg-black/55 p-3 text-left backdrop-blur-[2px]">
             <div className="mb-2 flex items-baseline justify-between">
               <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-accent">Pay stubs</span>
@@ -134,7 +161,7 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
           <button
             id="start-outbreak"
             type="button"
-            onClick={() => onStartGame(0, difficulty, "outbreak")}
+            onClick={() => onStartGame(0, difficulty, "outbreak", mutators)}
             className="flex items-center justify-center gap-2 rounded border border-primary bg-primary px-4 py-3 font-heading text-lg font-bold uppercase tracking-widest text-fg"
           >
             <Skull className="h-5 w-5" />
@@ -143,7 +170,7 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
           <button
             id="start-survival"
             type="button"
-            onClick={() => onStartGame(selectedLocation, difficulty, "survival")}
+            onClick={() => onStartGame(selectedLocation, difficulty, "survival", mutators)}
             className="flex items-center justify-center gap-2 rounded border border-accent bg-surface-2 px-4 py-3 font-heading text-lg font-bold uppercase tracking-widest text-accent"
           >
             <Play className="h-5 w-5" />

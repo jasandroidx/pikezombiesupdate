@@ -5,7 +5,7 @@ export const INITIAL_WEAPONS: Weapon[] = [
     id: "revolver",
     name: ".357 Trail Magnum",
     category: "Sidearm",
-    description: "Heavy Pike County revolver. One-handed thunder that still stops a shambler cold.",
+    description: "Heavy Pike County revolver. One-handed thunder that still stops a shambler cold. Rumor: hand-loaded lead and a supply chest wake something up in it.",
     damage: 65,
     fireRate: 2.2,
     pellets: 1,
