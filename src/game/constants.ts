@@ -1,4 +1,4 @@
-import { Weapon, GameLocation, Perk } from "../types/game";
+import { Weapon, GameLocation, Perk, ZombieType } from "../types/game";
 
 export const INITIAL_WEAPONS: Weapon[] = [
   {
@@ -1000,3 +1000,163 @@ export const SECRET_WEAPON: Weapon = {
   cost: 0,
   upgradeLevel: 1,
 };
+
+// ---------------------------------------------------------------------------
+// Batch 5 — Lane C (data/meta): BOSSES table + seeded RNG.
+//
+// S6 "bosses as data": boss definitions live here as pure data so the engine
+// can stop hardcoding the Behemoth. The `behemoth` row is the BASELINE row —
+// its numbers were copied verbatim from engine.ts (see ENGINE INTEGRATION
+// POINT below), so a data-driven spawn of "behemoth" behaves identically to
+// today's hardcoded one. The other two rows are FUTURE bosses (not wired to
+// the engine yet); their ids were added to the ZombieType union additively.
+//
+// ENGINE INTEGRATION POINT (coordinator): today the Behemoth is spawned in
+//   spawnZombie() in src/game/engine.ts (~line 2906, as of d55addb):
+//     else if (this.wave >= 5 && this.wave % 5 == 0 && this.zombiesToSpawn === 1) a = `behemoth`;
+//   whose stats are set in the pushZombie() ternary (~line 2917):
+//     e === `behemoth` && (r = 1400 + this.wave * 250, i = 1.55, a = 45, o = 38, s = `#581c87`, l = 1500, u = 250);
+//   plus the bossEntrance() ceremony (~line 3620): banner "THE BEHEMOTH" /
+//   "Something old is walking out of the treeline", trauma +0.45, WJPS radio
+//   line "Folks... we got a big one on the Trace.", and the "COUNTY LEGEND"
+//   death floater (~line 3559). A data-driven spawn should read the row via
+//   bossFor("behemoth"), apply bossOverrides (health: 1400 + wave*250 — the
+//   engine adds the wave term, so the table stores the BASE), and route
+//   spawnRule timing through a scheduler that fires when wave%5==0 waves
+//   begin. Debug probes that already spawn behemoths directly: bossBanner
+//   (~line 550: this.pushZombie(`behemoth`, ...)) and bossMul (~line 445).
+// ---------------------------------------------------------------------------
+
+export interface BossOverrides {
+  /** Base maxHealth. Engine adds the per-wave term on top (behemoth: +wave*250). */
+  health: number;
+  speed: number;
+  damage: number;
+  radius: number;
+  color: string;
+  scoreValue: number;
+  scrapValue: number;
+  bannerText: string;
+  bannerSub: string;
+}
+
+export interface BossDef {
+  id: string;
+  /** Zombie type pushed into the sim via pushZombie(). */
+  type: ZombieType;
+  name: string;
+  /** Seconds into a run when this boss becomes eligible (0 = not timer-gated;
+   *  behemoth keeps its legacy wave rule instead — see spawnRule). */
+  spawnAt: number;
+  /** Engine-mapped id of the boss's signature trick. */
+  signatureAbility: string;
+  /** Human-readable spawn condition (documents the hardcoded rule replaced). */
+  spawnRule: string;
+  bossOverrides: BossOverrides;
+}
+
+export const BOSSES: BossDef[] = [
+  {
+    // BASELINE row — mirrors the current hardcoded Behemoth exactly.
+    id: "behemoth",
+    type: "behemoth",
+    name: "The Behemoth",
+    spawnAt: 0, // legacy wave rule, not a timer: see spawnRule
+    signatureAbility: "county_legend",
+    spawnRule: "wave >= 5 && wave % 5 == 0 && zombiesToSpawn === 1 (spawnZombie picker)",
+    bossOverrides: {
+      health: 1400, // engine adds +wave*250 on top (excluded from +7%/wave HP scaling)
+      speed: 1.55,
+      damage: 45,
+      radius: 38,
+      color: "#581c87",
+      scoreValue: 1500,
+      scrapValue: 250,
+      bannerText: "THE BEHEMOTH",
+      bannerSub: "Something old is walking out of the treeline",
+    },
+  },
+  {
+    // Future boss 1: coal-country flavor — a "tipple" is the coal-loading
+    // structure that dotted Indiana mining towns. Never wired to the engine.
+    id: "tipple",
+    type: "tipple_brute",
+    name: "The Tipple Brute",
+    spawnAt: 480,
+    signatureAbility: "tipple_slam", // ground slam: radial knockback + dust ring
+    spawnRule: "run time >= 480s (future boss scheduler; not wired yet)",
+    bossOverrides: {
+      health: 2600,
+      speed: 1.1,
+      damage: 60,
+      radius: 44,
+      color: "#7c2d12",
+      scoreValue: 2200,
+      scrapValue: 320,
+      bannerText: "THE TIPPLE BRUTE",
+      bannerSub: "The tipple fell a long time ago. Something climbed out.",
+    },
+  },
+  {
+    // Future boss 2: the Wompus cat is already Pike County folklore
+    // (see the wompus_howler secret weapon, Batch 4). Never wired to the engine.
+    id: "wompus",
+    type: "wompus_stalker",
+    name: "The Wompus Stalker",
+    spawnAt: 780,
+    signatureAbility: "wompus_yowl", // yowl: brief speed burst + drags a sprinter pack in
+    spawnRule: "run time >= 780s (future boss scheduler; not wired yet)",
+    bossOverrides: {
+      health: 2200,
+      speed: 2.6,
+      damage: 38,
+      radius: 30,
+      color: "#365314",
+      scoreValue: 2600,
+      scrapValue: 380,
+      bannerText: "THE WOMPUS STALKER",
+      bannerSub: "You hear it before you see it. Then you hear nothing at all.",
+    },
+  },
+];
+
+export function bossFor(id: string): BossDef | undefined {
+  return BOSSES.find((b) => b.id === id);
+}
+
+// ---------------------------------------------------------------------------
+// Seeded RNG (S16 daily challenge). Canonical export — the private copy inside
+// src/game/mapRenderer.ts keeps working untouched; this one is the public
+// contract for gameplay seeding.
+//
+// DAILY CHALLENGE INTEGRATION POINT (coordinator):
+//   - Title screen (src/routes/index.tsx): add a "Daily Run" button next to
+//     "Start Run". It computes getDailySeed() (meta.ts), shows
+//     dailyPlayed() state ("Played ✓"), and starts the engine with the seed.
+//   - Engine: accept opts.seed and store this.rng = mulberry32(seed); replace
+//     Math.random() calls that affect gameplay with this.rng() — the spawn
+//     picker (~line 2904: `let a = `shambler`, o = Math.random();`), the
+//     stat jitter in pushZombie (~line 2926: i * (.9 + Math.random() * .2),
+//     id: Math.random().toString()), elite rolls (~line 2952), and drop rolls
+//     (dropGritOrb etc.). Leave non-gameplay randomness (banner timing uses
+//     Date.now(), cosmetic jitter) on Math.random so seeded runs only diverge
+//     on gameplay, not UI chrome.
+// ---------------------------------------------------------------------------
+
+/** Canonical mulberry32 PRNG. Same seed -> identical sequence, always. */
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** FNV-1a string hash -> uint32 seed. Same input -> same seed for everyone. */
+export function hashStringToSeed(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}

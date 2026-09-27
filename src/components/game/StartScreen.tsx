@@ -1,13 +1,19 @@
 import { useState } from "react";
 import { GAME_LOCATIONS, OUTBREAK_ORDER } from "@/game/constants";
 import { buyRank, loadSave, rankCost } from "@/game/save";
-import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield, Wind } from "lucide-react";
+import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield, Wind, CalendarDays } from "lucide-react";
 import { ControlsModal } from "./ControlsModal";
-import { loadMeta } from "@/game/meta";
+import { dailyDateStr, dailyPlayed, getDailySeed, loadMeta, markDailyPlayed } from "@/game/meta";
 import { QUESTS } from "@/game/constants";
 
 interface StartScreenProps {
-  onStartGame: (locationIndex: number, difficulty: number, mode: "survival" | "outbreak", mutators?: string[]) => void;
+  onStartGame: (
+    locationIndex: number,
+    difficulty: number,
+    mode: "survival" | "outbreak",
+    mutators?: string[],
+    seed?: number,
+  ) => void;
   isMuted: boolean;
   onToggleMute: () => void;
 }
@@ -20,6 +26,16 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
   const [showHelp, setShowHelp] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
   const [save, setSave] = useState(() => loadSave());
+  const [playedToday, setPlayedToday] = useState(() => dailyPlayed());
+
+  // Batch 5: Daily Run — same seed for every survivor today (meta.ts).
+  // markDailyPlayed() marks "attempted today"; the seed is threaded through
+  // onStartGame -> handleStartGame -> bootEngine (see index.tsx notes).
+  const handleDailyRun = () => {
+    markDailyPlayed();
+    setPlayedToday(true);
+    onStartGame(selectedLocation, difficulty, "survival", mutators, getDailySeed());
+  };
 
   return (
     <div className="absolute inset-0 z-40 overflow-y-auto">
@@ -180,6 +196,30 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
             <Play className="h-5 w-5" />
             Survival · this place
           </button>
+
+          <div className="rounded border border-[#6b5428]/80 bg-black/55 p-4 backdrop-blur-[2px]">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-accent">Daily run</span>
+              {playedToday && (
+                <span className="rounded border border-accent/60 bg-surface-2 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-accent">
+                  Played &#10003;
+                </span>
+              )}
+            </div>
+            <p className="font-lore text-sm leading-relaxed text-muted">
+              {dailyDateStr()} — one seed for the whole county. Same dead, same ground, every survivor.
+            </p>
+            <button
+              id="start-daily"
+              type="button"
+              onClick={handleDailyRun}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded border border-accent bg-surface-2 px-4 py-3 font-heading text-lg font-bold uppercase tracking-widest text-accent"
+            >
+              <CalendarDays className="h-5 w-5" />
+              Daily run
+            </button>
+          </div>
+
           {save.outbreakBeaten && (
             <p className="font-mono text-[11px] text-accent">Dawn has already come once. Hold it again.</p>
           )}

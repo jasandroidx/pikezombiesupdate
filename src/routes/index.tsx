@@ -5,6 +5,7 @@ import { AVAILABLE_PERKS, GAME_LOCATIONS, INITIAL_WEAPONS, OUTBREAK_FINAL_WAVES,
 import { soundEngine } from "@/audio/soundEngine";
 import { loadArt } from "@/game/art";
 import { loadSave } from "@/game/save";
+import { markDailyPlayed } from "@/game/meta";
 import { HUD } from "@/components/game/HUD";
 import { StartScreen } from "@/components/game/StartScreen";
 import { UpgradeShopModal } from "@/components/game/UpgradeShopModal";
@@ -31,6 +32,9 @@ function GameApp() {
   const carryRef = useRef<EngineSnapshot | null>(null);
   const outbreakStepRef = useRef(0);
   const modeRef = useRef<GameMode>("survival");
+  // Batch 5 (Lane D): seed of the current daily run, if any. Preserved across
+  // "Run it back" restarts so the daily challenge replays the same seed.
+  const seedRef = useRef<number | undefined>(undefined);
 
   const [screen, setScreen] = useState<"title" | "playing" | "game_over">("title");
   const [isWorkbenchOpen, setIsWorkbenchOpen] = useState(false);
@@ -172,10 +176,14 @@ function GameApp() {
     engine.gritBonus = magnet;
   };
 
-  const handleStartGame = (locationIndex: number, difficultyMultiplier: number, nextMode: GameMode = "survival", mutators: string[] = []) => {
+  const handleStartGame = (locationIndex: number, difficultyMultiplier: number, nextMode: GameMode = "survival", mutators: string[] = [], seed?: number) => {
     soundEngine.init();
     modeRef.current = nextMode;
     outbreakStepRef.current = 0;
+    // Batch 5 (Lane D): daily-run seed. markDailyPlayed() records "attempted
+    // today"; the seed is forwarded to bootEngine (see integration note there).
+    seedRef.current = seed;
+    if (seed !== undefined) markDailyPlayed();
     setMode(nextMode);
     setWon(false);
     setRadio(null);
@@ -184,7 +192,7 @@ function GameApp() {
     const idx = nextMode === "outbreak" ? locationIndexById(OUTBREAK_ORDER[0]) : locationIndex;
     setOutbreakStep(0);
     setSelectedLocationIdx(idx);
-    bootEngine(idx, difficultyMultiplier, nextMode, 0, null, mutators);
+    bootEngine(idx, difficultyMultiplier, nextMode, 0, null, mutators, seed);
   };
 
   const bootEngine = (
@@ -194,11 +202,16 @@ function GameApp() {
     step: number,
     carry: EngineSnapshot | null,
     mutators: string[] = [],
+    seed?: number,
   ) => {
     if (!canvasRef.current) return;
     updateCanvasDimensions();
     engineRef.current?.destroy();
 
+    // Batch 5: daily-challenge seed — the 4th constructor arg `{ seed }` is
+    // accepted by engine.ts (ctor ~line 328), which builds this.rng from it
+    // and uses it for gameplay rolls (spawn composition, elites, powerup/cache
+    // timers, spawn positions). Cosmetic jitter stays on Math.random.
     const engine = new GameEngine(
       canvasRef.current,
       {
@@ -243,6 +256,8 @@ function GameApp() {
         },
       },
       locationIndex,
+      // Batch 5: daily-challenge seed — engine.ts ctor accepts { seed } as the 4th param.
+      { seed },
     );
 
     applySaveUnlocks(engine);
@@ -676,7 +691,7 @@ function GameApp() {
           unlocked={weapons.filter((w) => w.unlocked).map((w) => w.id)}
           notes={foundNotes}
           mapId={loc?.id || ""}
-          onRestart={() => handleStartGame(selectedLocationIdx, engineRef.current?.difficultyMultiplier ?? 1, mode)}
+          onRestart={() => handleStartGame(selectedLocationIdx, engineRef.current?.difficultyMultiplier ?? 1, mode, undefined, seedRef.current)}
           onHome={() => {
             engineRef.current?.destroy();
             engineRef.current = null;

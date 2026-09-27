@@ -2,6 +2,8 @@
 // localStorage only; no account, no sync. Versioned key so future schema
 // changes can migrate instead of corrupting.
 
+import { hashStringToSeed } from "./constants";
+
 export interface LifetimeStats {
   kills: number;
   headshots: number;
@@ -18,6 +20,10 @@ export interface MetaSave {
   // Batch 4: Hall of Records — top-5 runs by score. Old saves without
   // `runs` load as [] (see loadMeta below), so existing saves keep working.
   runs: RunRecord[];
+  // Batch 5: daily-challenge participation — map of "YYYY-MM-DD" -> true.
+  // Old saves without `daily` load as {} (see loadMeta below), so existing
+  // saves keep working.
+  daily: Record<string, true>;
 }
 
 export interface RunRecord {
@@ -37,6 +43,7 @@ const EMPTY: MetaSave = {
   lifetime: { kills: 0, headshots: 0, wavesCleared: 0, chestsOpened: 0, shrinesAttuned: 0, runsPlayed: 0 },
   questsDone: [],
   runs: [],
+  daily: {},
 };
 
 function validRun(r: any): r is RunRecord {
@@ -55,6 +62,7 @@ export function loadMeta(): MetaSave {
       lifetime: { ...EMPTY.lifetime, ...parsed.lifetime },
       questsDone: [...parsed.questsDone],
       runs: Array.isArray(parsed.runs) ? parsed.runs.filter(validRun).slice(0, HALL_MAX) : [],
+      daily: parsed.daily && typeof parsed.daily === "object" ? { ...(parsed.daily as Record<string, true>) } : {},
     };
   } catch {
     return structuredClone(EMPTY);
@@ -93,4 +101,44 @@ export function recordRun(entry: { score: number; kills: number; time: number; l
 
 export function topRuns(): RunRecord[] {
   return loadMeta().runs;
+}
+
+// ---------------------------------------------------------------------------
+// Daily challenge deterministic seed (Batch 5, VS/S16). Same date -> same
+// seed for every player, derived purely from the calendar date.
+//
+// INTEGRATION (coordinator):
+//   - Call getDailySeed() when the title screen's "Daily Run" button is
+//     pressed and pass the seed into the engine (see mulberry32 docs in
+//     constants.ts for the Math.random replacement points).
+//   - Call markDailyPlayed() when a daily run starts (or ends — pick one;
+//     starting is simpler: it marks "attempted today"). dailyPlayed() drives
+//     the "Played ✓" badge on the title button.
+//   - dateStr format is "YYYY-MM-DD" LOCAL time (not UTC), so the seed rolls
+//     over at local midnight for everyone in their own timezone.
+// ---------------------------------------------------------------------------
+
+/** Local "YYYY-MM-DD" for now (or a supplied date). */
+export function dailyDateStr(d: Date = new Date()): string {
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+/** Deterministic daily seed: same date string -> same uint32 for everyone. */
+export function getDailySeed(dateStr: string = dailyDateStr()): number {
+  return hashStringToSeed(`pcz-daily:${dateStr}`);
+}
+
+/** Has today's (or the given date's) daily been played? */
+export function dailyPlayed(dateStr: string = dailyDateStr()): boolean {
+  return loadMeta().daily[dateStr] === true;
+}
+
+/** Mark today's (or the given date's) daily as played. Returns updated meta. */
+export function markDailyPlayed(dateStr: string = dailyDateStr()): MetaSave {
+  const meta = loadMeta();
+  meta.daily[dateStr] = true;
+  saveMeta(meta);
+  return meta;
 }

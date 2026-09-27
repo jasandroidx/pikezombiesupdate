@@ -22,7 +22,7 @@ import {
   NoisePulse,
 } from "../types/game";
 import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG } from "./boons";
-import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVE_WINDOWS, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON } from "./constants";
+import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVE_WINDOWS, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor } from "./constants";
 import { loadMeta, saveMeta, recordRun, topRuns } from "./meta";
 import { soundEngine } from "../audio/soundEngine";
 import { renderEnvironment } from "./mapRenderer";
@@ -248,6 +248,24 @@ export class GameEngine {
 	camKickX = 0;
 	camKickY = 0;
 	shockwaves = [];
+	// Batch 5 (Lane A): combat juice — kill words, blood splats, slash bursts,
+	// screen-space hit flashes, on-shoot micro-layer, whiff slow, body reactions,
+	// score surge, riot-shield zombies.
+	killWords = [`SLAIN!`, `DOWN!`, `SPLAT!`, `CRUNCH!`];
+	lastKillWord = null;
+	killWordCount = 0;
+	bloodSplats = [];
+	slashBursts = [];
+	hitFlashes = [];
+	muzzlePunch = 0;
+	gunKick = 0;
+	gunKickT = 0;
+	camPunchX = 0;
+	camPunchY = 0;
+	camPunchT = 0;
+	whiffSlowT = 0;
+	lastWhiff = null;
+	powerupPool = [`nuke`, `double_points`, `insta_kill`, `infinite_ammo`, `speed_boost`, `moonshine_med`, `score_surge`];
 	fuseTimer = 0;
 	// VS-3: periodic powerups + rubber-banded health orbs.
 	nextPowerupAt = 80;
@@ -307,8 +325,12 @@ export class GameEngine {
 	};
 	animationFrameId = null;
 	lastTimestamp = 0;
-	constructor(e, t, n = 0) {
+	constructor(e, t, n = 0, opts) {
 		this.canvas = e, this.ctx = e.getContext(`2d`), this.callbacks = t, this.currentLocation = GAME_LOCATIONS[n] || GAME_LOCATIONS[0], this.lighting = new DynamicLighting(), this.placePlayerSafely(), this.camX = this.player.x, this.camY = this.player.y, this.initExplosiveBarrels(), this.initLoreNotes(), this.initBarricades(), this.initHoles(), this.rebuildFlow(true), this.setupListeners(), this.installControlsProbe();
+		// Batch 5: daily-challenge seed — seeded RNG for gameplay rolls (cosmetic
+		// jitter stays on Math.random). Lane D passes { seed } as the 4th arg.
+		this.runSeed = opts?.seed ?? ((Math.random() * 2 ** 32) | 0);
+		this.rng = mulberry32(this.runSeed);
 		loadArt();
 	}
 	initBarricades() {
@@ -515,6 +537,31 @@ export class GameEngine {
 				this.updateBullets(1 / 60, Date.now());
 				return { hit: z.health < 1e6, hp: Math.round(z.health) };
 			},
+			// Batch 5 (Lane A) probes: combat juice.
+			killWordState: () => ({ last: this.lastKillWord, count: this.killWordCount }),
+			splatState: () => ({ splats: this.bloodSplats.length }),
+			splatCount: () => this.bloodSplats.length,
+			stepParticles: (n = 30) => { for (let i = 0; i < n; i++) this.updateParticles(1 / 60); return { particles: this.particles.length, splats: this.bloodSplats.length }; },
+			ringState: () => { const rs = this.shockwaves.filter((s) => s.b5); const l = rs[rs.length - 1]; return { rings: rs.length, lastMaxR: l ? +l.maxR.toFixed(1) : 0 }; },
+			slashState: () => ({ count: this.slashBursts.length, faint: this.slashBursts.filter((s) => s.faint).length }),
+			flashState: () => ({ count: this.hitFlashes.length }),
+			fireAndRead: () => { this.fireCurrentWeapon(); return { punch: +this.muzzlePunch.toFixed(3), kick: +this.gunKick.toFixed(2), camT: +this.camPunchT.toFixed(3) }; },
+			muzzleState: () => ({ punch: +this.muzzlePunch.toFixed(3), kick: +this.gunKick.toFixed(2), camT: +this.camPunchT.toFixed(3) }),
+			whiffNow: () => { this.bashCd = 0; this.dodgeTimer = 0; this.zombies.length = 0; const r = this.tryBash(); return { ok: r, slowT: +this.whiffSlowT.toFixed(3), last: this.lastWhiff, slashes: this.slashBursts.length }; },
+			whiffState: () => ({ slowT: +this.whiffSlowT.toFixed(3), last: this.lastWhiff, slashes: this.slashBursts.length }),
+			bodyReact: (i, dmg = 50) => { const z = this.zombies[i]; if (!z) return null; this.reactHit(z, dmg, 0); return { yOff: +z.yOff.toFixed(2), squashT: +z.squashT.toFixed(3), spinT: +(z.spinT || 0).toFixed(3) }; },
+			bodyReactState: (i) => { const z = this.zombies[i]; return z ? { yOff: +((z.yOff || 0).toFixed(2)), squashT: +((z.squashT || 0).toFixed(3)), spinT: +((z.spinT || 0).toFixed(3)) } : null; },
+			surgeState: () => { const p = this.activePowerups.find((x) => x.type === `score_surge`); return { active: this.hasPowerup(`score_surge`), remaining: p ? Math.round(p.durationRemaining) : 0, score: this.score }; },
+			giveSurge: () => { this.activatePowerup(`score_surge`); return this.hasPowerup(`score_surge`); },
+			addScoreProbe: (n) => { const b = this.score; const g = this.addScore(n); return { before: b, after: this.score, gained: g }; },
+			powerupPool: () => [...this.powerupPool],
+			dropSurge: () => { this.drops.push({ id: `t-surge`, type: `score_surge`, x: this.player.x, y: this.player.y, amount: 1, duration: 3e4 }); this.updateDrops(1 / 60); return this.hasPowerup(`score_surge`); },
+			shieldState: (i) => { const z = this.zombies[i]; return z ? { type: z.type, shieldHp: z.shieldHp || 0, shieldMax: z.shieldMax || 0 } : null; },
+			shieldHit: (i, dmg) => { const z = this.zombies[i]; if (!z) return null; const before = z.shieldHp || 0; const dealt = this.applyAffixDefense(z, dmg); return { before, after: z.shieldHp || 0, dealt }; },
+			// Batch 5 integration probes: daily-challenge seed + kill-surge state.
+			// (Lane B audio probes live on soundEngine.__test; Lane C probes are node-side.)
+			b5Seed: () => this.runSeed,
+			b5Beast: () => soundEngine.getSurge(),
 			// Lane B probes: per-level weapon tables, Konami secret, Hall of Records.
 			b4Levels: (id, lv) => statsForLevel(id, lv),
 			b4LevelsAll: () => Object.keys(WEAPON_LEVELS).map((id) => ({ id, l1: statsForLevel(id, 1).dmg, l5: statsForLevel(id, 5).dmg })),
@@ -778,11 +825,13 @@ export class GameEngine {
 			this.detonateNuke();
 			return;
 		}
+		// Batch 5: score_surge runs 15s (everything else 30s); HUD countdown is automatic via activePowerups.
+		const dur = e === `score_surge` ? 15000 : 30000;
 		let t = this.activePowerups.find((t) => t.type === e);
-		t ? (t.durationRemaining = 3e4, t.totalDuration = 3e4) : this.activePowerups.push({
+		t ? (t.durationRemaining = dur, t.totalDuration = dur) : this.activePowerups.push({
 			type: e,
-			durationRemaining: 3e4,
-			totalDuration: 3e4
+			durationRemaining: dur,
+			totalDuration: dur
 		}), e === `speed_boost` && (this.player.stamina = this.player.maxStamina);
 	}
 	detonateNuke() {
@@ -805,7 +854,7 @@ export class GameEngine {
 		this.zombies.length;
 		for (let e = this.zombies.length - 1; e >= 0; e--) {
 			let t = this.zombies[e];
-			this.score += t.scoreValue, this.scrap += t.scrapValue, this.stats.kills++, this.bumpLifetime(`kills`), this.bloodDecals.push({
+			this.addScore(t.scoreValue), this.scrap += t.scrapValue, this.stats.kills++, this.bumpLifetime(`kills`), this.bloodDecals.push({
 				x: t.x,
 				y: t.y,
 				radius: t.radius * 1.5,
@@ -864,7 +913,7 @@ export class GameEngine {
 			let t = Math.hypot(this.player.x - e.x, this.player.y - e.y);
 			t < i && (i = t, r = e);
 		}
-		r && (r.collected = true, soundEngine.playLoreNote(), this.score += 250, this.scrap += 50, this.stats.notesFound += 1, this.callbacks.onLoreNoteFound && this.callbacks.onLoreNoteFound(r));
+		r && (r.collected = true, soundEngine.playLoreNote(), this.addScore(250), this.scrap += 50, this.stats.notesFound += 1, this.callbacks.onLoreNoteFound && this.callbacks.onLoreNoteFound(r));
 		if (!r) return;
 		const idx = this.loreNotes.indexOf(r);
 		if (idx === 0) {
@@ -908,7 +957,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.bloodSplats = [], this.slashBursts = [], this.hitFlashes = [], this.muzzlePunch = 0, this.gunKick = 0, this.gunKickT = 0, this.camPunchX = 0, this.camPunchY = 0, this.camPunchT = 0, this.whiffSlowT = 0, this.lastWhiff = null, this.lastKillWord = null, this.killWordCount = 0, this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -1919,13 +1968,19 @@ export class GameEngine {
 			this.hitstop -= e, this.render();
 			return;
 		}
+		// Batch 5: whiff micro-slow — the world runs at 0.12x for 0.12s after a missed bash.
+		if (this.whiffSlowT > 0) { this.whiffSlowT -= e; e *= .12; }
 		this.trauma = Math.max(0, this.trauma - e * 1.6);
 		for (let t = this.floaters.length - 1; t >= 0; t--) {
 			let n = this.floaters[t];
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && (n.onFree?.(), n.onFree = null, this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
 		this._simFrames = (this._simFrames || 0) + 1,
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateCacheTimer(), this.updateFuse(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateCacheTimer(), this.updateFuse(e), this.updateBeastAudio(e);
+		// Batch 5: on-shoot micro-layer decays — muzzle punch 50ms, gun kick 40ms yoyo, camera punch 60ms.
+		this.muzzlePunch = Math.max(0, this.muzzlePunch - e);
+		if (this.gunKickT > 0) { this.gunKickT = Math.max(0, this.gunKickT - e); this.gunKick = 5 * Math.sin((1 - this.gunKickT / .04) * Math.PI); } else this.gunKick = 0;
+		this.camPunchT = Math.max(0, this.camPunchT - e);
 		// Batch 2: low-HP heartbeat — a double-thump when you're almost gone.
 		if (this.player.health > 0 && this.player.health < this.player.maxHealth * .3 && Date.now() - this.lastHeartbeat > 1000) {
 			this.lastHeartbeat = Date.now();
@@ -2250,15 +2305,27 @@ export class GameEngine {
 			const nx = dx / dist, ny = dy / dist;
 			z.vx += nx * impulse;
 			z.vy += ny * impulse;
-			z.health -= (z.type === "behemoth" ? 12 : 24) * this.playerDamageMul(z);
+			// Batch 5: riot shields blunt bashes too.
+			const bdmg = this.applyAffixDefense(z, (z.type === "behemoth" ? 12 : 24) * this.playerDamageMul(z));
+			z.health -= bdmg;
 			z.hitFlash = .25;
 			z.stunUntil = this.simTime + (z.type === "behemoth" ? .28 : .55);
 			hits++;
 			this.stats.damageDealt += 24;
 			this.createBloodParticles(z.x, z.y, this.player.angle);
+			// Batch 5: hit-track for kill spray + slash streak + body reaction.
+			z.lastHitPower = 24; z.lastHitAngle = this.player.angle;
+			this.addSlash(z.x, z.y, this.player.angle);
+			this.reactHit(z, 24, this.player.angle);
 			if (z.health <= 0) this.spawnFloater(z.x, z.y - 16, "BASH", "#e11d2e");
 		}
-		if (hits === 0) this.spawnFloater(this.player.x + ax * 28, this.player.y + ay * 28, "WHIFF", "#8a7a64");
+		if (hits === 0) {
+			this.spawnFloater(this.player.x + ax * 28, this.player.y + ay * 28, "WHIFF", "#8a7a64");
+			// Batch 5: whiff — tiny 0.12x micro-slow + faint slash burst at the swing arc.
+			this.whiffSlowT = .12;
+			this.lastWhiff = { x: Math.round(this.player.x + ax * 46), y: Math.round(this.player.y + ay * 46), t: Date.now() };
+			this.addSlash(this.player.x + ax * 46, this.player.y + ay * 46, this.player.angle, true);
+		}
 		if (hits === 0 && this.hitFeel) soundEngine.tone({ f: 700, f2: 180, type: `sine`, dur: .18, vol: .12 });
 		return true;
 	}
@@ -2335,6 +2402,17 @@ export class GameEngine {
 		this.hasPowerup(`infinite_ammo`) || e.currentMag--;
 		this.stats.shotsFired++;
 		this.muzzleFlashTimer = e.id === `shotgun` ? 1.4 : e.id === `crossbow` ? .35 : 1;
+		// Batch 5: on-shoot micro-layer — additive muzzle flash (~50ms),
+		// gun kickback 4-6px (40ms yoyo), camera punch 2-4px (60ms).
+		this.muzzlePunch = .05;
+		this.gunKick = 4 + Math.random() * 2;
+		this.gunKickT = .04;
+		{
+			const pa = this.player.angle, pd = 2 + Math.random() * 2;
+			this.camPunchT = .06;
+			this.camPunchX = -Math.cos(pa) * pd;
+			this.camPunchY = -Math.sin(pa) * pd;
+		}
 		this.addLight(this.player.x + Math.cos(this.player.angle) * 30, this.player.y + Math.sin(this.player.angle) * 30, 340, .9, .12);
 		this.recoilKick = Math.max(this.recoilKick, e.id === `shotgun` ? 12 : e.id === `lever_rifle` ? 9 : e.id === `chainsaw` ? 4 : e.id === `carbine` ? 3.5 : 7);
 		if (e.id === `shotgun`) this.pumpAnim = 10;
@@ -2560,6 +2638,10 @@ export class GameEngine {
 						if (this.evolved === `lincoln` && n.weaponType === `revolver` && e) this.player.health = Math.min(this.player.maxHealth, this.player.health + 4);
 						let a = Math.atan2(n.vy, n.vx), o = this.knockbackFor(n.weaponType, r.type);
 						this.spawnForkChildren(n, a);
+						// Batch 5: hit-track for the kill spray + slash streak + body reaction.
+						r.lastHitPower = i; r.lastHitAngle = a;
+						this.addSlash(n.x, n.y, a);
+						this.reactHit(r, i, a);
 						if (r.x += Math.cos(a) * o, r.y += Math.sin(a) * o, this.createBloodParticles(n.x, n.y, a), r.hitFlash = .08, e ? this.spawnFloater(r.x, r.y - r.radius, `HEAD`, `#ff4d3a`) : this.spawnDamageNumber(r.x, r.y - r.radius, i, `#e8b34b`), soundEngine.playImpact(), this.feelHit(n, r), i > 80 && (this.hitstop = Math.max(this.hitstop, .04)), n.pierce--, n.pierce <= 0) {
 							if (this.tryRicochet(n, r)) break;
 							this.freeBulletAt(t);
@@ -2623,7 +2705,7 @@ export class GameEngine {
 				let i = 1 - r / 140, a = 350 * (.4 + i * .6);
 				n.health -= a, n.isBurning = 4e3;
 				let o = Math.atan2(n.y - e.y, n.x - e.x);
-				n.x += 18 * i * Math.cos(o), n.y += 18 * i * Math.sin(o), this.stats.damageDealt += a, this.createBloodParticles(n.x, n.y, o), n.health <= 0 && this.killZombie(n, t);
+				n.x += 18 * i * Math.cos(o), n.y += 18 * i * Math.sin(o), this.stats.damageDealt += a, this.beastDmgAcc = (this.beastDmgAcc || 0) + a, this.createBloodParticles(n.x, n.y, o), n.lastHitPower = a, n.lastHitAngle = o, n.health <= 0 && this.killZombie(n, t);
 			}
 		}
 		let n = Math.hypot(this.player.x - e.x, this.player.y - e.y);
@@ -2827,10 +2909,10 @@ export class GameEngine {
 		const h = this.currentLocation.mapHeight;
 		const px = this.player.x, py = this.player.y;
 		const edges = [
-			{ x: 60 + Math.random() * (w - 120), y: 60 },
-			{ x: 60 + Math.random() * (w - 120), y: h - 60 },
-			{ x: 60, y: 60 + Math.random() * (h - 120) },
-			{ x: w - 60, y: 60 + Math.random() * (h - 120) }
+			{ x: 60 + this.rng() * (w - 120), y: 60 },
+			{ x: 60 + this.rng() * (w - 120), y: h - 60 },
+			{ x: 60, y: 60 + this.rng() * (h - 120) },
+			{ x: w - 60, y: 60 + this.rng() * (h - 120) }
 		];
 		edges.sort((a, b) => Math.hypot(a.x - px, a.y - py) - Math.hypot(b.x - px, b.y - py));
 		for (const e of edges) {
@@ -2841,7 +2923,7 @@ export class GameEngine {
 	// VS-2: guaranteed elite — the director never lets the pressure fully drop.
 	spawnGuaranteedElite() {
 		const pool = this.wave >= 8 ? [`behemoth`, `miner_brute`, `bloater_spitter`] : this.wave >= 5 ? [`miner_brute`, `bloater_spitter`, `riot`, `sprinter`] : [`sprinter`, `riot`, `bloater_spitter`];
-		const type = pool[Math.floor(Math.random() * pool.length)];
+		const type = pool[Math.floor(this.rng() * pool.length)];
 		const edge = this.farEdgeSpawn(480);
 		const z = this.pushZombie(type, edge.x, edge.y);
 		if (!z.elite) {
@@ -2900,21 +2982,24 @@ export class GameEngine {
 			r = edge.y;
 			i = null;
 		}
-		let a = `shambler`, o = Math.random();
+		let a = `shambler`, o = this.rng();
 		if (this.wave === 1) a = o < .28 ? `sprinter` : `shambler`;
 		else if (i) a = i.kind === `pit` && o < .45 ? `miner_brute` : `crawler`;
 		else if (this.wave >= 5 && this.wave % 5 == 0 && this.zombiesToSpawn === 1) a = `behemoth`;
 		else if (this.lanternWentOut && o < .18) a = `crawler`;
 		else if (this.wave >= 4 && o < .2) a = `bloater_spitter`;
 		else if (this.wave >= 3 && o < .3) a = `bomber`;
-		else if (this.wave >= 4 && o < .4) a = `riot`;
+		else if (this.wave >= 4 && o < .4) a = this.rng() < .45 ? `riot_shield` : `riot`;
 		else if (this.wave >= 3 && o < .5) a = `miner_brute`;
 		else if (this.wave >= 2 && o < .72) a = `sprinter`;
 		this.pushZombie(a, n, r);
 	}
 	pushZombie(e, t, n) {
 		let r = 58, i = 2.15, a = 14, o = 17, s = `#475569`, c = false, l = 100, u = 15;
-		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `bomber` ? (r = 45, i = 2.7, a = 12, o = 15, s = `#b45309`, l = 120, u = 18) : e === `riot` ? (r = 520, i = 0.85, a = 30, o = 24, s = `#3f3f46`, c = true, l = 300, u = 60) : e === `behemoth` && (r = 1400 + this.wave * 250, i = 1.55, a = 45, o = 38, s = `#581c87`, l = 1500, u = 250);
+		// Batch 5: Behemoth stats come from the BOSSES table (constants.ts); the
+		// engine still adds +wave*250 HP and keeps the legacy wave-5 spawn rule.
+		const beh = e === `behemoth` ? bossFor(`behemoth`)?.bossOverrides : null;
+		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `bomber` ? (r = 45, i = 2.7, a = 12, o = 15, s = `#b45309`, l = 120, u = 18) : e === `riot` ? (r = 520, i = 0.85, a = 30, o = 24, s = `#3f3f46`, c = true, l = 300, u = 60) : e === `riot_shield` ? (r = 420, i = 0.95, a = 26, o = 23, s = `#52525b`, c = false, l = 350, u = 70) : e === `behemoth` && beh && (r = beh.health + this.wave * 250, i = beh.speed, a = beh.damage, o = beh.radius, s = beh.color, l = beh.scoreValue, u = beh.scrapValue);
 		const em = this.eventMods();
 		if (e !== `behemoth`) r = Math.round(r * (1 + Math.max(0, this.wave - 2) * .07));
 		let d = {
@@ -2958,7 +3043,9 @@ export class GameEngine {
 			d.scrapValue = Math.round(d.scrapValue * 2);
 			this.assignAffix(d);
 		}
-		this.zombies.push(d), soundEngine.playZombieGroan(e === `crawler` ? `shambler` : e === `bomber` ? `bloater_spitter` : e === `riot` ? `miner_brute` : e);
+		// Batch 5: riot_shield — riot-gear zombie with a shield pool on top of body HP.
+		if (e === `riot_shield`) { d.shieldHp = Math.round(d.maxHealth * .35); d.shieldMax = d.shieldHp; }
+		this.zombies.push(d), soundEngine.playZombieGroan(e === `crawler` ? `shambler` : e === `bomber` ? `bloater_spitter` : e === `riot` || e === `riot_shield` ? `miner_brute` : e);
 		// Batch 2: boss entrance — Behemoth gets a banner and a warning motif.
 		if (e === `behemoth`) this.bossEntrance(d);
 		return d;
@@ -3050,6 +3137,10 @@ export class GameEngine {
 			}
 			let i = this.player.x - r.x, a = this.player.y - r.y, o = Math.hypot(i, a);
 			r.hitFlash > 0 && (r.hitFlash -= e);
+			// Batch 5: body reactions decay — pop settles, squash yoyo + spin run out.
+			r.yOff = (r.yOff || 0) * Math.max(0, 1 - e * 8);
+			r.squashT = Math.max(0, (r.squashT || 0) - e);
+			r.spinT = Math.max(0, (r.spinT || 0) - e);
 			let s = Math.hypot(r.hearX - r.x, r.hearY - r.y), c = this.simTime < this.bellLureUntil && this.currentLocation.bell;
 			const lantern = this.currentLocation.lantern;
 			if (this.lanternLit && lantern && r.type === `shambler` && r.ai === `wander`) r.wanderAngle = Math.atan2(lantern.y - r.y, lantern.x - r.x) + (Math.random() - .5) * .7;
@@ -3303,12 +3394,22 @@ export class GameEngine {
 		this.streakTimer = 3;
 		if (this.streak > this.maxStreak) this.maxStreak = this.streak;
 		const streakBonus = Math.min(this.streak, 30);
-		this.score += streakBonus;
+		this.addScore(streakBonus);
 		if (this.streak >= 10) this.spawnFloater(e.x, e.y - e.radius - 10, `HARVEST x${this.streak}`, this.streakColor());
 		soundEngine.playKillSub();
-		// Batch 2: kill SFX pitch climbs with the streak — 300 + min(streak,20)x30 Hz.
-		soundEngine.tone({ f: 300 + Math.min(this.streak, 20) * 30, type: `triangle`, dur: .07, vol: .12 });
+		// Batch 5: combo-pitched kill SFX, kill surge, and beast/growl mix.
+		soundEngine.playKillPitched(this.streak);
+		soundEngine.bumpSurge();
+		soundEngine.setBeastMix(Math.min(1, (this.beastDmgAcc || 0) / 600), this.streak);
 		this.feelKill(e);
+		// Batch 5: kill-word floater (pooled, same 40-cap discipline as damage numbers).
+		this.spawnKillWord(e.x, e.y - e.radius - 18);
+		// Batch 5: directional blood spray (velocity scales with the killing hit's power).
+		this.bloodSpray(e.x, e.y, e.lastHitAngle ?? Math.random() * Math.PI * 2, e.lastHitPower ?? 30);
+		// Batch 5: expanding white kill ring (~4.2x the zombie's radius).
+		this.shockwaves.push({ x: e.x, y: e.y, r: 8, maxR: e.radius * 4.2, life: .35, maxLife: .35, color: `#ffffff`, b5: true });
+		// Batch 5: brief screen-space flash at the kill's position.
+		if (this.hitFlashes.length < 16) this.hitFlashes.push({ x: e.x, y: e.y, life: .14, maxLife: .14 });
 		const comboAfter = Math.floor(this.comboMultiplier);
 		if (comboAfter > comboBefore && comboAfter >= 2) {
 			this.spawnFloater(this.player.x, this.player.y - 56, `STREAK x${comboAfter}`, "#ffd700");
@@ -3366,7 +3467,7 @@ export class GameEngine {
 			soundEngine.playPowerup();
 		}
 		let n = this.hasPowerup(`double_points`) ? 2 : 1, r = Math.round(e.scoreValue * this.comboMultiplier * n);
-		this.score += r;
+		this.addScore(r);
 		this.stripTheDead(e);
 		let i = this.getPerkLevel(`scavenger`), a = 1 + i * .35 + this.boon(`leavings`) * .15, o = Math.round(e.scrapValue * a * n);
 		if (this.scrap += o, this.stats.scrapCollected += o, this.spawnFloater(e.x, e.y - e.radius, `+${r}`, `#d4a017`), this.bloodDecals.push({
@@ -3503,6 +3604,80 @@ export class GameEngine {
 		if (this.floaters.length > 40) { const old = this.floaters.shift(); old.onFree?.(); this.floaterPool.push(old); }
 	}
 
+	// Batch 5: kill-word floaters — SLAIN! / DOWN! / SPLAT! / CRUNCH!, gold/red,
+	// pooled through spawnFloater so the 40-floater cap discipline holds.
+	spawnKillWord(x, y) {
+		if (this.floaters.length >= 40) return;
+		const w = this.killWords[(Math.random() * this.killWords.length) | 0];
+		const c = Math.random() < .5 ? `#ffd700` : `#e11d2e`;
+		this.lastKillWord = { word: w, color: c, x: Math.round(x), y: Math.round(y) };
+		this.killWordCount++;
+		this.spawnFloater(x, y, w, c);
+	}
+	// Batch 5: directional blood spray — velocity scales with the hit's power.
+	// Spray particles carry splat:true so they leave ground splats on death.
+	bloodSpray(x, y, angle, power) {
+		for (let i = 0; i < 10; i++) {
+			const a = angle + (Math.random() - .5) * .9;
+			const sp = 1.5 + power * .02 + Math.random() * 2.5;
+			this.particles.push(Object.assign(this.allocParticle(), {
+				x, y,
+				vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+				size: 2 + Math.random() * 3,
+				color: Math.random() < .6 ? `#a31621` : `#6e0f16`,
+				alpha: 1, life: .45 + Math.random() * .3, maxLife: .75,
+				type: `blood`, splat: true
+			}));
+		}
+	}
+	// Batch 5: persistent fading ground splats — capped ~30, oldest recycled.
+	addBloodSplat(x, y) {
+		this.bloodSplats.push({ x, y, r: 3 + Math.random() * 5, life: 18, maxLife: 18 });
+		if (this.bloodSplats.length > 30) this.bloodSplats.shift();
+	}
+	// Batch 5: oriented slash streaks on hits (faint for whiffs). Cap 24.
+	addSlash(x, y, angle, faint = false) {
+		this.slashBursts.push({ x, y, angle, faint, life: .18, maxLife: .18 });
+		if (this.slashBursts.length > 24) this.slashBursts.shift();
+	}
+	renderSlashBursts(e) {
+		for (const s of this.slashBursts) {
+			const a = Math.max(0, s.life / s.maxLife) * (s.faint ? .35 : .8);
+			e.save();
+			e.translate(s.x, s.y);
+			e.rotate(s.angle);
+			e.strokeStyle = `rgba(240, 240, 235, ${a.toFixed(3)})`;
+			e.lineWidth = 3;
+			for (const off of [-7, 0, 7]) {
+				const len = off === 0 ? 28 : 18;
+				e.beginPath();
+				e.moveTo(-len / 2, off);
+				e.lineTo(len / 2, off);
+				e.stroke();
+			}
+			e.restore();
+		}
+	}
+	// Batch 5: score gains funnel through here so score_surge (2x, 15s) applies everywhere.
+	addScore(n) {
+		const m = this.hasPowerup(`score_surge`) ? 2 : 1;
+		const g = Math.round(n * m);
+		this.score += g;
+		return g;
+	}
+	hexA(hex, alpha) {
+		const h = String(hex).replace(`#`, ``);
+		const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+		return `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
+	}
+	// Batch 5: enemy body reactions — vertical pop, 80ms squash-and-stretch yoyo,
+	// slight hit spin on heavy hits (80+).
+	reactHit(z, dmg, angle) {
+		z.yOff = Math.min(14, 4 + dmg * .05);
+		z.squashT = .08;
+		if (dmg >= 80) { z.hitSpin = (Math.random() < .5 ? -1 : 1) * .35; z.spinT = .25; }
+	}
+
 	// VS-1: "Run Out of the County" banish — permanently remove a boon from this run's draft pool.
 	banishBoon(id) {
 		if (this.banishCharges <= 0 || !this.draft?.some((b) => b.id === id)) return false;
@@ -3577,11 +3752,22 @@ export class GameEngine {
 			if (s.life <= 0) this.shockwaves.splice(i, 1);
 		}
 		if (this.hurtFlash > 0) this.hurtFlash = Math.max(0, this.hurtFlash - dt * 1.4);
+		// Batch 5: slash bursts and screen-space hit flashes decay.
+		for (let i = this.slashBursts.length - 1; i >= 0; i--) {
+			const s = this.slashBursts[i];
+			s.life -= dt;
+			if (s.life <= 0) this.slashBursts.splice(i, 1);
+		}
+		for (let i = this.hitFlashes.length - 1; i >= 0; i--) {
+			const f = this.hitFlashes[i];
+			f.life -= dt;
+			if (f.life <= 0) this.hitFlashes.splice(i, 1);
+		}
 	}
 	setHitFeel(on) { this.hitFeel = !!on; }
 	// Batch 2: mass-based knockback — sprinters fly, behemoths barely budge.
 	zombieMass(type) {
-		return type === `behemoth` ? 4.2 : type === `miner_brute` ? 2.6 : type === `bloater_spitter` ? 1.8 : type === `crawler` ? 0.7 : 1;
+		return type === `behemoth` ? 4.2 : type === `miner_brute` ? 2.6 : type === `riot_shield` ? 2.8 : type === `bloater_spitter` ? 1.8 : type === `crawler` ? 0.7 : 1;
 	}
 	knockbackFor(weaponType, zombieType) {
 		const force = weaponType === `shotgun` ? 7 : 3;
@@ -3617,9 +3803,16 @@ export class GameEngine {
 			o.hearX = this.player.x; o.hearY = this.player.y;
 		}
 	}
+	// Batch 5: per-frame audio state — heartbeat follows HP, beast damage accumulator decays.
+	updateBeastAudio(e) {
+		this.beastDmgAcc = (this.beastDmgAcc || 0) * Math.pow(.5, e);
+		if (this.player && this.player.maxHealth > 0) soundEngine.updateHeartbeat(this.player.health / this.player.maxHealth);
+	}
 	bossEntrance(z) {
-		this.bannerText = `THE BEHEMOTH`;
-		this.bannerSub = `Something old is walking out of the treeline`;
+		// Batch 5: banner copy comes from the BOSSES table; trauma/radio/motif stay engine-side.
+		const bdef = bossFor(`behemoth`)?.bossOverrides;
+		this.bannerText = bdef?.bannerText ?? `THE BEHEMOTH`;
+		this.bannerSub = bdef?.bannerSub ?? `Something old is walking out of the treeline`;
 		this.bannerUntil = Date.now() + 2600;
 		this.trauma = Math.min(1, this.trauma + .45);
 		this.callbacks.onRadio?.(`WJPS`, `Folks... we got a big one on the Trace. Get to high ground or get to cover.`);
@@ -3628,12 +3821,16 @@ export class GameEngine {
 		soundEngine.tone({ f: 240, f2: 120, type: `sawtooth`, dur: .8, vol: .35, delay: 1 });
 	}
 	applyAffixDefense(z, dmg) {
-		if (z.affix === `shielded` && z.shieldHp > 0) {
+		// Batch 5: riot_shield type shares the shield mechanic — shield pool absorbs,
+		// damage is reduced 60% while it holds, break is a visible/audio event.
+		if ((z.affix === `shielded` || z.type === `riot_shield`) && z.shieldHp > 0) {
 			z.shieldHp -= dmg;
 			if (z.shieldHp <= 0) {
-				this.spawnFloater(z.x, z.y - z.radius - 10, `SHIELD DOWN`, `#4cc3ff`);
-				this.createHitSparks(z.x, z.y, `#4cc3ff`);
-				soundEngine.tone({ f: 300, f2: 120, type: `sawtooth`, dur: .25, vol: .2 });
+				z.shieldHp = 0;
+				this.spawnFloater(z.x, z.y - z.radius - 10, z.type === `riot_shield` ? `RIOT SHIELD DOWN` : `SHIELD DOWN`, `#4cc3ff`);
+				this.createHitSparks(z.x, z.y, `#e8e4da`);
+				soundEngine.playZombieHit(false); // clank
+				soundEngine.tone({ f: 620, f2: 170, type: `square`, dur: .18, vol: .22 });
 			}
 			return dmg * .4;
 		}
@@ -3686,7 +3883,7 @@ export class GameEngine {
 	renderShockwaves(e) {
 		for (const s of this.shockwaves) {
 			const a = Math.max(0, s.life / s.maxLife) * .55;
-			e.strokeStyle = `rgba(255, 214, 102, ${a})`;
+			e.strokeStyle = this.hexA(s.color || `#ffd666`, a);
 			e.lineWidth = 5 * (s.life / s.maxLife) + 1;
 			e.beginPath();
 			e.arc(s.x, s.y, s.r, 0, Math.PI * 2);
@@ -3698,8 +3895,36 @@ export class GameEngine {
 			e.stroke();
 		}
 	}
-	renderHurtDir(e, w, h) {
-		if (this.hurtFlash <= 0) return;
+	// Batch 5: score_surge drop art, drawn engine-side (world space) since the
+	// drop renderer has no case for the new type.
+	renderSurgeDrops(e) {
+		const now = Date.now();
+		for (const d of this.drops) {
+			if (d.type !== `score_surge`) continue;
+			const bob = Math.sin(now * .006 + d.x) * 3;
+			const pulse = .85 + Math.sin(now * .01 + d.y) * .15;
+			e.save();
+			e.translate(d.x, d.y + bob);
+			e.fillStyle = `rgba(255, 215, 0, 0.35)`;
+			e.beginPath();
+			e.arc(0, 0, 22 * pulse, 0, Math.PI * 2);
+			e.fill();
+			e.fillStyle = `#d4a017`;
+			e.beginPath();
+			e.arc(0, 0, 12, 0, Math.PI * 2);
+			e.fill();
+			e.strokeStyle = `#7c5a00`;
+			e.lineWidth = 2;
+			e.stroke();
+			e.fillStyle = `#ffffff`;
+			e.font = `bold 11px monospace`;
+			e.textAlign = `center`;
+			e.textBaseline = `middle`;
+			e.fillText(`2X`, 0, 0);
+			e.restore();
+		}
+	}
+	renderHurtDir(e, w, h) {		if (this.hurtFlash <= 0) return;
 		const a = this.hurtDir, alpha = Math.min(.6, this.hurtFlash * .7);
 		const cx = w / 2, cy = h / 2, r = Math.min(w, h) * .38;
 		e.save();
@@ -3715,10 +3940,10 @@ export class GameEngine {
 	updatePowerupDrops() {
 		if (this.draft) return; // drops during the break breather too
 		if (this.simTime >= this.nextPowerupAt) {
-			this.nextPowerupAt = this.simTime + 75 + Math.random() * 30;
-			const pool = [`nuke`, `double_points`, `insta_kill`, `infinite_ammo`, `speed_boost`, `moonshine_med`];
-			const type = pool[(Math.random() * pool.length) | 0];
-			const a = Math.random() * Math.PI * 2, d = 120 + Math.random() * 80;
+			this.nextPowerupAt = this.simTime + 75 + this.rng() * 30;
+			const pool = this.powerupPool;
+			const type = pool[(this.rng() * pool.length) | 0];
+			const a = this.rng() * Math.PI * 2, d = 120 + this.rng() * 80;
 			this.drops.push({ id: Math.random().toString(), type, x: this.player.x + Math.cos(a) * d, y: this.player.y + Math.sin(a) * d, amount: type === `moonshine_med` ? 40 : 1, duration: 3e4 });
 			this.spawnFloater(this.player.x, this.player.y - 56, `SUPPLY DROP`, `#4cc3ff`);
 			soundEngine.tone({ f: 660, f2: 990, type: `sine`, dur: .25, vol: .2 });
@@ -3729,8 +3954,8 @@ export class GameEngine {
 	updateCacheTimer() {
 		if (this.draft) return;
 		if (this.simTime >= this.nextCacheAt) {
-			this.nextCacheAt = this.simTime + 140 + Math.random() * 40;
-			const a = Math.random() * Math.PI * 2;
+			this.nextCacheAt = this.simTime + 140 + this.rng() * 40;
+			const a = this.rng() * Math.PI * 2;
 			this.caches.push({ id: Math.random().toString(), x: this.player.x + Math.cos(a) * 220, y: this.player.y + Math.sin(a) * 220 });
 			this.spawnFloater(this.player.x, this.player.y - 64, `STORM CELLAR OPEN`, `#c77dff`);
 			this.callbacks.onRadio?.(`Unknown`, `A storm cellar door just creaked open somewhere close. What's down there's yours if you want it.`);
@@ -3896,7 +4121,9 @@ export class GameEngine {
 			}
 			if (Math.hypot(this.player.x - t.x, this.player.y - t.y) <= this.player.radius + 22) {
 				if (soundEngine.playPickup(), t.type === `ammo_universal`) for (let e of this.weapons) e.unlocked && (e.reserveAmmo = Math.min(e.maxReserveAmmo, e.reserveAmmo + Math.floor(e.magazineSize * 1)));
-				else t.type === `dust_devil` ? (this.vacuumSurge = 1.6, this.spawnFloater(this.player.x, this.player.y - 48, `DUST DEVIL`, `#7dd3fc`)) : t.type === `moonshine_med` ? (this.player.health = Math.min(this.player.maxHealth, this.player.health + t.amount), this.player.stamina = this.player.maxStamina) : t.type === `molotov_pickup` ? this.player.molotovs = Math.min(this.player.maxMolotovs, this.player.molotovs + 1) : t.type === `scrap` ? (this.scrap += t.amount, this.stats.scrapCollected += t.amount) : (t.type === `nuke` || t.type === `insta_kill` || t.type === `double_points` || t.type === `infinite_ammo` || t.type === `speed_boost`) && this.activatePowerup(t.type);
+				else t.type === `dust_devil` ? (this.vacuumSurge = 1.6, this.spawnFloater(this.player.x, this.player.y - 48, `DUST DEVIL`, `#7dd3fc`)) : t.type === `moonshine_med` ? (this.player.health = Math.min(this.player.maxHealth, this.player.health + t.amount), this.player.stamina = this.player.maxStamina) : t.type === `molotov_pickup` ? this.player.molotovs = Math.min(this.player.maxMolotovs, this.player.molotovs + 1) : t.type === `scrap` ? (this.scrap += t.amount, this.stats.scrapCollected += t.amount) : (t.type === `nuke` || t.type === `insta_kill` || t.type === `double_points` || t.type === `infinite_ammo` || t.type === `speed_boost` || t.type === `score_surge`) && this.activatePowerup(t.type);
+				// Batch 5: score_surge pickup callout.
+				t.type === `score_surge` && (this.spawnFloater(this.player.x, this.player.y - 56, `SCORE SURGE — 2X`, `#ffd700`), soundEngine.tone({ f: 880, f2: 1320, type: `triangle`, dur: .2, vol: .2 }));
 				this.drops.splice(e, 1);
 			}
 		}
@@ -3904,10 +4131,21 @@ export class GameEngine {
 	updateParticles(e) {
 		for (let t = this.particles.length - 1; t >= 0; t--) {
 			let n = this.particles[t];
-			n.x += n.vx * e * 60, n.y += n.vy * e * 60, n.life -= e, n.alpha = Math.max(0, n.life / n.maxLife), n.life <= 0 && (this.particlePool.push(n), this.particles.splice(t, 1));
+			n.x += n.vx * e * 60, n.y += n.vy * e * 60, n.life -= e, n.alpha = Math.max(0, n.life / n.maxLife);
+			if (n.life <= 0) {
+				// Batch 5: blood spray particles leave persistent fading ground splats.
+				if (n.type === `blood` && n.splat) this.addBloodSplat(n.x, n.y);
+				this.particlePool.push(n), this.particles.splice(t, 1);
+			}
 		}
 		if (this.particles.length > 180) for (let t = 0; t < this.particles.length - 180; t++) this.particlePool.push(this.particles[t]);
 		if (this.particles.length > 180) this.particles.splice(0, this.particles.length - 180);
+		// Batch 5: ground splats fade out over ~18s.
+		for (let t = this.bloodSplats.length - 1; t >= 0; t--) {
+			const s = this.bloodSplats[t];
+			s.life -= e;
+			if (s.life <= 0) this.bloodSplats.splice(t, 1);
+		}
 	}
 	createBloodParticles(e, t, n) {
 		for (let r = 0; r < 7; r++) {
@@ -4008,7 +4246,7 @@ export class GameEngine {
 				this.spawnFloater(e.x, e.y - 20, `NEED SCRAP`, `#c23b22`);
 				return;
 			}
-			this.scrap -= 25, e.boarded = true, e.boardHealth = e.maxBoardHealth, this.score += 40, this.spawnFloater(e.x, e.y - 18, `BOARDED`, `#d4a017`), soundEngine.playBoard();
+			this.scrap -= 25, e.boarded = true, e.boardHealth = e.maxBoardHealth, this.addScore(40), this.spawnFloater(e.x, e.y - 18, `BOARDED`, `#d4a017`), soundEngine.playBoard();
 			for (let t = 0; t < 8; t++) {
 				let t = Math.random() * Math.PI * 2;
 				this.particles.push(Object.assign(this.allocParticle(), {
@@ -4313,7 +4551,7 @@ export class GameEngine {
 		const m = this.mutators.includes(`rich`) ? 2 : 1;
 		const em = this.eventMods().gritMult;
 		if (type === `behemoth`) return 8 * m * em;
-		if (type === `riot`) return 4 * m * em;
+		if (type === `riot` || type === `riot_shield`) return 4 * m * em;
 		if (type === `miner_brute` || type === `bloater_spitter`) return 3 * m * em;
 		if (type === `sprinter` || type === `bomber`) return 2 * m * em;
 		return 1 * m * em;
@@ -4612,12 +4850,15 @@ export class GameEngine {
 			e.save();
 			e.translate(t / 2, n / 2);
 			e.scale(zoom, zoom);
-			e.translate(-this.camX + this.camKickX, -this.camY + this.camKickY); // VS-3: camera kick
+			// Batch 5: camera punch decays over its 60ms window.
+			const pf = this.camPunchT > 0 ? this.camPunchT / .06 : 0;
+			e.translate(-this.camX + this.camKickX + this.camPunchX * pf, -this.camY + this.camKickY + this.camPunchY * pf); // VS-3: camera kick
 		};
 		let l = this.camX - viewW / 2, u = this.camY - viewH / 2;
 		let d = { x: l, y: u, width: viewW, height: viewH };
 		beginWorld();
 		renderEnvironment(e, this.currentLocation, d, this.bloodDecals, this.firePuddles, this.drops, this.explosiveBarrels, this.loreNotes, this.barricades, this.extractActive, zoom);
+		this.renderSurgeDrops(e); // Batch 5: score_surge drop art (world space)
 		// VS-1: scorch decals — dark radial burns that fade.
 		for (const s of this.scorchDecals) {
 			const g = e.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.radius);
@@ -4630,8 +4871,19 @@ export class GameEngine {
 		}
 		this.renderHoles(e), this.renderLantern(e), this.renderBell(e), this.renderParticles(e);
 		this.renderShockwaves(e); // VS-3: kill shockwaves
+		this.renderSlashBursts(e); // Batch 5: oriented slash streaks
 		this.paintFloaters(e, zoom);
 		e.restore();
+		// Batch 5: screen-space hit flashes — brief radial white blooms at kill positions.
+		for (const f of this.hitFlashes) {
+			const s = this.worldToScreen(f.x, f.y);
+			const fa = Math.max(0, f.life / f.maxLife) * .45;
+			const g = e.createRadialGradient(s.x, s.y, 0, s.x, s.y, 130);
+			g.addColorStop(0, `rgba(255, 255, 255, ${fa.toFixed(3)})`);
+			g.addColorStop(1, `rgba(255, 255, 255, 0)`);
+			e.fillStyle = g;
+			e.fillRect(s.x - 130, s.y - 130, 260, 260);
+		}
 		const beam = this.player.flashlightRange * (1 + this.getPerkLevel(`highbeam`) * .25 + this.boon(`beam`) * .12);
 		const pxy = this.worldToScreen(this.player.x, this.player.y);
 		let f = {
@@ -4842,8 +5094,28 @@ export class GameEngine {
 		e.translate(facing * 10, -bob * .2 + 6);
 		e.rotate(this.player.angle);
 		e.scale(1.7 * fs, 1.7 * fs);
+		e.translate(-this.gunKick, 0); // Batch 5: gun kickback 4-6px, 40ms yoyo
 		this.drawHeldWeapon(e);
 		e.restore();
+		// Batch 5: additive muzzle flash ~50ms, drawn 'lighter' at the muzzle.
+		if (this.muzzlePunch > 0) {
+			e.save();
+			e.translate(facing * 10, -bob * .2 + 6);
+			e.rotate(this.player.angle);
+			e.scale(1.7 * fs, 1.7 * fs);
+			e.globalCompositeOperation = `lighter`;
+			const mp = this.muzzlePunch / .05;
+			e.fillStyle = `rgba(255, 240, 180, ${(0.9 * mp).toFixed(3)})`;
+			const mx = 44;
+			e.beginPath();
+			e.moveTo(mx - 4, 0);
+			e.lineTo(mx + 14, -9);
+			e.lineTo(mx + 8, 0);
+			e.lineTo(mx + 14, 9);
+			e.closePath();
+			e.fill();
+			e.restore();
+		}
 		if (this.bashSwing > 0) {
 			e.save();
 			e.rotate(this.player.angle);
@@ -4988,12 +5260,20 @@ export class GameEngine {
 				}
 			}
 			e.save();
-			e.translate(0, -limp);
+			e.translate(0, -limp - (t.yOff || 0));
 			// Batch 3: spawn pop scale.
 			const popS = t.spawnT > 0 ? Math.max(.1, 1 - t.spawnT / .15) : 1;
-			e.scale((facingLeft ? -1 : 1) * popS, popS);
+			// Batch 5: squash-and-stretch yoyo (80ms) + heavy-hit spin.
+			let rsx = 1, rsy = 1;
+			if (t.squashT > 0) {
+				const sp = 1 - t.squashT / .08;
+				const sk = Math.sin(sp * Math.PI * 2);
+				rsx = 1 + .3 * sk; rsy = 1 - .3 * sk;
+			}
+			e.scale((facingLeft ? -1 : 1) * popS * rsx, popS * rsy);
+			if (t.spinT > 0) e.rotate(t.hitSpin * (t.spinT / .25));
 			const tall = t.radius * (t.type === "crawler" ? 4.2 : t.type === "behemoth" ? 4.6 : 5.1) * fs;
-			drawSprite(e, t.type, tall, t.hitFlash, false);
+			drawSprite(e, t.type === "riot_shield" ? "riot" : t.type, tall, t.hitFlash, false);
 			if (t.isBurning && t.isBurning > 0) {
 				e.fillStyle = "rgba(249, 115, 22, 0.35)";
 				e.beginPath();
@@ -5008,6 +5288,29 @@ export class GameEngine {
 				e.fillRect(-n / 2, -t.radius - 8 - limp, n, barH);
 				e.fillStyle = "#e11d2e";
 				e.fillRect(-n / 2, -t.radius - 8 - limp, n * r, barH);
+			}
+			// Batch 5: riot_shield visual tell — drawn shield arc facing the player + shield HP bar.
+			if (t.type === "riot_shield") {
+				if (t.shieldHp > 0) {
+					const sa = Math.atan2(this.player.y - t.y, this.player.x - t.x);
+					e.strokeStyle = "#9aa5b1";
+					e.lineWidth = 5;
+					e.beginPath();
+					e.arc(0, 0, t.radius * 1.35, sa - .8, sa + .8);
+					e.stroke();
+					e.strokeStyle = "rgba(226, 232, 240, .55)";
+					e.lineWidth = 2;
+					e.beginPath();
+					e.arc(0, 0, t.radius * 1.35, sa - .8, sa + .8);
+					e.stroke();
+				}
+				if (t.shieldHp > 0 && t.shieldMax > 0) {
+					const n = t.radius * 2.4;
+					e.fillStyle = "rgba(0, 0, 0, 0.75)";
+					e.fillRect(-n / 2, -t.radius - 12 - limp, n, barH);
+					e.fillStyle = "#7dd3fc";
+					e.fillRect(-n / 2, -t.radius - 12 - limp, n * Math.max(0, t.shieldHp / t.shieldMax), barH);
+				}
 			}
 			e.restore();
 		}
@@ -5306,9 +5609,10 @@ export class GameEngine {
 				const n = Math.atan2(t.vy, t.vx);
 				e.rotate(n);
 				e.fillStyle = t.color;
-				e.fillRect(-8, -t.radius / 2, 16, t.radius);
+				// Batch 5: bullets drawn 1.75x stretched along travel direction.
+				e.fillRect(-14, -t.radius / 2, 28, t.radius);
 				e.globalAlpha = .4;
-				e.fillRect(-14, -1, 10, 2);
+				e.fillRect(-24, -1, 12, 2);
 			}
 			e.restore();
 		}
@@ -5316,6 +5620,15 @@ export class GameEngine {
 	}
 	renderParticles(e) {
 		const { camL, camT, camR, camB } = this.viewCull(40);
+		// Batch 5: persistent fading ground splats, drawn under live particles.
+		for (const s of this.bloodSplats) {
+			if (s.x < camL || s.x > camR || s.y < camT || s.y > camB) continue;
+			e.globalAlpha = .55 * Math.max(0, s.life / s.maxLife);
+			e.fillStyle = `#5c0a0a`;
+			e.beginPath();
+			e.ellipse(s.x, s.y, s.r * 1.4, s.r * .8, s.r, 0, Math.PI * 2);
+			e.fill();
+		}
 		for (const t of this.particles) {
 			if (t.x < camL || t.x > camR || t.y < camT || t.y > camB) continue;
 			e.globalAlpha = t.alpha;

@@ -1,9 +1,9 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PlayerStats } from "@/types/game";
 import { deathLine } from "@/game/radio";
 import { loadSave, payForRun, recordRun, stubsEarned } from "@/game/save";
-import { topRuns } from "@/game/meta";
-import { Skull, RotateCcw, Home } from "lucide-react";
+import { dailyDateStr, topRuns } from "@/game/meta";
+import { Skull, RotateCcw, Home, Share2 } from "lucide-react";
 
 interface GameOverModalProps {
   stats: PlayerStats;
@@ -68,6 +68,43 @@ export function GameOverModal({
           ? "Hollow defender"
           : "Coal-dust martyr";
 
+  // Batch 5 (Lane D): Share-run card. Resilient by design: the button only
+  // renders when 2D canvas is available, and a failed shareCard import (or a
+  // failed render) hides the button instead of crashing the modal.
+  const [canShare, setCanShare] = useState(true);
+  useEffect(() => {
+    try {
+      const c = document.createElement("canvas");
+      if (!c.getContext || !c.getContext("2d")) setCanShare(false);
+    } catch {
+      setCanShare(false);
+    }
+  }, []);
+
+  const handleShareRun = async () => {
+    try {
+      const { renderShareCard } = await import("@/game/shareCard");
+      const card = renderShareCard({
+        score,
+        kills: stats.kills,
+        time: Math.floor(stats.survivalTime),
+        level,
+        wave,
+        title,
+        locationName,
+        dateStr: dailyDateStr(),
+      });
+      const a = document.createElement("a");
+      a.href = card.toDataURL("image/png");
+      a.download = "pike-county-run.png";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch {
+      setCanShare(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/90 p-4">
       <div className="flex w-full max-w-xl flex-col overflow-hidden rounded border border-border bg-surface shadow-2xl">
@@ -115,6 +152,17 @@ export function GameOverModal({
             <RotateCcw className="h-4 w-4" />
             Run it back
           </button>
+          {canShare && (
+            <button
+              id="share-run"
+              type="button"
+              onClick={handleShareRun}
+              className="flex flex-1 items-center justify-center gap-2 rounded border border-border bg-surface py-3 font-heading uppercase tracking-widest text-fg"
+            >
+              <Share2 className="h-4 w-4" />
+              Share run
+            </button>
+          )}
           <button
             id="home-btn"
             type="button"

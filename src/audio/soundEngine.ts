@@ -26,6 +26,38 @@ class SoundEngine {
   private drumGain: GainNode | null = null;
   // Batch 4: long-tail echo bus for the screen-clear bomb.
   private echoIn: GainNode | null = null;
+  // Batch 5: unmuted master level — mute() zeroes the master gain,
+  // unmute restores exactly this without touching sfx/music gains.
+  private masterLevel = 0.8;
+  // Batch 5: central 24ms SFX throttle — one shared gate for every one-shot SFX.
+  private lastSfxAt = 0;
+  private sfxFiredCount = 0;
+  private sfxDroppedCount = 0;
+  // Batch 5: kill surge + beast growl layer.
+  private surge = 0;
+  private surgeTimer: number | null = null;
+  private beastDamage = 0;
+  private beastStreak = 0;
+  private growlGain: GainNode | null = null;
+  // Batch 5: low-HP heartbeat.
+  private hbTimer: number | null = null;
+  // Batch 5: combo-pitched kill sound probe.
+  private lastKillPitch = 0;
+
+  // Batch 5: deterministic probe surface for tests (coordinator can also
+  // wire engine-level probes if needed; engine.ts is untouched).
+  public __test = {
+    surge: () => this.surge,
+    growlMix: () => this.currentGrowlMix(),
+    throttleState: () => ({ fired: this.sfxFiredCount, dropped: this.sfxDroppedCount }),
+    heartbeatOn: () => this.hbTimer !== null,
+    lastKillPitch: () => this.lastKillPitch,
+    gains: () => ({
+      master: this.masterGain?.gain.value ?? -1,
+      sfx: this.sfxGain?.gain.value ?? -1,
+      music: this.musicGain?.gain.value ?? -1,
+    }),
+  };
 
   constructor() {
     // AudioContext will be initialized on first user interaction
@@ -37,7 +69,7 @@ class SoundEngine {
       this.ctx = new AudioCtxClass();
 
       this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.value = 0.8;
+      this.masterGain.gain.value = this.masterLevel;
       this.masterGain.connect(this.ctx.destination);
 
       this.sfxGain = this.ctx.createGain();
@@ -122,17 +154,30 @@ class SoundEngine {
     osc.start(t);
     osc.stop(t + (o.dur || 0.15) + 0.05);
   }
-  // VS-1: 24ms throttle for layered impact sounds — bullet storms can't spam them.
-  private lastImpactAt = 0;
+  // Batch 5: central 24ms throttle. One shared timestamp across all one-shot
+  // SFX so a dense horde can't white-noise the mix. Player-hurt sounds
+  // (kind 'hurt') always pass — they're survival-critical.
+  private sfxGate(kind: string): boolean {
+    if (kind === 'hurt') {
+      this.sfxFiredCount++;
+      return true;
+    }
+    const now = performance.now();
+    if (now - this.lastSfxAt < 24) {
+      this.sfxDroppedCount++;
+      return false;
+    }
+    this.lastSfxAt = now;
+    this.sfxFiredCount++;
+    return true;
+  }
 
   // VS-1: layered impact — pitched meat-thump + crack + grit, throttled to 24ms.
   public playImpact() {
     if (this.isMuted) return;
     this.init();
     if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
-    const now = performance.now();
-    if (now - this.lastImpactAt < 24) return;
-    this.lastImpactAt = now;
+    if (!this.sfxGate('impact')) return;
     const t = this.ctx.currentTime;
     // Meat thump: pitched-down triangle.
     const osc = this.sfxOsc();
@@ -178,6 +223,7 @@ class SoundEngine {
   public playKillSub() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('killsub')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc = this.sfxOsc();
@@ -192,10 +238,37 @@ class SoundEngine {
     osc.stop(t + 0.3);
   }
 
+  // Batch 5 [S7]: combo-pitched kill sound — pitch rises with the Harvest
+  // Streak combo: base 300Hz + min(combo,20)*30 Hz. Raw oscillator so the
+  // combo pitch stays exact (no Group-1 ±10% jitter on this one).
+  public playKillPitched(combo: number) {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.sfxGate('kill')) return;
+    if (!this.ctx || !this.sfxGain) return;
+    const c = Math.max(0, Math.min(20, Math.floor(combo)));
+    const f = 300 + c * 30;
+    this.lastKillPitch = f;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(f, t);
+    osc.frequency.exponentialRampToValueAtTime(f * 1.5, t + 0.1);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.3, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+    osc.connect(g);
+    g.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.2);
+  }
+
   // VS-1: banish — a rising whistle that runs out of town.
   public playBanish() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('banish')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc = this.sfxOsc();
@@ -214,12 +287,36 @@ class SoundEngine {
     osc.start(t);
     osc.stop(t + 0.3);
   }
-  public toggleMute(): boolean {
-    this.isMuted = !this.isMuted;
-    if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(this.isMuted ? 0 : 0.8, this.ctx.currentTime);
+  // Batch 5: clean mute — zeroes the master gain without overwriting the
+  // individual sfx/music volumes, so unmute restores exactly.
+  public setMuted(on: boolean) {
+    this.isMuted = on;
+    if (this.masterGain) {
+      // Direct assignment (not setValueAtTime) so the mute state is exact
+      // and readable back; individual sfx/music volumes are never touched.
+      this.masterGain.gain.value = on ? 0 : this.masterLevel;
     }
+  }
+
+  public toggleMute(): boolean {
+    this.setMuted(!this.isMuted);
     return this.isMuted;
+  }
+
+  // Batch 5: music/SFX split — individual bus volumes. Mute never touches these.
+  public setSfxVolume(v: number) {
+    this.init();
+    if (this.sfxGain) this.sfxGain.gain.value = Math.max(0, Math.min(1, v));
+  }
+  public setMusicVolume(v: number) {
+    this.init();
+    if (this.musicGain) this.musicGain.gain.value = Math.max(0, Math.min(1, v));
+  }
+  public getSfxVolume(): number {
+    return this.sfxGain ? this.sfxGain.gain.value : 0;
+  }
+  public getMusicVolume(): number {
+    return this.musicGain ? this.musicGain.gain.value : 0;
   }
 
   public getMuted(): boolean {
@@ -231,6 +328,7 @@ class SoundEngine {
   public playGunshot(type: 'magnum' | 'shotgun' | 'rifle' | 'carbine' | 'crossbow' | 'chainsaw' | 'molotov') {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('gunshot')) return;
     if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
 
     const t = this.ctx.currentTime;
@@ -408,6 +506,7 @@ class SoundEngine {
   public playBottleShatter() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('shatter')) return;
     if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
     const t = this.ctx.currentTime;
 
@@ -444,6 +543,7 @@ class SoundEngine {
   public playZombieHit(isHeadshot: boolean = false) {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('hit')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
 
@@ -478,6 +578,7 @@ class SoundEngine {
   public playZombieGroan(type: 'shambler' | 'sprinter' | 'miner_brute' | 'bloater_spitter' | 'behemoth') {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('groan')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
 
@@ -547,6 +648,7 @@ class SoundEngine {
   public playReload() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('reload')) return;
     this.playClick(0.35, 900);
     setTimeout(() => this.playClick(0.4, 600), 200);
     setTimeout(() => this.playClick(0.45, 1100), 450);
@@ -555,6 +657,7 @@ class SoundEngine {
   public playPickup() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('pickup')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc = this.sfxOsc();
@@ -573,6 +676,7 @@ class SoundEngine {
   public playPowerup() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('powerup')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
 
@@ -596,6 +700,7 @@ class SoundEngine {
   public playLoreNote() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('lorenote')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
 
@@ -620,6 +725,7 @@ class SoundEngine {
   public playBarrelExplosion() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('explosion')) return;
     if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
     const t = this.ctx.currentTime;
 
@@ -656,6 +762,7 @@ class SoundEngine {
   public playNuke() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('nuke')) return;
     if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
     const t = this.ctx.currentTime;
 
@@ -730,6 +837,7 @@ class SoundEngine {
   public playBombEcho() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('bombecho')) return;
     if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
     this.ensureEchoBus();
     const t = this.ctx.currentTime;
@@ -781,6 +889,7 @@ class SoundEngine {
   public playAchievement() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('achievement')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const freqs = [880, 1174.66, 1567.98]; // A5 D6 G6
@@ -803,6 +912,7 @@ class SoundEngine {
   public playPlayerHurt() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('hurt')) return; // hurt always passes the gate
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc = this.sfxOsc();
@@ -821,6 +931,7 @@ class SoundEngine {
   public playDodge() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('dodge')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc = this.sfxOsc();
@@ -839,6 +950,7 @@ class SoundEngine {
   public playBash() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('bash')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc = this.sfxOsc();
@@ -857,6 +969,7 @@ class SoundEngine {
   public playWaveHorn() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('horn')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc1 = this.sfxOsc();
@@ -880,6 +993,7 @@ class SoundEngine {
   public playBell() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('bell')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     for (const [freq, delay, vol] of [
@@ -904,6 +1018,7 @@ class SoundEngine {
   public playLantern() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('lantern')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc = this.sfxOsc();
@@ -922,6 +1037,7 @@ class SoundEngine {
   public playSnuff() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('snuff')) return;
     if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
     const t = this.ctx.currentTime;
     const noise = this.sfxNoise();
@@ -942,6 +1058,7 @@ class SoundEngine {
   public playBoard() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('board')) return;
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc = this.sfxOsc();
@@ -979,6 +1096,7 @@ class SoundEngine {
   public playGrit() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('grit')) return;
     if (!this.ctx || !this.sfxGain) return;
     const now = this.ctx.currentTime;
     if (now - this.gritAt > 0.16) this.gritStep = 0;
@@ -1002,6 +1120,7 @@ class SoundEngine {
   public playLevel() {
     if (this.isMuted) return;
     this.init();
+    if (!this.sfxGate('level')) return;
     if (!this.ctx || !this.sfxGain) return;
     const now = this.ctx.currentTime;
     [523.25, 659.25, 783.99].forEach((freq, i) => {
@@ -1230,6 +1349,124 @@ class SoundEngine {
       n.start(t);
       n.stop(t + 0.06);
     }
+  }
+
+  // Batch 5 [S7]: low-HP heartbeat — quiet 50Hz double-thump on a timer
+  // while player HP is critical (<30%). Non-blocking (timer-driven), quiet,
+  // and stoppable. While muted the beat stays scheduled but stays silent.
+  public setHeartbeat(on: boolean) {
+    if (on && this.hbTimer === null) {
+      this.init();
+      this.hbTimer = window.setInterval(() => {
+        if (this.isMuted) return;
+        this.hbThump();
+        window.setTimeout(() => {
+          if (!this.isMuted) this.hbThump();
+        }, 170);
+      }, 850);
+    } else if (!on && this.hbTimer !== null) {
+      window.clearInterval(this.hbTimer);
+      this.hbTimer = null;
+    }
+  }
+
+  // Engine integration point: call once per frame with player HP fraction.
+  public updateHeartbeat(hpFrac: number) {
+    this.setHeartbeat(hpFrac < 0.3);
+  }
+
+  private hbThump() {
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator(); // raw — exact 50Hz thump
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(50, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.13, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+    osc.connect(g);
+    g.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.13);
+  }
+
+  // Batch 5 [S9]: kill surge — rises +0.18 per kill, decays over time.
+  // Engine integration point: call bumpSurge() on every kill.
+  public bumpSurge() {
+    this.surge = Math.min(1, this.surge + 0.18);
+    this.ensureSurgeLoop();
+    this.updateGrowlGain();
+  }
+
+  public getSurge(): number {
+    return this.surge;
+  }
+
+  // Engine integration point: feed recent damage + streak so the growl
+  // layer scales with surge + damage + streaks.
+  public setBeastMix(damage: number, streak: number) {
+    this.beastDamage = Math.max(0, Math.min(1, damage));
+    this.beastStreak = Math.max(0, streak);
+    this.ensureSurgeLoop();
+    this.updateGrowlGain();
+  }
+
+  private ensureSurgeLoop() {
+    this.init();
+    if (this.surgeTimer !== null) return;
+    this.surgeTimer = window.setInterval(() => {
+      if (this.surge > 0) {
+        this.surge = Math.max(0, this.surge - 0.15 / 10); // 0.15/sec decay
+        this.updateGrowlGain();
+      }
+    }, 100);
+  }
+
+  private currentGrowlMix(): number {
+    return Math.min(
+      1,
+      this.surge * 0.7 + this.beastDamage * 0.2 + (Math.min(this.beastStreak, 10) / 10) * 0.1
+    );
+  }
+
+  // Batch 5 [S9]: beast/growl layer — detuned low saws through a lowpass
+  // with a slow amplitude wobble, dog/lion-ish. Gain scales with the mix.
+  private ensureGrowl() {
+    if (this.growlGain || !this.ctx || !this.sfxGain) return;
+    const o1 = this.ctx.createOscillator();
+    o1.type = 'sawtooth';
+    o1.frequency.value = 47;
+    const o2 = this.ctx.createOscillator();
+    o2.type = 'sawtooth';
+    o2.frequency.value = 53;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 210;
+    const g = this.ctx.createGain();
+    g.gain.value = 0;
+    const lfo = this.ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 4.5;
+    const lfoDepth = this.ctx.createGain();
+    lfoDepth.gain.value = 0.02;
+    o1.connect(lp);
+    o2.connect(lp);
+    lp.connect(g);
+    g.connect(this.sfxGain);
+    lfo.connect(lfoDepth);
+    lfoDepth.connect(g.gain);
+    o1.start();
+    o2.start();
+    lfo.start();
+    this.growlGain = g;
+  }
+
+  private updateGrowlGain() {
+    if (!this.ctx) return;
+    this.ensureGrowl();
+    if (!this.growlGain) return;
+    this.growlGain.gain.setTargetAtTime(this.currentGrowlMix() * 0.09, this.ctx.currentTime, 0.15);
   }
 
   public stopAtmosphericMusic() {

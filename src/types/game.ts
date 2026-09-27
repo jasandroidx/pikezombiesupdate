@@ -38,7 +38,7 @@ export interface Weapon {
   evoProjSpeedMul?: number;
 }
 
-export type ZombieType = "shambler" | "sprinter" | "miner_brute" | "bloater_spitter" | "behemoth" | "crawler";
+export type ZombieType = "shambler" | "sprinter" | "miner_brute" | "bloater_spitter" | "behemoth" | "crawler" | "riot_shield" | "tipple_brute" | "wompus_stalker"; // Batch 5: riot_shield (Lane A) + future boss ids (Lane C); additive, no runtime impact
 export type ZombieAI = "wander" | "investigate" | "chase" | "attack";
 
 export interface Zombie {
