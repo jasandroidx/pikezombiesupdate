@@ -22,20 +22,12 @@ function paintPlate(ctx: CanvasRenderingContext2D, location: GameLocation) {
   const w = location.mapWidth;
   const h = location.mapHeight;
   const rand = mulberry32(hashId(location.id));
-  ctx.fillStyle = location.ground || '#1c1f19';
+  // Batch 6: tiled procedural ground — each map gets its own baked 256px tile,
+  // pattern-filled once at bake time so the frame cost stays at one drawImage.
+  const tile = tileFor(location.id, location.ground || '#1c1f19');
+  const pattern = ctx.createPattern(tile, 'repeat');
+  ctx.fillStyle = pattern || location.ground || '#1c1f19';
   ctx.fillRect(0, 0, w, h);
-
-  const cell = 56;
-  for (let y = 0; y < h; y += cell) {
-    for (let x = 0; x < w; x += cell) {
-      const n = rand();
-      if (n < 0.78) continue;
-      ctx.fillStyle = n > 0.93 ? 'rgba(232, 224, 212, 0.045)' : 'rgba(0, 0, 0, 0.14)';
-      ctx.beginPath();
-      ctx.ellipse(x + cell * 0.5, y + cell * 0.5, 10 + n * 22, 7 + n * 14, n * 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
 
   ctx.fillStyle = location.trail || '#26211a';
   ctx.beginPath();
@@ -82,9 +74,318 @@ function paintPlate(ctx: CanvasRenderingContext2D, location: GameLocation) {
   for (const obs of location.obstacles) renderObstacle(ctx, obs);
 }
 
+// ---- Batch 6: tiled ground textures (procedural tile baker, zero image assets) ----
+type GroundFeature = 'grass' | 'gravel' | 'forest' | 'plaza' | 'concrete' | 'meadow';
+interface GroundTheme { feature: GroundFeature; speckles: string[]; }
+const GROUND_THEMES: Record<string, GroundTheme> = {
+  white_oak_springs: { feature: 'grass', speckles: ['rgba(84, 110, 60, 0.5)', 'rgba(60, 78, 44, 0.6)', 'rgba(112, 96, 64, 0.45)'] },
+  mccords_ford: { feature: 'gravel', speckles: ['rgba(150, 142, 124, 0.5)', 'rgba(110, 104, 92, 0.6)', 'rgba(70, 74, 66, 0.55)'] },
+  stendal_backbone: { feature: 'forest', speckles: ['rgba(96, 74, 46, 0.55)', 'rgba(52, 66, 40, 0.6)', 'rgba(30, 34, 26, 0.6)'] },
+  petersburg_square: { feature: 'plaza', speckles: ['rgba(120, 104, 84, 0.4)', 'rgba(88, 76, 62, 0.5)'] },
+  winslow_still: { feature: 'concrete', speckles: ['rgba(140, 134, 120, 0.35)', 'rgba(90, 84, 72, 0.5)'] },
+  honey_springs: { feature: 'meadow', speckles: ['rgba(150, 130, 70, 0.5)', 'rgba(110, 100, 52, 0.55)', 'rgba(70, 84, 44, 0.5)'] },
+};
+const DEFAULT_THEME: GroundTheme = { feature: 'grass', speckles: ['rgba(84, 110, 60, 0.5)'] };
+
+const tiles = new Map<string, HTMLCanvasElement>();
+const TILE = 256;
+
+/** Baked-once 256px ground tile for a map id. Same id+base returns the same canvas. */
+export function tileFor(mapId: string, base: string): HTMLCanvasElement {
+  const key = mapId + ':' + base;
+  const cached = tiles.get(key);
+  if (cached) return cached;
+  const canvas = document.createElement('canvas');
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  if (ctx) bakeTile(ctx, mapId, base);
+  tiles.set(key, canvas);
+  return canvas;
+}
+
+function bakeTile(ctx: CanvasRenderingContext2D, mapId: string, base: string) {
+  const theme = GROUND_THEMES[mapId] ?? DEFAULT_THEME;
+  const rand = mulberry32(hashId('tile:' + mapId));
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, TILE, TILE);
+  const F = theme.feature;
+  if (F === 'grass' || F === 'meadow') {
+    for (let i = 0; i < 46; i++) {
+      ctx.fillStyle = `rgba(74, 58, 36, ${(0.08 + rand() * 0.1).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.ellipse(rand() * TILE, rand() * TILE, 6 + rand() * 20, 4 + rand() * 12, rand() * 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (F === 'meadow') {
+      // golden sun-cured patches — Honey Springs reads warm against the county
+      for (let i = 0; i < 30; i++) {
+        ctx.fillStyle = `rgba(150, 128, 60, ${(0.08 + rand() * 0.1).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.ellipse(rand() * TILE, rand() * TILE, 10 + rand() * 26, 6 + rand() * 14, rand() * 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    const blade = F === 'grass' ? 'rgba(96, 124, 66, 0.6)' : 'rgba(190, 164, 84, 0.65)';
+    const blades = F === 'grass' ? 170 : 260;
+    for (let i = 0; i < blades; i++) {
+      const x = rand() * TILE;
+      const y = rand() * TILE;
+      ctx.strokeStyle = rand() > 0.5 ? blade : 'rgba(60, 78, 44, 0.55)';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + (rand() - 0.5) * 5, y - 3 - rand() * 6);
+      ctx.stroke();
+    }
+  } else if (F === 'gravel') {
+    for (let i = 0; i < 260; i++) {
+      const g = 100 + rand() * 70;
+      ctx.fillStyle = `rgba(${g | 0}, ${(g * 0.95) | 0}, ${(g * 0.82) | 0}, ${(0.35 + rand() * 0.3).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(rand() * TILE, rand() * TILE, 0.8 + rand() * 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (let i = 0; i < 12; i++) {
+      ctx.fillStyle = `rgba(28, 32, 30, ${(0.12 + rand() * 0.1).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.ellipse(rand() * TILE, rand() * TILE, 20 + rand() * 30, 5 + rand() * 8, rand() * 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (F === 'forest') {
+    for (let i = 0; i < 130; i++) {
+      const x = rand() * TILE;
+      const y = rand() * TILE;
+      const a = rand() * Math.PI;
+      ctx.strokeStyle = rand() > 0.4 ? 'rgba(110, 84, 52, 0.5)' : 'rgba(70, 54, 34, 0.55)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + Math.cos(a) * (5 + rand() * 8), y + Math.sin(a) * (5 + rand() * 8));
+      ctx.stroke();
+    }
+    for (let i = 0; i < 26; i++) {
+      ctx.fillStyle = `rgba(16, 18, 14, ${(0.15 + rand() * 0.15).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.ellipse(rand() * TILE, rand() * TILE, 8 + rand() * 22, 6 + rand() * 14, rand() * 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (F === 'plaza') {
+    const cell = 64;
+    for (let gy = 0; gy < TILE; gy += cell) {
+      for (let gx = 0; gx < TILE; gx += cell) {
+        const v = (rand() - 0.5) * 14;
+        ctx.fillStyle = `rgba(${(120 + v) | 0}, ${(104 + v) | 0}, ${(84 + v) | 0}, 0.16)`;
+        ctx.fillRect(gx + 1, gy + 1, cell - 2, cell - 2);
+      }
+    }
+    ctx.strokeStyle = 'rgba(20, 16, 12, 0.55)';
+    ctx.lineWidth = 2;
+    for (let p = 0; p <= TILE; p += cell) {
+      ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, TILE); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(TILE, p); ctx.stroke();
+    }
+  } else if (F === 'concrete') {
+    ctx.strokeStyle = 'rgba(24, 22, 18, 0.6)';
+    ctx.lineWidth = 2;
+    for (let p = 0; p <= TILE; p += 128) {
+      ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, TILE); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(TILE, p); ctx.stroke();
+    }
+    for (let i = 0; i < 12; i++) {
+      const x = rand() * TILE;
+      const y = rand() * TILE;
+      const r = 8 + rand() * 22;
+      const squash = 0.55 + rand() * 0.4;
+      ctx.fillStyle = `rgba(6, 6, 7, ${(0.4 + rand() * 0.25).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.ellipse(x, y, r, r * squash, rand() * 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(120, 110, 90, 0.25)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(x, y, r * 1.08, r * squash * 1.08, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  for (let i = 0; i < 420; i++) {
+    ctx.fillStyle = theme.speckles[(rand() * theme.speckles.length) | 0];
+    ctx.fillRect(rand() * TILE, rand() * TILE, 1.4, 1.4);
+  }
+}
+
+// ---- Batch 6: parallax ground layers (baked once, scroll slower than the ground) ----
+interface ParallaxLayers { far: HTMLCanvasElement; near: HTMLCanvasElement; }
+const parallaxCache = new Map<string, ParallaxLayers>();
+
+/** Two baked translucent layers per map: far treeline band + near haze/canopy. */
+export function parallaxFor(mapId: string): ParallaxLayers {
+  const cached = parallaxCache.get(mapId);
+  if (cached) return cached;
+  const rand = mulberry32(hashId('px:' + mapId));
+  const far = document.createElement('canvas');
+  far.width = 512;
+  far.height = 144;
+  const fctx = far.getContext('2d');
+  if (fctx) {
+    const g = fctx.createLinearGradient(0, 0, 0, 144);
+    g.addColorStop(0, 'rgba(70, 84, 66, 0)');
+    g.addColorStop(1, 'rgba(70, 84, 66, 0.10)');
+    fctx.fillStyle = g;
+    fctx.fillRect(0, 0, 512, 144);
+    for (let i = 0; i < 16; i++) {
+      const x = rand() * 512;
+      const w = 30 + rand() * 70;
+      const h = 40 + rand() * 70;
+      fctx.fillStyle = `rgba(6, 10, 7, ${(0.5 + rand() * 0.3).toFixed(3)})`;
+      fctx.beginPath();
+      fctx.ellipse(x, 144, w, h, 0, Math.PI, 0);
+      fctx.fill();
+    }
+  }
+  const near = document.createElement('canvas');
+  near.width = 512;
+  near.height = 256;
+  const nctx = near.getContext('2d');
+  if (nctx) {
+    for (let i = 0; i < 10; i++) {
+      nctx.fillStyle = `rgba(150, 160, 140, ${(0.03 + rand() * 0.04).toFixed(3)})`;
+      nctx.beginPath();
+      nctx.ellipse(rand() * 512, rand() * 256, 60 + rand() * 90, 10 + rand() * 18, (rand() - 0.5) * 0.6, 0, Math.PI * 2);
+      nctx.fill();
+    }
+    for (let i = 0; i < 9; i++) {
+      nctx.fillStyle = `rgba(4, 6, 4, ${(0.08 + rand() * 0.08).toFixed(3)})`;
+      nctx.beginPath();
+      nctx.ellipse(rand() * 512, rand() * 256, 40 + rand() * 60, 26 + rand() * 34, rand() * 3, 0, Math.PI * 2);
+      nctx.fill();
+    }
+  }
+  const layers = { far, near };
+  parallaxCache.set(mapId, layers);
+  return layers;
+}
+
+interface Viewport { x: number; y: number; width: number; height: number; }
+
+function drawParallaxTile(
+  ctx: CanvasRenderingContext2D,
+  tile: HTMLCanvasElement,
+  v: Viewport,
+  f: number,
+  fy: number,
+  fullHeight: boolean,
+) {
+  const tileW = tile.width;
+  const tileH = tile.height;
+  ctx.save();
+  // Offset the layer by v*(1-f) so its screen position advances at fraction f of the camera.
+  ctx.translate(v.x * (1 - f), v.y * (1 - fy));
+  const sx = Math.floor((v.x * f) / tileW) * tileW;
+  const sy = Math.floor((v.y * fy) / tileH) * tileH;
+  const endX = v.x * f + v.width + tileW;
+  const endY = fullHeight ? v.y * fy + v.height + tileH : sy + tileH;
+  for (let x = sx; x < endX; x += tileW) {
+    for (let y = sy; y < endY; y += tileH) {
+      ctx.drawImage(tile, x, y);
+    }
+  }
+  ctx.restore();
+}
+
+/** Drawn inside renderEnvironment after the ground plate: far band at 0.86, near haze at 0.94. */
+export function renderParallax(ctx: CanvasRenderingContext2D, location: GameLocation, viewport: Viewport) {
+  const layers = parallaxFor(location.id);
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  drawParallaxTile(ctx, layers.far, viewport, 0.86, 0.45, false);
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = 0.42;
+  drawParallaxTile(ctx, layers.near, viewport, 0.94, 0.55, true);
+  ctx.restore();
+}
+
+// ---- Batch 6: blob shadows (one baked sprite, cheap grounding) ----
+let blobSprite: HTMLCanvasElement | null = null;
+function shadowSprite(): HTMLCanvasElement {
+  if (blobSprite) return blobSprite;
+  const c = document.createElement('canvas');
+  c.width = 96;
+  c.height = 96;
+  const g = c.getContext('2d');
+  if (g) {
+    const grad = g.createRadialGradient(48, 48, 4, 48, 48, 48);
+    grad.addColorStop(0, 'rgba(0, 0, 0, 0.9)');
+    grad.addColorStop(0.55, 'rgba(0, 0, 0, 0.45)');
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 96, 96);
+  }
+  blobSprite = c;
+  return c;
+}
+
+/** Soft dark ellipse under a body/pickup. Engine wire-in point: renderZombies/renderPlayer. */
+export function drawBlobShadow(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, alpha = 0.4) {
+  if (radius <= 0 || alpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, alpha);
+  ctx.drawImage(shadowSprite(), x - radius, y - radius * 0.55, radius * 2, radius * 1.1);
+  ctx.restore();
+}
+
+// ---- Batch 6: per-instance damage flash + hue jitter ----
+export const HIT_FLASH_MS = 80;
+const hitFlashAt = new Map<number, number>();
+
+/** Engine damage path should call this when a zombie takes a hit. */
+export function registerZombieHit(instanceId: number, now = Date.now()) {
+  hitFlashAt.set(instanceId, now);
+}
+
+/** 0..1 white-flash envelope: 1 at hit, 0 after HIT_FLASH_MS. */
+export function zombieFlashIntensity(instanceId: number, now = Date.now()): number {
+  const t = hitFlashAt.get(instanceId);
+  if (t === undefined) return 0;
+  const el = now - t;
+  if (el < 0 || el >= HIT_FLASH_MS) {
+    if (el >= HIT_FLASH_MS) hitFlashAt.delete(instanceId);
+    return 0;
+  }
+  return 1 - el / HIT_FLASH_MS;
+}
+
+/** Slight deterministic per-instance variation so horde members don't look cloned. */
+export function hueJitterFor(seed: number): { hue: number; sat: number } {
+  const h = hashId('zj:' + seed);
+  return { hue: (h % 29) - 14, sat: 0.94 + ((h >>> 9) % 15) / 100 };
+}
+
+/** Apply before drawing a zombie body, clearZombieTint after. */
+export function applyZombieTint(ctx: CanvasRenderingContext2D, seed: number) {
+  const j = hueJitterFor(seed);
+  ctx.filter = `hue-rotate(${j.hue}deg) saturate(${j.sat.toFixed(2)})`;
+}
+
+export function clearZombieTint(ctx: CanvasRenderingContext2D) {
+  ctx.filter = 'none';
+}
+
+/** White bloom over a just-hit body; intensity from zombieFlashIntensity. */
+export function drawZombieHitFlash(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, intensity: number) {
+  if (intensity <= 0 || r <= 0) return;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, `rgba(255, 255, 255, ${(0.85 * intensity).toFixed(3)})`);
+  g.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 function plateFor(location: GameLocation) {
   const cached = plates.get(location.id + ':3');
-  if (cached && cached.width === location.mapWidth && cached.height === location.mapHeight) return cached;
   if (cached && cached.width === location.mapWidth && cached.height === location.mapHeight) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = location.mapWidth;
@@ -125,6 +426,9 @@ export function renderEnvironment(
   if (sx + sw > plate.width) sw = plate.width - sx;
   if (sy + sh > plate.height) sh = plate.height - sy;
   if (sw > 1 && sh > 1) ctx.drawImage(plate, sx, sy, sw, sh, sx, sy, sw, sh);
+
+  // Batch 6: parallax ground layers — scroll slower than the ground for depth.
+  renderParallax(ctx, location, { x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height });
 
   for (const decal of bloodDecals) {
     if (!sees(viewport, decal.x, decal.y, decal.radius)) continue;
@@ -189,6 +493,8 @@ export function renderEnvironment(
 
   for (const drop of drops) {
     if (!sees(viewport, drop.x, drop.y, 28 * pickup)) continue;
+    // Batch 6: blob shadow stays on the ground while the pickup bobs.
+    drawBlobShadow(ctx, drop.x, drop.y + 5, 11 * pickup, 0.38);
     ctx.save();
     ctx.translate(drop.x, drop.y);
     ctx.scale(pickup, pickup);
@@ -927,5 +1233,25 @@ function renderExtract(ctx: CanvasRenderingContext2D, extract: { x: number; y: n
   ctx.textAlign = "center";
   ctx.fillText("GET TO THE TRUCK  [E]", extract.x, extract.y - extract.radius - 10);
   ctx.restore();
+}
+
+// Batch 6: test/render probe surface. Engine integration (renderZombies,
+// renderPlayer, setAmbient on map switch) is the coordinator's lane.
+if (typeof window !== 'undefined') {
+  (window as any).__pzVisual = {
+    tileFor,
+    plateFor,
+    parallaxFor,
+    renderParallax,
+    renderEnvironment,
+    drawBlobShadow,
+    registerZombieHit,
+    zombieFlashIntensity,
+    hueJitterFor,
+    applyZombieTint,
+    clearZombieTint,
+    drawZombieHitFlash,
+    HIT_FLASH_MS,
+  };
 }
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { GAME_LOCATIONS, OUTBREAK_ORDER } from "@/game/constants";
 import { buyRank, loadSave, rankCost } from "@/game/save";
-import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield, Wind, CalendarDays } from "lucide-react";
+import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield, Wind, CalendarDays, Settings, ScrollText } from "lucide-react";
 import { ControlsModal } from "./ControlsModal";
 import { dailyDateStr, dailyPlayed, getDailySeed, loadMeta, markDailyPlayed } from "@/game/meta";
 import { QUESTS } from "@/game/constants";
@@ -16,9 +16,11 @@ interface StartScreenProps {
   ) => void;
   isMuted: boolean;
   onToggleMute: () => void;
+  onOpenSettings?: () => void;
+  onOpenCodex?: () => void;
 }
 
-export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenProps) {
+export function StartScreen({ onStartGame, isMuted, onToggleMute, onOpenSettings, onOpenCodex }: StartScreenProps) {
   const meta = loadMeta();
   const [selectedLocation, setSelectedLocation] = useState(0);
   const [difficulty, setDifficulty] = useState(1);
@@ -61,6 +63,16 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
             <div className="rounded border border-border bg-surface px-3 py-1 font-mono text-xs text-accent">
               Record {save.highScore.toLocaleString()} · Wave {save.bestWave}
             </div>
+          )}
+          {onOpenCodex && (
+            <button type="button" title="County codex" aria-label="County codex" className="rounded border border-border bg-surface p-2" onClick={onOpenCodex}>
+              <ScrollText className="h-4 w-4 text-accent" />
+            </button>
+          )}
+          {onOpenSettings && (
+            <button type="button" title="Settings" aria-label="Settings" className="rounded border border-border bg-surface p-2" onClick={onOpenSettings}>
+              <Settings className="h-4 w-4 text-fg" />
+            </button>
           )}
           <button type="button" className="rounded border border-border bg-surface p-2" onClick={() => setShowJournal((v) => !v)}>
             <BookOpen className="h-4 w-4 text-accent" />

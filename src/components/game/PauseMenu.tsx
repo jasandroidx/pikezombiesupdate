@@ -1,4 +1,4 @@
-import { Play, Wrench, Home, Volume2, VolumeX, Keyboard } from "lucide-react";
+import { Play, Wrench, Home, Volume2, VolumeX, Keyboard, Settings, ScrollText } from "lucide-react";
 
 interface PauseMenuProps {
   onResume: () => void;
@@ -9,9 +9,11 @@ interface PauseMenuProps {
   onToggleMute: () => void;
   hitFeel: boolean;
   onToggleHitFeel: () => void;
+  onSettings?: () => void;
+  onCodex?: () => void;
 }
 
-export function PauseMenu({ onResume, onWorkbench, onControls, onHome, isMuted, onToggleMute, hitFeel, onToggleHitFeel }: PauseMenuProps) {
+export function PauseMenu({ onResume, onWorkbench, onControls, onHome, isMuted, onToggleMute, hitFeel, onToggleHitFeel, onSettings, onCodex }: PauseMenuProps) {
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
       <div className="w-full max-w-sm rounded border border-border bg-surface p-5 shadow-2xl">
@@ -59,6 +61,26 @@ export function PauseMenu({ onResume, onWorkbench, onControls, onHome, isMuted, 
             <span className={hitFeel ? "text-accent" : "text-muted"}>✦</span>
             {hitFeel ? "Hit-feel on" : "Hit-feel off"}
           </button>
+          {onSettings && (
+            <button
+              type="button"
+              onClick={onSettings}
+              className="flex items-center justify-center gap-2 rounded border border-border bg-bg px-4 py-3 font-heading uppercase tracking-widest text-fg"
+            >
+              <Settings className="h-5 w-5 text-accent" />
+              Settings
+            </button>
+          )}
+          {onCodex && (
+            <button
+              type="button"
+              onClick={onCodex}
+              className="flex items-center justify-center gap-2 rounded border border-border bg-bg px-4 py-3 font-heading uppercase tracking-widest text-fg"
+            >
+              <ScrollText className="h-5 w-5 text-accent" />
+              County codex
+            </button>
+          )}
           <button
             type="button"
             onClick={onHome}

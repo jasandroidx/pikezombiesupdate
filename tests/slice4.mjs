@@ -65,6 +65,7 @@ ok("upgrade to mk3", (await T("upgradePost()")) === true && (await T("postRank()
 ok("mk3 is max", (await T("upgradePost()")) === false);
 
 await T("setWave(6)");
+await T("setSim(120)"); // Batch 6: smooth time-based HP scaling hp = 1+gt/120
 // spawn+read in a single tick so no frame can damage the zombie before we read it;
 // take the min over several spawns to dodge elite rolls (elites only raise HP)
 const hpReads = [];
@@ -77,8 +78,11 @@ for (let i = 0; i < 8; i++) {
 }
 const minHp = Math.min(...hpReads.map((r) => r.hp));
 const hpMult = hpReads[0].mult;
-const expected = Math.round(Math.round(58 * 1.28) * hpMult);
-ok("wave 6 shambler has scaled HP", minHp === expected, `min=${minHp} expected=${expected} mult=${hpMult}`);
+// Batch 6: scalingAt(120).hp = 2, D(t) director = 1+0.85*(1-exp(-120/320))
+const smooth = 1 + 120 / 120;
+const dtc = 1 + 0.85 * (1 - Math.exp(-120 / 320));
+const expected = Math.round(Math.round(58 * smooth) * hpMult * dtc);
+ok("shambler has smooth time-scaled HP", minHp === expected, `min=${minHp} expected=${expected} mult=${hpMult}`);
 
 ok("zero page errors", errors.length === 0, errors.join(" | ").slice(0, 300));
 await browser.close();

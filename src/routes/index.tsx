@@ -17,6 +17,9 @@ import { PauseMenu } from "@/components/game/PauseMenu";
 import { ControlsModal } from "@/components/game/ControlsModal";
 import { TailgateDraft } from "@/components/game/TailgateDraft";
 import { CacheSlots } from "@/components/game/CacheSlots";
+import { TuningPanel, applyStoredTuning } from "@/components/game/TuningPanel";
+import { AccessibilityPanel, applyStoredA11y } from "@/components/game/AccessibilityPanel";
+import { CodexPanel } from "@/components/game/CodexPanel";
 import type { BoonOffer } from "@/game/boons";
 import type { ActivePowerup, EngineSnapshot, GameMode, LoreNote, Perk, PlayerStats, Weapon } from "@/types/game";
 
@@ -51,6 +54,13 @@ function GameApp() {
   const [draft, setDraft] = useState<BoonOffer[] | null>(null);
   const [cacheSymbols, setCacheSymbols] = useState<string[] | null>(null);
   const [hitFeel, setHitFeel] = useState(true);
+  // Batch 6 (Lane E): hidden tuning panel (backtick), settings/a11y, codex.
+  const [showTuning, setShowTuning] = useState(false);
+  const [showA11y, setShowA11y] = useState(false);
+  const [showCodex, setShowCodex] = useState(false);
+  // Batch 6 (coordinator): unlocks tracked in engine.codexSeen; synced here
+  // whenever the codex opens. Daily entry is marked on daily-run start.
+  const [codexUnlocked, setCodexUnlocked] = useState<string[]>([]);
   const [boonStacks, setBoonStacks] = useState<Record<string, number>>({});
   const [rerolls, setRerolls] = useState(1);
   const [banishCharges, setBanishCharges] = useState(2);
@@ -183,7 +193,7 @@ function GameApp() {
     // Batch 5 (Lane D): daily-run seed. markDailyPlayed() records "attempted
     // today"; the seed is forwarded to bootEngine (see integration note there).
     seedRef.current = seed;
-    if (seed !== undefined) markDailyPlayed();
+    if (seed !== undefined) { markDailyPlayed(); setCodexUnlocked((u) => u.includes("daily_challenge") ? u : [...u, "daily_challenge"]); }
     setMode(nextMode);
     setWon(false);
     setRadio(null);
@@ -279,6 +289,10 @@ function GameApp() {
     setIsWorkbenchOpen(false);
     setPostRank(1);
     engine.start(difficultyMultiplier);
+    // Batch 6 (Lane E): re-adopt persisted tuning + a11y settings on every boot.
+    // Both are no-ops against hooks the engine doesn't have yet.
+    applyStoredTuning(engine);
+    applyStoredA11y(engine);
   };
 
   const advanceOutbreak = () => {
@@ -332,6 +346,28 @@ function GameApp() {
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
+      // Batch 6 (Lane E): backtick toggles the hidden field-tuning panel,
+      // from any screen.
+      if (e.key === "`" && !e.repeat) {
+        e.preventDefault();
+        setShowTuning((v) => !v);
+        return;
+      }
+      // Escape closes Lane E panels before anything else.
+      if (e.code === "Escape") {
+        if (showA11y) {
+          setShowA11y(false);
+          return;
+        }
+        if (showCodex) {
+          setShowCodex(false);
+          return;
+        }
+        if (showTuning) {
+          setShowTuning(false);
+          return;
+        }
+      }
       if (activeLoreNote) {
         if (e.code === "Escape" || e.code === "Space" || e.code === "KeyE") {
           e.preventDefault();
@@ -369,7 +405,7 @@ function GameApp() {
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [screen, isWorkbenchOpen, activeLoreNote, draft, showControls]);
+  }, [screen, isWorkbenchOpen, activeLoreNote, draft, showControls, showA11y, showCodex, showTuning]);
 
   const handleUnlockWeapon = (index: number) => {
     const engine = engineRef.current;
@@ -482,7 +518,13 @@ function GameApp() {
       <canvas id="game-canvas" ref={canvasRef} className="block h-full w-full cursor-crosshair" />
 
       {screen === "title" && (
-        <StartScreen onStartGame={handleStartGame} isMuted={isMuted} onToggleMute={handleToggleMute} />
+        <StartScreen
+          onStartGame={handleStartGame}
+          isMuted={isMuted}
+          onToggleMute={handleToggleMute}
+          onOpenSettings={() => setShowA11y(true)}
+          onOpenCodex={() => { const eng = engineRef.current; if (eng?.codexSeen) setCodexUnlocked((u) => { const next = new Set(u); for (const id of eng.codexSeen) next.add(id); return [...next]; }); setShowCodex(true); }}
+        />
       )}
 
       {screen === "playing" && (
@@ -648,10 +690,18 @@ function GameApp() {
             setDraft(null);
             setScreen("title");
           }}
+          onSettings={() => setShowA11y(true)}
+          onCodex={() => { const eng = engineRef.current; if (eng?.codexSeen) setCodexUnlocked((u) => { const next = new Set(u); for (const id of eng.codexSeen) next.add(id); return [...next]; }); setShowCodex(true); }}
         />
       )}
 
       {showControls && screen === "playing" && <ControlsModal onClose={handleToggleControls} />}
+
+      {/* Batch 6 (Lane E): hidden tuning panel, settings, codex. Overlays only —
+          none of these touch title / playing / game_over flow. */}
+      {showTuning && <TuningPanel engineRef={engineRef} onClose={() => setShowTuning(false)} />}
+      {showA11y && <AccessibilityPanel engineRef={engineRef} onClose={() => setShowA11y(false)} />}
+      {showCodex && <CodexPanel unlockedIds={codexUnlocked} onClose={() => setShowCodex(false)} />}
 
       {isWorkbenchOpen && screen === "playing" && (
         <UpgradeShopModal

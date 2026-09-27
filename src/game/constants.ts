@@ -709,6 +709,17 @@ export interface EvolutionRecipe {
   spreadMul?: number;
   projSpeedMul?: number;
   rangeMul?: number;
+  // Batch 6 (S16): paired filler requirement — evolution also needs N picks
+  // of a named filler boon (one that isn't this row's requiredBoon).
+  requiredPicks?: { boonId: string; count: number };
+  // Batch 6 (S6): evolved-form signature bonuses — fractions, all optional
+  // so old rows still evolve exactly as before when a field is absent.
+  /** +10% crit chance on the evolved weapon, e.g. 0.10. */
+  critBonus?: number;
+  /** +10% damage on the evolved weapon, e.g. 0.10. */
+  dmgBonus?: number;
+  /** 5% faster cooldown on the evolved weapon, e.g. 0.05. */
+  cdBonus?: number;
 }
 
 export const EVOLUTIONS: EvolutionRecipe[] = [
@@ -717,59 +728,76 @@ export const EVOLUTIONS: EvolutionRecipe[] = [
     requiredBoon: "storm",
     requiredBoonName: "Storm jar",
     requiredStacks: 1,
+    requiredPicks: { boonId: "lead", count: 3 }, // hand-loads for the magnum
     evolvedName: ".357 Deadeye",
     evolvedDescription: "Evolved in a chest: storm-forged .357. Hits 70% harder, cycles faster, punches through three deep.",
     evolvedRadio: "That hand-cannon drank the lightning. Deadeye now — and it don't miss twice.",
+    critBonus: 0.10, // Deadeye: +10% crit chance
+    dmgBonus: 0.10,  // Deadeye: +10% damage
   },
   {
     baseWeapon: "shotgun",
     requiredBoon: "bone",
     requiredBoonName: "Buck and bone",
     requiredStacks: 2,
+    requiredPicks: { boonId: "shells", count: 3 }, // box off the bench feeds the bell
     evolvedName: "Widow's Bell",
     evolvedDescription: "Evolved: the '90 tornado took the Whiteoak chapel bell — this rings like it. Two more pellets, meaner and wider.",
     evolvedRadio: "She tolls for them now. The Widow's Bell don't need a steeple.",
     dmgMul: 1.5, fireMul: 1.15, pelletsAdd: 2, spreadMul: 1.25,
+    dmgBonus: 0.10, // Bell: +10% damage, straight boom
   },
   {
     baseWeapon: "lever_rifle",
     requiredBoon: "salt",
     requiredBoonName: "Salt line",
     requiredStacks: 2,
+    requiredPicks: { boonId: "beam", count: 3 }, // hunter's light for a longrifle
     evolvedName: "White Oak Longrifle",
     evolvedDescription: "Evolved: blessed salt down a White Oak barrel. Punches through five deep, faster and truer.",
     evolvedRadio: "One shot, clean through the tree line. That's a White Oak longrifle, boy.",
     dmgMul: 1.8, fireMul: 1.1, pierceSet: 5, projSpeedMul: 1.4,
+    critBonus: 0.10, // Longrifle: +10% crit chance — one shot, one kill
+    dmgBonus: 0.10,  // Longrifle: +10% damage
   },
   {
     baseWeapon: "carbine",
     requiredBoon: "trigger",
     requiredBoonName: "Filed trigger",
     requiredStacks: 2,
+    requiredPicks: { boonId: "stride", count: 3 }, // run-and-gun pace for the rapid gun
     evolvedName: "Enos Corner Repeater",
     evolvedDescription: "Evolved: filed trigger on a Patoka carbine. Twice the cycle, half again the magazine.",
     evolvedRadio: "Enos Corner never heard anything that fast that wasn't weather.",
     dmgMul: 1.2, fireMul: 2.0, magMul: 1.5,
+    cdBonus: 0.05,  // Repeater: 5% faster cooldown
+    dmgBonus: 0.10, // Repeater: +10% damage
   },
   {
     baseWeapon: "crossbow",
     requiredBoon: "hide",
     requiredBoonName: "County hide",
     requiredStacks: 2,
+    requiredPicks: { boonId: "pipe", count: 3 }, // traps for the silent hunter
     evolvedName: "Buffalo Trace Stalker",
     evolvedDescription: "Evolved: county hide wraps a Buffalo Trace bow. Twice the bite, faster bolts, quiet as snowfall.",
     evolvedRadio: "They never heard the Trace coming. That's how the old ones hunted.",
     dmgMul: 2.0, fireMul: 1.2, pierceSet: 3, projSpeedMul: 1.5,
+    dmgBonus: 0.10, // Stalker: +10% damage
+    cdBonus: 0.05,  // Stalker: 5% faster cooldown — quicker reload of the string
   },
   {
     baseWeapon: "chainsaw",
     requiredBoon: "jug",
     requiredBoonName: "Another jug",
     requiredStacks: 2,
+    requiredPicks: { boonId: "leavings", count: 3 }, // scrap for the fuel bill
     evolvedName: "Kindill Ripper",
     evolvedDescription: "Evolved: a Kindill saw mill chain drinking moonshine. Bigger bite, longer reach.",
     evolvedRadio: "You can hear that ripper from Logtown. Feed it.",
     dmgMul: 1.6, fireMul: 1.25, rangeMul: 1.5,
+    dmgBonus: 0.10, // Ripper: +10% damage
+    cdBonus: 0.05,  // Ripper: 5% faster cooldown — hotter chain, faster spin
   },
 ];
 
@@ -1159,4 +1187,197 @@ export function hashStringToSeed(s: string): number {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
   return h >>> 0;
+}
+
+// ---------------------------------------------------------------------------
+// Batch 6 — Lane D (data/meta):
+//   (a) evolutionReady() — S16 pure trigger check;
+//   (b) CODEX — S16 achievement/codex table + lookup (Lane E builds UI on it);
+//   (c) SCALING — S7 smooth time-based difficulty formulas + scalingAt().
+//
+// (a) EVOLUTION TRIGGER INTEGRATION POINT (coordinator): the gate lives in
+//   checkEvolutions() in src/game/engine.ts (~line 2850). Today's condition is
+//     if (!w || this.boon(r.requiredBoon) < r.requiredStacks) continue;
+//   Replace it with the S16 trigger (max level + paired filler picks):
+//     if (!evolutionReady(r, w, this.boonStacks)) continue;
+//   When evolutionReady is true, apply the S6 signature bonuses alongside the
+//   existing mults, right after the fireRate/pierce block (~line 2862-2869):
+//     if (r.dmgBonus) w.damage = Math.round(w.damage * (1 + r.dmgBonus));        // +10% damage
+//     if (r.critBonus) w.critChance = (w.critChance ?? 0) + r.critBonus;          // +10% crit — see note below
+//     if (r.cdBonus) w.cooldown = (w.cooldown ?? 0) * (1 - r.cdBonus);           // 5% faster cooldown
+//   CRIT NOTE: the engine has no per-weapon crit system yet — headshots are the
+//   crit analog (×2.4, checkHeadshot ~line 2655). Either add a weapon critChance
+//   roll in the damage pipeline (~line 2634) and map critBonus onto it, or fold
+//   critBonus into the headshot multiplier for evolved weapons.
+//   Remember the evolution-hints UI: evolutionHints() (~line 2880) should grow
+//   the new "(filler have/need)" and "max level" bits when this is wired.
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure evolution trigger (S16). True only when ALL hold:
+ *  - the weapon exists and is at max table level (WEAPON_MAX_TABLE_LEVEL),
+ *  - the evolution's requiredBoon has the requiredStacks,
+ *  - the paired filler picks requirement (requiredPicks, e.g. 3 picks) is met.
+ * boonStacks is a plain Record<string, number> of boon id -> stack count.
+ */
+export function evolutionReady(
+  row: EvolutionRecipe,
+  weapon: { upgradeLevel: number } | undefined | null,
+  boonStacks: Record<string, number>
+): boolean {
+  if (!weapon) return false;
+  if (weapon.upgradeLevel < WEAPON_MAX_TABLE_LEVEL) return false;
+  if ((boonStacks[row.requiredBoon] ?? 0) < row.requiredStacks) return false;
+  if (row.requiredPicks && (boonStacks[row.requiredPicks.boonId] ?? 0) < row.requiredPicks.count) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// (b) CODEX — S16 achievement/codex table. Pure data; Lane E renders it.
+//
+// CONTRACT (Lane E): every entry is exactly { id, name, blurb, hint }.
+//   - weapons: id === the Weapon.id (e.g. "revolver")
+//   - evolutions: id === "evolution_<baseWeapon>" (e.g. "evolution_revolver")
+//   - zombie types: id === the ZombieType string (e.g. "shambler")
+//   - bosses: id === the BossDef.id ("behemoth" shares its entry with the
+//     zombie-type row; "tipple" and "wompus" have their own)
+//   - secrets: "konami" (Konami-code secret), "daily_challenge"
+// blurb is lore/flavor; hint tells the player how to unlock or meet it.
+// Do not rename the fields — the Codex UI is built against this shape.
+// ---------------------------------------------------------------------------
+
+export interface CodexEntry {
+  id: string;
+  name: string;
+  blurb: string;
+  hint: string;
+}
+
+export const CODEX: CodexEntry[] = [
+  // --- weapons (id === Weapon.id) ---
+  { id: "revolver", name: ".357 Trail Magnum", blurb: "Heavy Pike County revolver. One-handed thunder that still stops a shambler cold. Hand-loaded lead and a supply chest wake something up in it.", hint: "Start with it — it's your first gun." },
+  { id: "shotgun", name: "12-Ga. Pump", blurb: "Barn gun. Turns a hallway of infected into Patoka mud. Eight pellets of Whiteoak thunder.", hint: "Unlock it in the wave shop or the workbench." },
+  { id: "lever_rifle", name: "30-30 Lever Gun", blurb: "Deer rifle off a Washington Township porch. Drills through two, sometimes three.", hint: "Unlock it at the workbench or in a supply cache." },
+  { id: "carbine", name: "Guard Carbine", blurb: "Pulled from an Indiana National Guard checkpoint on US-41 after the road went quiet.", hint: "Unlock it at the workbench or in a supply cache." },
+  { id: "crossbow", name: "Silent Hunter", blurb: "Broadheads. No report. The horde does not turn unless they see the light.", hint: "Unlock it at the workbench or in a supply cache." },
+  { id: "chainsaw", name: "Stihl Yard Saw", blurb: "Two-stroke from a barn loft. Eats fuel. Eats everything else faster.", hint: "Unlock it at the workbench or in a supply cache." },
+  { id: "wompus_howler", name: "Wompus Howler", blurb: "A Winslow gunsmith's joke that stopped being funny: a carbine bored out and tuned to yowl like the Wompus cat on every pull.", hint: "Secret — enter the Konami code. It is never drafted." },
+
+  // --- evolutions (id === "evolution_<baseWeapon>") ---
+  { id: "evolution_revolver", name: ".357 Deadeye", blurb: "Storm-forged .357. Hits 70% harder, cycles faster, punches three deep — and the lightning taught it where to bite: +10% crit, +10% damage.", hint: "Max the revolver's level, take Storm jar, and draft 3 Hand-loaded lead picks." },
+  { id: "evolution_shotgun", name: "Widow's Bell", blurb: "The '90 tornado took the Whiteoak chapel bell — this rings like it. Two more pellets, meaner and wider: +10% damage.", hint: "Max the shotgun's level, take 2 Buck and bone, and draft 3 Box off the bench picks." },
+  { id: "evolution_lever_rifle", name: "White Oak Longrifle", blurb: "Blessed salt down a White Oak barrel. Punches five deep, faster and truer: +10% crit, +10% damage.", hint: "Max the lever rifle's level, take 2 Salt line, and draft 3 Fresh cells picks." },
+  { id: "evolution_carbine", name: "Enos Corner Repeater", blurb: "Filed trigger on a Patoka carbine. Twice the cycle, half again the magazine: 5% faster cooldown, +10% damage.", hint: "Max the carbine's level, take 2 Filed trigger, and draft 3 Longer stride picks." },
+  { id: "evolution_crossbow", name: "Buffalo Trace Stalker", blurb: "County hide wraps a Buffalo Trace bow. Twice the bite, faster bolts, quiet as snowfall: +10% damage, 5% faster cooldown.", hint: "Max the crossbow's level, take 2 County hide, and draft 3 Stovepipe picks." },
+  { id: "evolution_chainsaw", name: "Kindill Ripper", blurb: "A Kindill saw-mill chain drinking moonshine. Bigger bite, longer reach: +10% damage, 5% faster cooldown.", hint: "Max the chainsaw's level, take 2 Another jug, and draft 3 Pocket the leavings picks." },
+
+  // --- zombie types (id === ZombieType string) ---
+  { id: "shambler", name: "Shambler", blurb: "The county's walking dead. Slow, patient, and always coming out of the holes.", hint: "Wave 1 onward. Board the holes." },
+  { id: "sprinter", name: "Sprinter", blurb: "Fast ones on the Buffalo Trace. They don't wander — they hunt.", hint: "Shows up early. Keep moving; don't let them cut the corner." },
+  { id: "crawler", name: "Crawler", blurb: "Claws out of the cellar holes and comes low. Easy to miss in the fog.", hint: "Watch the holes at White Oak Springs." },
+  { id: "miner_brute", name: "Miner Brute", blurb: "A Stendal Backbone shaft man, still wearing his helmet and his shift. Hits like a roof bolt.", hint: "Mid-wave muscle. Helmets soak the first headshot." },
+  { id: "bloater_spitter", name: "Bloater Spitter", blurb: "Swollen on Patoka water. Spits at range — the fog is its friend.", hint: "Keep distance; close the gap between spits." },
+  { id: "riot_shield", name: "Riot Shield", blurb: "Deputy's barricade gear, still worn by the deputy. A wall with a grudge.", hint: "Flank it — the shield only faces forward." },
+  { id: "behemoth", name: "The Behemoth", blurb: "Something old is walking out of the treeline. A county legend: every fifth wave, the ground shakes.", hint: "Boss — wave 5, 10, 15, ... Attune shrines for +12% boss damage each." },
+  { id: "tipple_brute", name: "The Tipple Brute", blurb: "The tipple fell a long time ago. Something climbed out — and it remembers the slam.", hint: "Future boss. Not yet in the wild." },
+  { id: "wompus_stalker", name: "The Wompus Stalker", blurb: "You hear it before you see it. Then you hear nothing at all.", hint: "Future boss. Not yet in the wild." },
+
+  // --- bosses (id === BossDef.id; behemoth shares its zombie row above) ---
+  { id: "tipple", name: "Boss: The Tipple Brute", blurb: "Coal-country nightmare out of the old tipple. Ground slam: radial knockback and a dust ring.", hint: "Future boss. Not yet in the wild." },
+  { id: "wompus", name: "Boss: The Wompus Stalker", blurb: "The Winslow Wompus cat, grown wrong. Its yowl drags a sprinter pack in with it.", hint: "Future boss. Not yet in the wild." },
+
+  // --- secrets ---
+  { id: "konami", name: "Secret: The Konami Howl", blurb: "Thirty years the Wompus cat yowled on the ridge. The old code still wakes it.", hint: "Enter ↑↑↓↓←→←→ B A on the title screen." },
+  { id: "daily_challenge", name: "Secret: Daily Challenge", blurb: "One seed, one county, every soul in Pike County gets the same draw.", hint: "Press Daily Run on the title screen — a new seed every day at local midnight." },
+];
+
+/** Codex lookup by id. Returns undefined for unknown ids. */
+export function codexEntry(id: string): CodexEntry | undefined {
+  return CODEX.find((e) => e.id === id);
+}
+
+// ---------------------------------------------------------------------------
+// (c) SCALING — S7 smooth time-based difficulty formulas. A legible
+// alternative to per-wave step scaling: pure, evaluable data.
+//
+// SCALING formulas are arithmetic strings over `gt` (run time, seconds).
+// Supported: numbers, `gt`, +, -, *, /, parentheses. scalingAt(gt) returns
+// the { hp, speed, damage } multipliers for that moment of a run.
+//
+// ENGINE TUNING POINT (coordinator): today the per-wave step lives in
+//   pushZombie() in src/game/engine.ts (~line 3004):
+//     if (e !== `behemoth`) r = Math.round(r * (1 + Math.max(0, this.wave - 2) * .07));
+//   (plus the Batch-4 D(t) timeCurve multiplying maxHealth at ~line 3015).
+// A legible time-based alternative: at the top of pushZombie, do
+//     const sc = scalingAt(this.simTime);
+//     r = Math.round(r * sc.hp); i *= sc.speed; a *= sc.damage;
+// and retire the wave step (or keep both and compare feel — they multiply).
+// ---------------------------------------------------------------------------
+
+export interface ScalingFormulas {
+  hp: string;
+  speed: string;
+  damage: string;
+}
+
+export const SCALING: ScalingFormulas = {
+  hp: "1+gt/120",
+  speed: "1+gt/250",
+  damage: "1+gt/300",
+};
+
+export interface ScalingMults {
+  hp: number;
+  speed: number;
+  damage: number;
+}
+
+/**
+ * Tiny safe evaluator for SCALING formula strings. Handles numbers, `gt`,
+ * +, -, *, /, parentheses (shunting-yard). No eval() — the input is data.
+ */
+function evalScalingExpr(expr: string, gt: number): number {
+  // Substitute gt, then normalize unary minus ("-3", "(-x)") to "0-3".
+  const src = expr
+    .replace(/\bgt\b/g, `(${gt})`)
+    .replace(/(^|[(+\-*/])-/g, "$10-");
+  const toks = src.match(/(\d+(?:\.\d+)?|[+\-*/()])/g);
+  if (!toks) throw new Error(`bad scaling expr: ${expr}`);
+  const out: (number | string)[] = [];
+  const ops: string[] = [];
+  const prec: Record<string, number> = { "+": 1, "-": 1, "*": 2, "/": 2 };
+  for (const t of toks) {
+    if (/^\d/.test(t)) out.push(parseFloat(t));
+    else if (t in prec) {
+      while (ops.length && ops[ops.length - 1] !== "(" && prec[ops[ops.length - 1]] >= prec[t]) out.push(ops.pop() as string);
+      ops.push(t);
+    } else if (t === "(") ops.push(t);
+    else if (t === ")") {
+      while (ops.length && ops[ops.length - 1] !== "(") out.push(ops.pop() as string);
+      if (ops.pop() !== "(") throw new Error(`unbalanced parens in scaling expr: ${expr}`);
+    } else throw new Error(`bad token in scaling expr: ${t}`);
+  }
+  while (ops.length) {
+    const o = ops.pop() as string;
+    if (o === "(") throw new Error(`unbalanced parens in scaling expr: ${expr}`);
+    out.push(o);
+  }
+  const st: number[] = [];
+  for (const t of out) {
+    if (typeof t === "number") { st.push(t); continue; }
+    const b = st.pop(), a = st.pop();
+    if (a === undefined || b === undefined) throw new Error(`bad scaling expr: ${expr}`);
+    st.push(t === "+" ? a + b : t === "-" ? a - b : t === "*" ? a * b : a / b);
+  }
+  if (st.length !== 1) throw new Error(`bad scaling expr: ${expr}`);
+  return st[0];
+}
+
+/** Difficulty multipliers at run time gt (seconds): { hp, speed, damage }. */
+export function scalingAt(gt: number): ScalingMults {
+  return {
+    hp: evalScalingExpr(SCALING.hp, gt),
+    speed: evalScalingExpr(SCALING.speed, gt),
+    damage: evalScalingExpr(SCALING.damage, gt),
+  };
 }

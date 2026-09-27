@@ -8,11 +8,47 @@ interface LightSource {
   color?: string;
 }
 
+// ---- Batch 6: per-map / per-event ambient lighting ----
+// Each map defines its own ambient level and a subtle color cast; events
+// override both. tint is a full-screen overlay drawn after the darkness pass.
+export interface AmbientSpec { level: number; tint: string | null; }
+
+export const MAP_AMBIENT: Record<string, AmbientSpec> = {
+  white_oak_springs: { level: 0.22, tint: 'rgba(30, 46, 30, 0.10)' },
+  mccords_ford: { level: 0.14, tint: 'rgba(24, 32, 36, 0.12)' },
+  stendal_backbone: { level: 0.12, tint: 'rgba(20, 32, 24, 0.12)' },
+  petersburg_square: { level: 0.20, tint: 'rgba(44, 36, 24, 0.08)' },
+  winslow_still: { level: 0.18, tint: 'rgba(36, 30, 22, 0.10)' },
+  honey_springs: { level: 0.20, tint: 'rgba(44, 40, 22, 0.09)' },
+};
+
+export const EVENT_AMBIENT: Record<string, AmbientSpec> = {
+  blood_moon: { level: 0.10, tint: 'rgba(148, 20, 26, 0.18)' },
+  golden_swarm: { level: 0.28, tint: 'rgba(168, 124, 32, 0.10)' },
+};
+
+const DEFAULT_AMBIENT: AmbientSpec = { level: 0.2, tint: null };
+
 export class DynamicLighting {
   public darknessCanvas: HTMLCanvasElement;
   private darknessCtx: CanvasRenderingContext2D;
   private fogSprite: HTMLCanvasElement;
   private fogParticles: { x: number; y: number; vx: number; vy: number; radius: number; alpha: number }[] = [];
+  // Batch 6: ambient override set via setAmbient(mapId, eventId?). The engine
+  // already passes the blood_moon flag as the 9th render arg, so the red tint
+  // works even before the coordinator wires setAmbient on map switches.
+  private ambientMap: AmbientSpec | null = null;
+  private ambientEvent: AmbientSpec | null = null;
+
+  /** Per-map / per-event ambient. eventId overrides the map (e.g. 'blood_moon'). */
+  public setAmbient(mapId: string, eventId?: string) {
+    this.ambientMap = MAP_AMBIENT[mapId] ?? DEFAULT_AMBIENT;
+    this.ambientEvent = eventId ? EVENT_AMBIENT[eventId] ?? null : null;
+  }
+
+  public ambientState() {
+    return { map: this.ambientMap, event: this.ambientEvent };
+  }
 
   constructor() {
     this.darknessCanvas = document.createElement('canvas');
@@ -49,18 +85,24 @@ export class DynamicLighting {
     muzzleFlashTimer: number,
     ambientLight: number,
     firePuddles: FirePuddle[],
-    staticLights: LightSource[]
+    staticLights: LightSource[],
+    bloodMoon: boolean = false,
   ) {
     if (this.darknessCanvas.width !== width || this.darknessCanvas.height !== height) {
       this.darknessCanvas.width = width;
       this.darknessCanvas.height = height;
     }
 
+    // Batch 6: event overrides map, map overrides the passed-in level.
+    const evSpec = this.ambientEvent ?? (bloodMoon ? EVENT_AMBIENT['blood_moon'] : null);
+    const level = evSpec?.level ?? this.ambientMap?.level ?? ambientLight;
+    const tint = evSpec?.tint ?? this.ambientMap?.tint ?? null;
+
     const dCtx = this.darknessCtx;
     dCtx.clearRect(0, 0, width, height);
 
     // Fill with dirty-olive darkness — never a black sheet
-    const darknessAlpha = Math.max(0.04, 0.12 - ambientLight * 0.25 - (muzzleFlashTimer > 0 ? 0.04 : 0));
+    const darknessAlpha = Math.max(0.04, 0.12 - level * 0.25 - (muzzleFlashTimer > 0 ? 0.04 : 0));
     dCtx.fillStyle = `rgba(16, 20, 14, ${darknessAlpha})`;
     dCtx.fillRect(0, 0, width, height);
 
@@ -152,6 +194,14 @@ export class DynamicLighting {
     dCtx.globalCompositeOperation = 'source-over';
     targetCtx.drawImage(this.darknessCanvas, 0, 0);
 
+    // Batch 6: per-map / per-event color cast on top of the darkness pass.
+    if (tint) {
+      targetCtx.save();
+      targetCtx.fillStyle = tint;
+      targetCtx.fillRect(0, 0, width, height);
+      targetCtx.restore();
+    }
+
     targetCtx.save();
     targetCtx.globalCompositeOperation = 'lighter';
     targetCtx.translate(player.x, player.y);
@@ -189,4 +239,9 @@ export class DynamicLighting {
     }
     ctx.globalAlpha = 1;
   }
+}
+
+// Batch 6: test/render probe surface for the ambient API.
+if (typeof window !== 'undefined') {
+  (window as any).__pzLightingTest = { DynamicLighting, MAP_AMBIENT, EVENT_AMBIENT };
 }

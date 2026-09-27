@@ -4,6 +4,10 @@
  * and atmospheric Appalachian dark ambient music with zero external audio assets.
  */
 
+// Batch 6 [S9]: weapon-kind taxonomy for playShotFor — the chainsaw's
+// chain kind must never sound like the crossbow's thrust kind.
+export type ShotKind = 'blunt' | 'axe' | 'thrust' | 'heavy-blade' | 'firearm' | 'chain';
+
 class SoundEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
@@ -43,6 +47,23 @@ class SoundEngine {
   private hbTimer: number | null = null;
   // Batch 5: combo-pitched kill sound probe.
   private lastKillPitch = 0;
+  // Batch 6: deterministic LCG noise (seed 7777, ~0.4s) + weapon-kind shots
+  // + minor-arp step sequencer state.
+  private lastShotKind: ShotKind | '' = '';
+  private lastShotLayers: string[] = [];
+  private seqTimer: number | null = null;
+  private seqStep = 0;
+  private seqGain: GainNode | null = null;
+  private seqDense = false;
+  private seqLast: { step: number; kind: string; freq: number }[] = [];
+  // Batch 6: i–VI–III–VII in A minor — Pike County porch-dark.
+  private static readonly NOISE_SEED = 7777;
+  private static readonly NOISE_LEN_S = 0.4;
+  private static readonly SEQ_STEP_MS = 180;
+  private static readonly SEQ_STEPS_PER_CHORD = 12;
+  private static readonly SEQ_CHORDS = ['Am', 'F', 'C', 'G'];
+  private static readonly SEQ_ROOTS = [110.0, 87.31, 130.81, 98.0]; // A2 F2 C3 G2
+  private static readonly SEQ_ARP = [0, 3, 7, 12, 7, 3]; // semitone offsets: root m3 5 8ve
 
   // Batch 5: deterministic probe surface for tests (coordinator can also
   // wire engine-level probes if needed; engine.ts is untouched).
@@ -57,6 +78,27 @@ class SoundEngine {
       sfx: this.sfxGain?.gain.value ?? -1,
       music: this.musicGain?.gain.value ?? -1,
     }),
+    // Batch 6: deterministic noise probes.
+    noiseBuffer: () => this.noiseBuffer,
+    noiseSeed: () => SoundEngine.NOISE_SEED,
+    noiseDuration: () => this.noiseBuffer?.duration ?? -1,
+    regenNoise: () => (this.ctx ? this.buildNoiseBuffer() : null),
+    sampleRate: () => this.ctx?.sampleRate ?? 0,
+    // Batch 6: weapon-kind shot probes.
+    shotKind: (soundType: string) => this.kindForWeapon({ soundType }),
+    shotKindForName: (name: string) => this.kindForWeapon({ name }),
+    lastShot: () => ({ kind: this.lastShotKind, layers: [...this.lastShotLayers] }),
+    // Batch 6: step-sequencer probes.
+    seqState: () => ({
+      running: this.seqTimer !== null,
+      step: this.seqStep,
+      chord: Math.floor(this.seqStep / SoundEngine.SEQ_STEPS_PER_CHORD) % SoundEngine.SEQ_CHORDS.length,
+      stepMs: SoundEngine.SEQ_STEP_MS,
+      dense: this.seqDense,
+      intensity: this.intensity,
+    }),
+    seqAdvance: () => this.seqTick(),
+    seqNotes: () => [...this.seqLast],
   };
 
   constructor() {
@@ -95,14 +137,25 @@ class SoundEngine {
     }
   }
 
+  // Batch 6 [S5][S9]: deterministic noise — one ~0.4s buffer from an LCG
+  // seeded 7777, generated once at init. Identical texture every session;
+  // every noise-based SFX routes through this buffer (no per-play allocation).
   private generateNoiseBuffer() {
     if (!this.ctx) return;
-    const bufferSize = this.ctx.sampleRate * 2;
-    this.noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const output = this.noiseBuffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      output[i] = Math.random() * 2 - 1;
+    this.noiseBuffer = this.buildNoiseBuffer();
+  }
+
+  private buildNoiseBuffer(): AudioBuffer {
+    const ctx = this.ctx!;
+    const len = Math.floor(ctx.sampleRate * SoundEngine.NOISE_LEN_S);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const out = buf.getChannelData(0);
+    let state = SoundEngine.NOISE_SEED >>> 0;
+    for (let i = 0; i < len; i++) {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      out[i] = (state / 4294967296) * 2 - 1;
     }
+    return buf;
   }
 
   // Group 1: one-shot SFX constructors with ±10% pitch variation.
@@ -330,177 +383,404 @@ class SoundEngine {
     this.init();
     if (!this.sfxGate('gunshot')) return;
     if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    this.gunLayers(type, this.ctx.currentTime);
+  }
 
-    const t = this.ctx.currentTime;
-
+  // Batch 6: firearm layer recipes extracted into one dispatch so
+  // playShotFor('firearm') shares them with playGunshot — the recipe lives
+  // in exactly one place. t = ctx.currentTime captured by the caller.
+  private gunLayers(type: 'magnum' | 'shotgun' | 'rifle' | 'carbine' | 'crossbow' | 'chainsaw' | 'molotov', t: number) {
     switch (type) {
-      case 'shotgun': {
-        // Heavy bass punch + wide noise blast + mechanical rack
-        const osc = this.sfxOsc();
-        const oscGain = this.ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(140, t);
-        osc.frequency.exponentialRampToValueAtTime(30, t + 0.25);
-        oscGain.gain.setValueAtTime(1.0, t);
-        oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-        osc.connect(oscGain);
-        oscGain.connect(this.sfxGain);
-        osc.start(t);
-        osc.stop(t + 0.35);
-
-        // Noise body
-        const noise = this.sfxNoise();
-        noise.buffer = this.noiseBuffer;
-        const filter = this.ctx.createBiquadFilter();
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(1800, t);
-        filter.frequency.exponentialRampToValueAtTime(300, t + 0.4);
-        const noiseGain = this.ctx.createGain();
-        noiseGain.gain.setValueAtTime(0.9, t);
-        noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
-        noise.connect(filter);
-        filter.connect(noiseGain);
-        noiseGain.connect(this.sfxGain);
-        noise.start(t);
-        noise.stop(t + 0.45);
-
-        // Mechanical pump sound after 0.25s
-        setTimeout(() => {
-          this.playClick(0.3, 800);
-          setTimeout(() => this.playClick(0.25, 1200), 80);
-        }, 220);
-        break;
-      }
-
-      case 'rifle': {
-        // High-velocity crack + mountain echo
-        const osc = this.sfxOsc();
-        const oscGain = this.ctx.createGain();
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(240, t);
-        osc.frequency.exponentialRampToValueAtTime(50, t + 0.2);
-        oscGain.gain.setValueAtTime(0.8, t);
-        oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
-        osc.connect(oscGain);
-        oscGain.connect(this.sfxGain);
-        osc.start(t);
-        osc.stop(t + 0.28);
-
-        const noise = this.sfxNoise();
-        noise.buffer = this.noiseBuffer;
-        const filter = this.ctx.createBiquadFilter();
-        filter.type = 'bandpass';
-        filter.frequency.setValueAtTime(2800, t);
-        filter.Q.setValueAtTime(2, t);
-        const noiseGain = this.ctx.createGain();
-        noiseGain.gain.setValueAtTime(0.85, t);
-        noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-        noise.connect(filter);
-        filter.connect(noiseGain);
-        noiseGain.connect(this.sfxGain);
-        noise.start(t);
-        noise.stop(t + 0.35);
-        break;
-      }
-
-      case 'magnum': {
-        // Punchy revolver thud
-        const osc = this.sfxOsc();
-        const oscGain = this.ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(180, t);
-        osc.frequency.exponentialRampToValueAtTime(40, t + 0.22);
-        oscGain.gain.setValueAtTime(0.9, t);
-        oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
-        osc.connect(oscGain);
-        oscGain.connect(this.sfxGain);
-        osc.start(t);
-        osc.stop(t + 0.28);
-
-        const noise = this.sfxNoise();
-        noise.buffer = this.noiseBuffer;
-        const filter = this.ctx.createBiquadFilter();
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(2200, t);
-        const noiseGain = this.ctx.createGain();
-        noiseGain.gain.setValueAtTime(0.7, t);
-        noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
-        noise.connect(filter);
-        filter.connect(noiseGain);
-        noiseGain.connect(this.sfxGain);
-        noise.start(t);
-        noise.stop(t + 0.25);
-        break;
-      }
-
-      case 'carbine': {
-        // Rapid snap
-        const osc = this.sfxOsc();
-        const oscGain = this.ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(190, t);
-        osc.frequency.exponentialRampToValueAtTime(60, t + 0.08);
-        oscGain.gain.setValueAtTime(0.65, t);
-        oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
-        osc.connect(oscGain);
-        oscGain.connect(this.sfxGain);
-        osc.start(t);
-        osc.stop(t + 0.12);
-
-        const noise = this.sfxNoise();
-        noise.buffer = this.noiseBuffer;
-        const filter = this.ctx.createBiquadFilter();
-        filter.type = 'bandpass';
-        filter.frequency.setValueAtTime(2200, t);
-        const noiseGain = this.ctx.createGain();
-        noiseGain.gain.setValueAtTime(0.6, t);
-        noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
-        noise.connect(filter);
-        filter.connect(noiseGain);
-        noiseGain.connect(this.sfxGain);
-        noise.start(t);
-        noise.stop(t + 0.14);
-        break;
-      }
-
-      case 'crossbow': {
-        // String twang and whoosh
-        const osc = this.sfxOsc();
-        const oscGain = this.ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(380, t);
-        osc.frequency.exponentialRampToValueAtTime(110, t + 0.18);
-        oscGain.gain.setValueAtTime(0.7, t);
-        oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-        osc.connect(oscGain);
-        oscGain.connect(this.sfxGain);
-        osc.start(t);
-        osc.stop(t + 0.2);
-        break;
-      }
-
-      case 'chainsaw': {
-        // Throaty motor rip
-        const osc = this.sfxOsc();
-        const oscGain = this.ctx.createGain();
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(110 + Math.random() * 20, t);
-        osc.frequency.linearRampToValueAtTime(160 + Math.random() * 30, t + 0.15);
-        oscGain.gain.setValueAtTime(0.5, t);
-        oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-        osc.connect(oscGain);
-        oscGain.connect(this.sfxGain);
-        osc.start(t);
-        osc.stop(t + 0.2);
-        break;
-      }
-
-      case 'molotov': {
-        // Bottle throw whoosh and glass shatter
-        this.playBottleShatter();
-        break;
-      }
+      case 'shotgun': this.shotgunLayers(t); break;
+      case 'rifle': this.rifleLayers(t); break;
+      case 'magnum': this.magnumLayers(t); break;
+      case 'carbine': this.carbineLayers(t); break;
+      case 'crossbow': this.crossbowLayers(t); break;
+      case 'chainsaw': this.chainsawLayers(t); break;
+      case 'molotov': this.playBottleShatter(); break;
     }
+  }
+
+  private shotgunLayers(t: number) {
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    // Heavy bass punch + wide noise blast + mechanical rack
+    const osc = this.sfxOsc();
+    const oscGain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(140, t);
+    osc.frequency.exponentialRampToValueAtTime(30, t + 0.25);
+    oscGain.gain.setValueAtTime(1.0, t);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    osc.connect(oscGain);
+    oscGain.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.35);
+
+    // Noise body
+    const noise = this.sfxNoise();
+    noise.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1800, t);
+    filter.frequency.exponentialRampToValueAtTime(300, t + 0.4);
+    const noiseGain = this.ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.9, t);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(this.sfxGain);
+    noise.start(t);
+    noise.stop(t + 0.45);
+
+    // Mechanical pump sound after 0.25s
+    setTimeout(() => {
+      this.playClick(0.3, 800);
+      setTimeout(() => this.playClick(0.25, 1200), 80);
+    }, 220);
+  }
+
+  private rifleLayers(t: number) {
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    // High-velocity crack + mountain echo
+    const osc = this.sfxOsc();
+    const oscGain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(240, t);
+    osc.frequency.exponentialRampToValueAtTime(50, t + 0.2);
+    oscGain.gain.setValueAtTime(0.8, t);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+    osc.connect(oscGain);
+    oscGain.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.28);
+
+    const noise = this.sfxNoise();
+    noise.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(2800, t);
+    filter.Q.setValueAtTime(2, t);
+    const noiseGain = this.ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.85, t);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(this.sfxGain);
+    noise.start(t);
+    noise.stop(t + 0.35);
+  }
+
+  private magnumLayers(t: number) {
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    // Punchy revolver thud
+    const osc = this.sfxOsc();
+    const oscGain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(180, t);
+    osc.frequency.exponentialRampToValueAtTime(40, t + 0.22);
+    oscGain.gain.setValueAtTime(0.9, t);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+    osc.connect(oscGain);
+    oscGain.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.28);
+
+    const noise = this.sfxNoise();
+    noise.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(2200, t);
+    const noiseGain = this.ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.7, t);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(this.sfxGain);
+    noise.start(t);
+    noise.stop(t + 0.25);
+  }
+
+  private carbineLayers(t: number) {
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    // Rapid snap
+    const osc = this.sfxOsc();
+    const oscGain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(190, t);
+    osc.frequency.exponentialRampToValueAtTime(60, t + 0.08);
+    oscGain.gain.setValueAtTime(0.65, t);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    osc.connect(oscGain);
+    oscGain.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.12);
+
+    const noise = this.sfxNoise();
+    noise.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(2200, t);
+    const noiseGain = this.ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.6, t);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(this.sfxGain);
+    noise.start(t);
+    noise.stop(t + 0.14);
+  }
+
+  private crossbowLayers(t: number) {
+    if (!this.ctx || !this.sfxGain) return;
+    // String twang and whoosh
+    const osc = this.sfxOsc();
+    const oscGain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(380, t);
+    osc.frequency.exponentialRampToValueAtTime(110, t + 0.18);
+    oscGain.gain.setValueAtTime(0.7, t);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    osc.connect(oscGain);
+    oscGain.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.2);
+  }
+
+  private chainsawLayers(t: number) {
+    if (!this.ctx || !this.sfxGain) return;
+    // Throaty motor rip
+    const osc = this.sfxOsc();
+    const oscGain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(110 + Math.random() * 20, t);
+    osc.frequency.linearRampToValueAtTime(160 + Math.random() * 30, t + 0.15);
+    oscGain.gain.setValueAtTime(0.5, t);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    osc.connect(oscGain);
+    oscGain.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.2);
+  }
+
+  // Batch 6 [S9]: weapon-kind-aware shots. kindForWeapon resolves a weapon's
+  // soundType/name to a ShotKind; playShotFor layers the shot so a chainsaw
+  // rips and rattles while a crossbow twangs and whooshes — never the same.
+  // Engine integration point: replace engine.ts's
+  // `soundEngine.playGunshot(e.soundType)` with
+  // `soundEngine.playShotFor(soundEngine.kindForWeapon(e))`.
+  public kindForWeapon(w: { soundType?: string; name?: string }): ShotKind {
+    const st = (w.soundType || '').toLowerCase();
+    if (st === 'chainsaw') return 'chain';
+    if (st === 'crossbow' || st === 'molotov') return 'thrust';
+    if (st === 'magnum' || st === 'shotgun' || st === 'rifle' || st === 'carbine') return 'firearm';
+    const n = (w.name || '').toLowerCase();
+    if (/saw|chain/.test(n)) return 'chain';
+    if (/bow|bolt|spear|pike|javelin/.test(n)) return 'thrust';
+    if (/axe|hatchet/.test(n)) return 'axe';
+    if (/sword|blade|machete|katana/.test(n)) return 'heavy-blade';
+    if (/bat|club|hammer|mace|wrench|pipe|shovel|crowbar/.test(n)) return 'blunt';
+    return 'firearm';
+  }
+
+  public playShotFor(kind: ShotKind, opts?: { soundType?: 'magnum' | 'shotgun' | 'rifle' | 'carbine'; power?: number }) {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.sfxGate('shot')) return;
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    const t = this.ctx.currentTime;
+    const power = Math.max(0.2, Math.min(2, opts?.power ?? 1));
+    this.lastShotKind = kind;
+    switch (kind) {
+      case 'firearm':
+        this.gunLayers(opts?.soundType || 'carbine', t);
+        this.lastShotLayers = ['firearm', opts?.soundType || 'carbine'];
+        break;
+      case 'chain': this.chainLayers(t, power); break;
+      case 'thrust': this.thrustLayers(t, power); break;
+      case 'blunt': this.bluntLayers(t, power); break;
+      case 'axe': this.axeLayers(t, power); break;
+      case 'heavy-blade': this.heavyBladeLayers(t, power); break;
+    }
+  }
+
+  private chainLayers(t: number, power: number) {
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    this.lastShotLayers = ['chain:rip', 'chain:rattle', 'chain:putter'];
+    // Motor rip: throaty sawtooth climb.
+    const osc = this.sfxOsc();
+    const og = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(105, t);
+    osc.frequency.linearRampToValueAtTime(165, t + 0.16);
+    og.gain.setValueAtTime(0.42 * power, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    osc.connect(og);
+    og.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + 0.24);
+    // Chain rattle: three bandpassed noise ticks.
+    for (let i = 0; i < 3; i++) {
+      const n = this.ctx.createBufferSource();
+      n.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 2900 + i * 500;
+      bp.Q.value = 3;
+      const ng = this.ctx.createGain();
+      const st = t + i * 0.055;
+      ng.gain.setValueAtTime(0.3 * power, st);
+      ng.gain.exponentialRampToValueAtTime(0.001, st + 0.05);
+      n.connect(bp);
+      bp.connect(ng);
+      ng.connect(this.sfxGain);
+      n.start(st);
+      n.stop(st + 0.06);
+    }
+    // Two-stroke putter underneath.
+    const p = this.ctx.createOscillator();
+    const plp = this.ctx.createBiquadFilter();
+    plp.type = 'lowpass';
+    plp.frequency.value = 300;
+    const pg = this.ctx.createGain();
+    p.type = 'square';
+    p.frequency.setValueAtTime(58, t);
+    pg.gain.setValueAtTime(0.12 * power, t);
+    pg.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    p.connect(plp);
+    plp.connect(pg);
+    pg.connect(this.sfxGain);
+    p.start(t);
+    p.stop(t + 0.22);
+  }
+
+  private thrustLayers(t: number, power: number) {
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    this.lastShotLayers = ['thrust:twang', 'thrust:whoosh'];
+    this.crossbowLayers(t); // string twang
+    // Airy whoosh: bandpass sweep up as the bolt leaves.
+    const n = this.ctx.createBufferSource();
+    n.buffer = this.noiseBuffer;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 1.4;
+    bp.frequency.setValueAtTime(700, t);
+    bp.frequency.exponentialRampToValueAtTime(3200, t + 0.22);
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.exponentialRampToValueAtTime(0.22 * power, t + 0.06);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
+    n.connect(bp);
+    bp.connect(ng);
+    ng.connect(this.sfxGain);
+    n.start(t);
+    n.stop(t + 0.28);
+  }
+
+  private bluntLayers(t: number, power: number) {
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    this.lastShotLayers = ['blunt:thud', 'blunt:knock'];
+    // Low wood thud.
+    const o = this.sfxOsc();
+    const og = this.ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(95, t);
+    o.frequency.exponentialRampToValueAtTime(35, t + 0.16);
+    og.gain.setValueAtTime(0.6 * power, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    o.connect(og);
+    og.connect(this.sfxGain);
+    o.start(t);
+    o.stop(t + 0.22);
+    // Wood knock: lowpassed noise burst.
+    const n = this.ctx.createBufferSource();
+    n.buffer = this.noiseBuffer;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 750;
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.4 * power, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    n.connect(lp);
+    lp.connect(ng);
+    ng.connect(this.sfxGain);
+    n.start(t);
+    n.stop(t + 0.1);
+  }
+
+  private axeLayers(t: number, power: number) {
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    this.lastShotLayers = ['axe:chop', 'axe:thump', 'axe:ping'];
+    // Chop: sharp bandpassed noise bite.
+    const n = this.ctx.createBufferSource();
+    n.buffer = this.noiseBuffer;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1250;
+    bp.Q.value = 1.1;
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.5 * power, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    n.connect(bp);
+    bp.connect(ng);
+    ng.connect(this.sfxGain);
+    n.start(t);
+    n.stop(t + 0.1);
+    // Meat thump.
+    const o = this.sfxOsc();
+    const og = this.ctx.createGain();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(180, t);
+    o.frequency.exponentialRampToValueAtTime(60, t + 0.1);
+    og.gain.setValueAtTime(0.4 * power, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+    o.connect(og);
+    og.connect(this.sfxGain);
+    o.start(t);
+    o.stop(t + 0.16);
+    // Steel ping.
+    const p = this.sfxOsc();
+    const pg = this.ctx.createGain();
+    p.type = 'sine';
+    p.frequency.setValueAtTime(2900, t);
+    pg.gain.setValueAtTime(0.12 * power, t);
+    pg.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    p.connect(pg);
+    pg.connect(this.sfxGain);
+    p.start(t);
+    p.stop(t + 0.18);
+  }
+
+  private heavyBladeLayers(t: number, power: number) {
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    this.lastShotLayers = ['heavy-blade:whoosh', 'heavy-blade:ring'];
+    // Swing whoosh: highpassed noise swell.
+    const n = this.ctx.createBufferSource();
+    n.buffer = this.noiseBuffer;
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 1100;
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.exponentialRampToValueAtTime(0.3 * power, t + 0.09);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+    n.connect(hp);
+    hp.connect(ng);
+    ng.connect(this.sfxGain);
+    n.start(t);
+    n.stop(t + 0.26);
+    // Deep metallic ring: detuned pair.
+    [196, 392.5].forEach((f) => {
+      const o = this.sfxOsc();
+      const og = this.ctx!.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(f, t + 0.1);
+      og.gain.setValueAtTime(0.14 * power, t + 0.1);
+      og.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+      o.connect(og);
+      og.connect(this.sfxGain!);
+      o.start(t + 0.1);
+      o.stop(t + 0.72);
+    });
   }
 
   public playBottleShatter() {
@@ -1165,6 +1445,10 @@ class SoundEngine {
     this.bassGain?.gain.linearRampToValueAtTime(next * 0.14, t + 0.6);
     // Drums stay quiet until it matters — quadratic fade keeps them driving at high intensity.
     this.drumGain?.gain.linearRampToValueAtTime(next * next * 0.18, t + 0.6);
+    // Batch 6: the minor-arp sequencer bus follows the same intensity path —
+    // sparse and quiet at low intensity, full and present at high.
+    this.seqGain?.gain.linearRampToValueAtTime(0.05 + next * 0.12, t + 0.6);
+    this.seqDense = next > 0.5;
   }
 
   public getIntensity(): number {
@@ -1184,6 +1468,7 @@ class SoundEngine {
     this.playDroneNote();
     this.playPulse();
     this.playBassNote(); // Batch 4: low D2 pulse that scales with intensity.
+    this.startSequencer(); // Batch 6: minor-arp step sequencer rides along.
 
     this.musicInterval = window.setInterval(() => {
       if (!this.musicPlaying || this.isMuted || !this.ctx || !this.musicGain) return;
@@ -1471,10 +1756,98 @@ class SoundEngine {
 
   public stopAtmosphericMusic() {
     this.musicPlaying = false;
+    this.stopSequencer(); // Batch 6: sequencer stops with the music.
     if (this.musicInterval) {
       clearInterval(this.musicInterval);
       this.musicInterval = null;
     }
+  }
+
+  // Batch 6 [S5]: procedural minor-arp step sequencer. i–VI–III–VII
+  // (Am F C G), 6-note arpeggio (root m3 5 8ve 5 m3), bass pedal on the root
+  // every 4 steps, ~180ms steps, zero audio files. Intensity drives density:
+  // low intensity plays a sparse even-step arp at low gain (kept musical,
+  // never annoying); high intensity plays every step plus octave shimmer.
+  public startSequencer() {
+    if (this.seqTimer !== null) return;
+    this.init();
+    if (!this.ctx || !this.musicGain) return;
+    this.ensureSeqBus();
+    this.seqTimer = window.setInterval(() => this.seqTick(), SoundEngine.SEQ_STEP_MS);
+  }
+
+  public stopSequencer() {
+    if (this.seqTimer !== null) {
+      window.clearInterval(this.seqTimer);
+      this.seqTimer = null;
+    }
+  }
+
+  private ensureSeqBus(): GainNode {
+    if (!this.seqGain) {
+      this.seqGain = this.ctx!.createGain();
+      // Initialize at the current intensity so late starts are never silent.
+      this.seqGain.gain.value = 0.05 + this.intensity * 0.12;
+      this.seqGain.connect(this.musicGain!);
+    }
+    return this.seqGain;
+  }
+
+  private seqTick() {
+    if (this.isMuted || !this.ctx || !this.seqGain) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const step = this.seqStep;
+    const chordIdx = Math.floor(step / SoundEngine.SEQ_STEPS_PER_CHORD) % SoundEngine.SEQ_CHORDS.length;
+    const root = SoundEngine.SEQ_ROOTS[chordIdx];
+    const arpPos = step % 6;
+    // Sparse at low intensity (even steps only), full + octave shimmer at high.
+    if (this.seqDense || arpPos % 2 === 0) {
+      const f = root * Math.pow(2, SoundEngine.SEQ_ARP[arpPos] / 12);
+      this.seqPluck(f, t, 0.16);
+      this.seqNote(step, 'arp', f);
+      if (this.intensity > 0.65) {
+        this.seqPluck(f * 2, t, 0.07);
+        this.seqNote(step, 'arp8', f * 2);
+      }
+    }
+    if (step % 4 === 0) {
+      // Bass pedal: the chord root an octave down, every 4 steps.
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(root / 2, t);
+      const v = 0.14 + this.intensity * 0.1;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(v, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      o.connect(g);
+      g.connect(this.seqGain);
+      o.start(t);
+      o.stop(t + 0.34);
+      this.seqNote(step, 'bass', root / 2);
+    }
+    this.seqStep++;
+  }
+
+  private seqPluck(f: number, t: number, v: number) {
+    const ctx = this.ctx!;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(f, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.26);
+    o.connect(g);
+    g.connect(this.seqGain!);
+    o.start(t);
+    o.stop(t + 0.3);
+  }
+
+  private seqNote(step: number, kind: string, freq: number) {
+    this.seqLast.push({ step, kind, freq });
+    if (this.seqLast.length > 32) this.seqLast.shift();
   }
 }
 
