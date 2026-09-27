@@ -47,7 +47,8 @@ export class ZombieSim {
 		z.tx = this.eng.player.x;
 		z.ty = this.eng.player.y;
 		this.assignAffix(z);
-		(this.eng as any).spawnFloater(z.x, z.y - z.radius - 14, `ELITE ${type.replace(`_`, ` `).toUpperCase()}`, `#c77dff`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: z.x, y: z.y - z.radius - 14, text: `ELITE ${type.replace(`_`, ` `).toUpperCase()}`, color: `#c77dff` });
+		(this.eng as any).drainJuiceEvents();
 		this.eng.callbacks.onRadio?.(`WJPS`, `Something big just walked out of the treeline. Watch yourself.`);
 		soundEngine.playWaveHorn();
 		return z;
@@ -237,7 +238,8 @@ export class ZombieSim {
 				} else if (r.dashCd <= 0 && Math.hypot(this.eng.player.x - r.x, this.eng.player.y - r.y) < 280) {
 					r.dashTele = .35; r.dashCd = 3.5;
 					// Batch 7: telegraphed lunge — the renderer drains state.telegraphs.
-					(this.eng as any).pushTelegraph(`leap`, r.x, r.y, 120, .9); // CONTEXT-GAP: pushTelegraph
+					(this.eng as any).emitJuice('telegraph', { kind: `leap`, x: r.x, y: r.y, r: 120, dur: .9 });
+					(this.eng as any).drainJuiceEvents();
 				}
 			}
 			if (r.affix === `leaping`) {
@@ -247,14 +249,17 @@ export class ZombieSim {
 					if (r.leapTele <= 0) {
 						const a = Math.atan2(this.eng.player.y - r.y, this.eng.player.x - r.x);
 						r.vx = (r.vx || 0) + Math.cos(a) * 320; r.vy = (r.vy || 0) + Math.sin(a) * 320;
-						(this.eng as any).createBloodParticles(r.x, r.y, a); // CONTEXT-GAP: createBloodParticles
+						(this.eng as any).emitJuice('bloodParticles', { x: r.x, y: r.y, angle: a });
+						(this.eng as any).drainJuiceEvents();
 						soundEngine.tone({ f: 200, f2: 600, type: `sawtooth`, dur: .2, vol: .15 });
 					}
 				} else if (r.leapCd <= 0 && Math.hypot(this.eng.player.x - r.x, this.eng.player.y - r.y) < 320) {
 					r.leapTele = .45; r.leapCd = 4;
 					// Batch 7: telegraphed leap.
-					(this.eng as any).pushTelegraph(`leap`, r.x, r.y, 140, .9); // CONTEXT-GAP: pushTelegraph
-					(this.eng as any).spawnFloater(r.x, r.y - r.radius - 20, `!`, `#ffffff`); // CONTEXT-GAP: spawnFloater
+					(this.eng as any).emitJuice('telegraph', { kind: `leap`, x: r.x, y: r.y, r: 140, dur: .9 });
+					(this.eng as any).drainJuiceEvents();
+					(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 20, text: `!`, color: `#ffffff` });
+					(this.eng as any).drainJuiceEvents();
 				}
 			}
 			if (r.isBurning && r.isBurning > 0 && (r.isBurning -= e * 1e3, r.health -= e * (35 + (r.burnTick || 0) * BURN_STACK_DPS), r.isBurning <= 0 && (r.burnTick = 0), Math.random() < .3 && this.eng.particles.push(Object.assign((this.eng as any).allocParticle(), { // CONTEXT-GAP: allocParticle
@@ -356,7 +361,7 @@ export class ZombieSim {
 				r.ai = flareDist < 48 ? `wander` : `investigate`;
 				r.angle = Math.atan2(flare.y - r.y, flare.x - r.x);
 			}
-			r.ai === `wander` && Math.random() < e * .1 && (this.eng as any).spawnFloater(r.x, r.y - 18, `...`, `#5b6470`); // CONTEXT-GAP: spawnFloater
+			r.ai === `wander` && Math.random() < e * .1 && ((this.eng as any).emitJuice('floater', { x: r.x, y: r.y - 18, text: `...`, color: `#5b6470` }), (this.eng as any).drainJuiceEvents());
 			}
 			r.type === `bloater_spitter` && this.tickSpitter(r, i, a, o, e);
 			let u = r.speed;
@@ -507,6 +512,7 @@ export class ZombieSim {
 			// Batch 8 (Lane B): lunge squash-and-stretch pulse (r.atkT).
 			o <= r.radius + this.eng.player.radius && t - r.lastAttackTime >= r.attackCooldown && (r.lastAttackTime = t, r.atkT = .05, this.eng.invuln <= 0 && (this.eng.lastKiller = r.type, r.damage > 0 && (this.eng as any).damagePlayer(this.zombieMeleeDmg(r), r))); // CONTEXT-GAP: damagePlayer
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	boneBurst(z: any) {
@@ -557,7 +563,8 @@ export class ZombieSim {
 				color: `#fde68a`
 			}));
 		}
-		this.eng.screenShake = Math.max(this.eng.screenShake, 4);
+		(this.eng as any).emitJuice('shake', { amount: 4 });
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	killZombie(e: any,  t: any) {
@@ -572,14 +579,17 @@ export class ZombieSim {
 				const z = this.eng.zombies[i];
 				if (z === e || Math.hypot(z.x - e.x, z.y - e.y) > R) continue;
 				z.health -= dmg;
-				(this.eng as any).createBloodParticles(z.x, z.y, Math.atan2(z.y - e.y, z.x - e.x)); // CONTEXT-GAP: createBloodParticles
+				(this.eng as any).emitJuice('bloodParticles', { x: z.x, y: z.y, angle: Math.atan2(z.y - e.y, z.x - e.x) });
+				(this.eng as any).drainJuiceEvents();
 				if (z.health <= 0) this.killZombie(z, i);
 			}
 			if (Math.hypot(this.eng.player.x - e.x, this.eng.player.y - e.y) < R) (this.eng as any).damagePlayer(15); // CONTEXT-GAP: damagePlayer
-			this.eng.shockwaves.push({ x: e.x, y: e.y, r: 10, maxR: R, life: .4, maxLife: .4, color: `#ff6b35` });
+			(this.eng as any).emitJuice('shockwave', { x: e.x, y: e.y, r: 10, maxR: R, life: .4, maxLife: .4, color: `#ff6b35` });
+			(this.eng as any).drainJuiceEvents();
 			this.eng.trauma = Math.min(1, this.eng.trauma + .3 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
 			soundEngine.tone({ f: 90, f2: 30, type: `sine`, dur: .5, vol: .5 });
-			(this.eng as any).spawnFloater(e.x, e.y - 30, `VOLATILE POP`, `#ff6b35`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: e.x, y: e.y - 30, text: `VOLATILE POP`, color: `#ff6b35` });
+			(this.eng as any).drainJuiceEvents();
 		}
 		// Batch 2: splitter — bloaters pop into crawlers.
 		if (e.type === `bloater_spitter`) {
@@ -587,7 +597,8 @@ export class ZombieSim {
 				const c = this.pushZombie(`crawler`, e.x + (Math.random() - .5) * 30, e.y + (Math.random() - .5) * 30);
 				c.ai = `chase`;
 			}
-			(this.eng as any).createBloodParticles(e.x, e.y, Math.random() * Math.PI * 2); // CONTEXT-GAP: createBloodParticles
+			(this.eng as any).emitJuice('bloodParticles', { x: e.x, y: e.y, angle: Math.random() * Math.PI * 2 });
+			(this.eng as any).drainJuiceEvents();
 		}
 		const comboBefore = Math.floor(this.eng.comboMultiplier);
 		this.eng.zombies.splice(t, 1), this.eng.stats.kills++, (this.eng as any).bumpLifetime(`kills`), this.eng.lastKillTime = Date.now(), this.eng.comboMultiplier = Math.min(5, this.eng.comboMultiplier + .25); // CONTEXT-GAP: bumpLifetime
@@ -602,12 +613,14 @@ export class ZombieSim {
 			}
 		}
 		// Batch 10 (Lane 1): corpse permanence — fading body decal, capped.
-		(this.eng as any).addCorpse(e); // CONTEXT-GAP: addCorpse
+		(this.eng as any).emitJuice('corpse', { x: e.x, y: e.y, radius: e.radius });
+		(this.eng as any).drainJuiceEvents();
 		// Batch 10 (Lane 1): last-kill slow-mo — the final zombie of the wave
 		// buys 1s at 0.5x. Only when the wave is truly spent.
 		if (this.eng.waveState === `active` && this.eng.zombiesToSpawn === 0 && this.eng.zombies.length === 0) {
 			this.eng.lastKillSlowT = 1;
-			(this.eng as any).spawnFloater(e.x, e.y - 40, `WAVE CLEAR`, `#d4a017`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: e.x, y: e.y - 40, text: `WAVE CLEAR`, color: `#d4a017` });
+			(this.eng as any).drainJuiceEvents();
 		}
 		// VS-1: Harvest Streak — 3s kill window, bonus capped at 30.
 		this.eng.streak = this.eng.simTime - this.eng.lastStreakKill <= 3 ? this.eng.streak + 1 : 1;
@@ -618,7 +631,7 @@ export class ZombieSim {
 		this.eng.killSurge = Math.min(1, this.eng.killSurge + .18), this.driveKillSurge();
 		const streakBonus = Math.min(this.eng.streak, 30);
 		(this.eng as any).addScore(streakBonus); // CONTEXT-GAP: addScore
-		if (this.eng.streak >= 10) (this.eng as any).spawnFloater(e.x, e.y - e.radius - 10, `HARVEST x${this.eng.streak}`, (this.eng as any).streakColor()); // CONTEXT-GAP: spawnFloater, streakColor
+		if (this.eng.streak >= 10) (this.eng as any).emitJuice('floater', { x: e.x, y: e.y - e.radius - 10, text: `HARVEST x${this.eng.streak}`, color: (this.eng as any).streakColor() }); (this.eng as any).drainJuiceEvents(); // CONTEXT-GAP: streakColor
 		soundEngine.playKillSub();
 		// Batch 5: combo-pitched kill SFX, kill surge, and beast/growl mix.
 		// Batch 9 (Lane 3): combo-pitched kill SFX now routes through the pure
@@ -628,16 +641,20 @@ export class ZombieSim {
 		soundEngine.setBeastMix(Math.min(1, (this.eng.beastDmgAcc || 0) / 600), this.eng.streak);
 		(this.eng as any).feelKill(e); // CONTEXT-GAP: feelKill
 		// Batch 5: kill-word floater (pooled, same 40-cap discipline as damage numbers).
-		(this.eng as any).spawnKillWord(e.x, e.y - e.radius - 18); // CONTEXT-GAP: spawnKillWord
+		(this.eng as any).emitJuice('killWord', { x: e.x, y: e.y - e.radius - 18 });
+		(this.eng as any).drainJuiceEvents();
 		// Batch 5: directional blood spray (velocity scales with the killing hit's power).
-		(this.eng as any).bloodSpray(e.x, e.y, e.lastHitAngle ?? Math.random() * Math.PI * 2, e.lastHitPower ?? 30); // CONTEXT-GAP: bloodSpray
+		(this.eng as any).emitJuice('bloodSpray', { x: e.x, y: e.y, angle: e.lastHitAngle ?? Math.random() * Math.PI * 2, power: e.lastHitPower ?? 30 });
+		(this.eng as any).drainJuiceEvents();
 		// Batch 5: expanding white kill ring (~4.2x the zombie's radius).
-		this.eng.shockwaves.push({ x: e.x, y: e.y, r: 8, maxR: e.radius * 4.2, life: .35, maxLife: .35, color: `#ffffff`, b5: true });
+		(this.eng as any).emitJuice('shockwave', { x: e.x, y: e.y, r: 8, maxR: e.radius * 4.2, life: .35, maxLife: .35, color: `#ffffff`, b5: true });
+		(this.eng as any).drainJuiceEvents();
 		// Batch 5: brief screen-space flash at the kill's position.
-		if (this.eng.hitFlashes.length < 16) this.eng.hitFlashes.push({ x: e.x, y: e.y, life: .14, maxLife: .14 });
+		if (this.eng.hitFlashes.length < 16) (this.eng as any).emitJuice('hitFlash', { x: e.x, y: e.y, life: .14, maxLife: .14 }); (this.eng as any).drainJuiceEvents();
 		const comboAfter = Math.floor(this.eng.comboMultiplier);
 		if (comboAfter > comboBefore && comboAfter >= 2) {
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 56, `STREAK x${comboAfter}`, "#ffd700"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 56, text: `STREAK x${comboAfter}`, color: "#ffd700" });
+			(this.eng as any).drainJuiceEvents();
 			// Balance: halved streak payout (2 orbs, was 4) — early XP economy ran too hot
 			for (let i = 0; i < 2; i++) {
 				const a = Math.random() * Math.PI * 2;
@@ -658,7 +675,8 @@ export class ZombieSim {
 			// Batch 6 (Lane A): formal spec — blastRadius / blastDamage with the existing falloff.
 			// Batch 10 (Lane 4): brine boosts bomber blasts and leaves a burning patch.
 			const R = this.eng.b6blastR;
-			this.eng.screenShake = Math.max(this.eng.screenShake, 7);
+			(this.eng as any).emitJuice('shake', { amount: 7 });
+			(this.eng as any).drainJuiceEvents();
 			for (const z of this.eng.zombies) {
 				const bd = Math.hypot(z.x - e.x, z.y - e.y);
 				// Batch 3: explosion falloff — edge of the blast hurts less.
@@ -669,20 +687,23 @@ export class ZombieSim {
 			const pd = Math.hypot(this.eng.player.x - e.x, this.eng.player.y - e.y);
 			if (pd < R * .7) this.eng.player.health -= Math.round(this.eng.b6blastPlayer * (1 - pd / (R * .7)));
 			soundEngine.playBarrelExplosion();
-			(this.eng as any).addScorch(e.x, e.y, 80); // CONTEXT-GAP: addScorch
+			(this.eng as any).emitJuice('scorch', { x: e.x, y: e.y, radius: 80 });
+			(this.eng as any).drainJuiceEvents();
 		}
 		if (e.elite && this.eng.chestsThisMap < 3) {
 			this.eng.chestsThisMap++;
 			this.eng.chests.push({ x: e.x, y: e.y });
 			if (Math.random() < .35) (this.eng as any).dropCacheAt(e.x + 30, e.y); // VS-3: elites drop Storm Cellar Caches // CONTEXT-GAP: dropCacheAt
-			(this.eng as any).spawnFloater(e.x, e.y - e.radius - 14, "ELITE DOWN — CHEST", "#ffd700"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: e.x, y: e.y - e.radius - 14, text: "ELITE DOWN — CHEST", color: "#ffd700" });
+			(this.eng as any).drainJuiceEvents();
 		}
 		(this.eng as any).tickBounty(`kill`); // CONTEXT-GAP: tickBounty
 		if (e.shatter) this.boneBurst(e);
 		if (!e.elite && (e.type === `behemoth` || e.type === `miner_brute` || e.type === `bloater_spitter`) && this.eng.chestsThisMap < 2) {
 			this.eng.chestsThisMap++;
 			this.eng.chests.push({ x: e.x, y: e.y });
-			(this.eng as any).spawnFloater(e.x, e.y - e.radius - 14, "CHEST", "#f6c453"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: e.x, y: e.y - e.radius - 14, text: "CHEST", color: "#f6c453" });
+			(this.eng as any).drainJuiceEvents();
 		}
 		if (this.eng.simTime - this.eng.rushWindow > 5) this.eng.rushKills = 0;
 		this.eng.rushWindow = this.eng.simTime;
@@ -694,7 +715,8 @@ export class ZombieSim {
 			this.eng.player.stamina = Math.min(this.eng.player.maxStamina, this.eng.player.stamina + 35);
 			this.eng.trauma = Math.min(1, this.eng.trauma + .45 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
 			this.eng.hitstop = Math.max(this.eng.hitstop, (.08) * (this.eng as any).tune('hitstop')); // CONTEXT-GAP: tune
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 40, "BLOOD RUSH", "#e11d2e"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 40, text: "BLOOD RUSH", color: "#e11d2e" });
+			(this.eng as any).drainJuiceEvents();
 			this.eng.callbacks.onRadio?.("Unknown", "Don't you stop.");
 			soundEngine.playPowerup();
 		}
@@ -702,7 +724,7 @@ export class ZombieSim {
 		(this.eng as any).addScore(r); // CONTEXT-GAP: addScore
 		(this.eng as any).stripTheDead(e); // CONTEXT-GAP: stripTheDead
 		let i = (this.eng as any).getPerkLevel(`scavenger`), a = 1 + i * .35 + (this.eng as any).boon(`leavings`) * .15, o = Math.round(e.scrapValue * a * n); // CONTEXT-GAP: getPerkLevel, boon
-		if (this.eng.scrap += o, this.eng.stats.scrapCollected += o, (this.eng as any).spawnFloater(e.x, e.y - e.radius, `+${r}`, `#d4a017`), this.eng.bloodDecals.push({ // CONTEXT-GAP: spawnFloater
+		if (this.eng.scrap += o, this.eng.stats.scrapCollected += o, (this.eng as any).emitJuice('floater', { x: e.x, y: e.y - e.radius, text: `+${r}`, color: `#d4a017` }), this.eng.bloodDecals.push({
 			x: e.x,
 			y: e.y,
 			radius: e.radius * (1.2 + Math.random() * .6),
@@ -739,6 +761,7 @@ export class ZombieSim {
 				duration: 25e3
 			});
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	zombieMass(type: any) {
@@ -775,7 +798,8 @@ export class ZombieSim {
 		if (z.affix === `leaping`) { z.leapCd = 3; z.leapTele = 0; }
 		if (z.affix === `wailing`) { z.wailCd = 2 + Math.random() * 2; }
 		const label: any = { volatile: `VOLATILE`, vampiric: `VAMPIRIC`, leaping: `LEAPING`, shielded: `SHIELDED`, swift: `SWIFT`, frosted: `FROSTED`, thorned: `THORNED`, wailing: `WAILING` }[z.affix as string];
-		(this.eng as any).spawnFloater(z.x, z.y - z.radius - 26, label, `#ff7b72`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: z.x, y: z.y - z.radius - 26, text: label, color: `#ff7b72` });
+		(this.eng as any).drainJuiceEvents();
 		// Batch 3: elite alert howl — nearby dead hear it and come running.
 		soundEngine.tone({ f: 180, f2: 420, type: `sawtooth`, dur: .7, vol: .25 });
 		soundEngine.tone({ f: 420, f2: 180, type: `sawtooth`, dur: .7, vol: .2, delay: .7 });
@@ -784,6 +808,7 @@ export class ZombieSim {
 			o.ai = `chase`; o.tx = this.eng.player.x; o.ty = this.eng.player.y;
 			o.hearX = this.eng.player.x; o.hearY = this.eng.player.y;
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	// Batch 11 (Lane 1): the wail — nearby zombies get 4s of +35% speed frenzy.
@@ -795,10 +820,13 @@ export class ZombieSim {
 			o.frenzyUntil = this.eng.simTime + 4;
 			o.hitFlash = Math.max(o.hitFlash, .1);
 		}
-		this.eng.shockwaves.push({ x: r.x, y: r.y, r: 24, maxR: R, life: .5, maxLife: .5, color: `#c084fc` });
-		(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `WAIL!`, `#c084fc`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('shockwave', { x: r.x, y: r.y, r: 24, maxR: R, life: .5, maxLife: .5, color: `#c084fc` });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `WAIL!`, color: `#c084fc` });
+		(this.eng as any).drainJuiceEvents();
 		this.eng.callbacks.onRadio?.(`Unknown`, `That one's wailing. The whole pack just got quicker — drop it first.`);
 		soundEngine.tone({ f: 900, f2: 280, type: `sawtooth`, dur: .6, vol: .18 });
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	// Batch 11 (Lane 1): thorns — a thorned elite reflects 35% of melee/bash
@@ -808,8 +836,10 @@ export class ZombieSim {
 		const back = Math.max(1, Math.round(dealt * .35));
 		this.eng.invuln = 0;
 		(this.eng as any).damagePlayer(back); // CONTEXT-GAP: damagePlayer
-		(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 44, `THORNS ${back}`, `#4ade80`); // CONTEXT-GAP: spawnFloater
-		(this.eng as any).createBloodParticles(this.eng.player.x, this.eng.player.y, 0); // CONTEXT-GAP: createBloodParticles
+		(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 44, text: `THORNS ${back}`, color: `#4ade80` });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('bloodParticles', { x: this.eng.player.x, y: this.eng.player.y, angle: 0 });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.tone({ f: 160, f2: 90, type: `square`, dur: .12, vol: .12 });
 		return back;
 	}
@@ -890,11 +920,13 @@ export class ZombieSim {
 	}
 
 	smashBarricadeAt(e: any,  t: any,  n: any) {
-		for (let r of this.eng.barricades) r.health <= 0 || e > r.x - 8 && e < r.x + r.width + 8 && t > r.y - 8 && t < r.y + r.height + 8 && (r.health -= n, r.health <= 0 && ((this.eng as any).spawnFloater(r.x + r.width / 2, r.y, `SMASH`, `#e8e0d4`), (this.eng as any).createHitSparks(e, t, `#b45309`))); // CONTEXT-GAP: spawnFloater, createHitSparks
+		for (let r of this.eng.barricades) r.health <= 0 || e > r.x - 8 && e < r.x + r.width + 8 && t > r.y - 8 && t < r.y + r.height + 8 && (r.health -= n, r.health <= 0 && ((this.eng as any).emitJuice('floater', { x: r.x + r.width / 2, y: r.y, text: `SMASH`, color: `#e8e0d4` }), (this.eng as any).emitJuice('hitSparks', { x: e, y: t, color: `#b45309` })));
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	smashHoleAt(e: any,  t: any,  n: any) {
-		for (let r of this.eng.holes) r.boarded && Math.hypot(r.x - e, r.y - t) <= r.radius + 18 && (r.boardHealth -= n, r.boardHealth <= 0 && (r.boarded = false, r.boardHealth = r.maxBoardHealth, (this.eng as any).spawnFloater(r.x, r.y, `HOLE OPEN`, `#c23b22`), soundEngine.playBoardBreak())); // CONTEXT-GAP: spawnFloater
+		for (let r of this.eng.holes) r.boarded && Math.hypot(r.x - e, r.y - t) <= r.radius + 18 && (r.boardHealth -= n, r.boardHealth <= 0 && (r.boarded = false, r.boardHealth = r.maxBoardHealth, (this.eng as any).emitJuice('floater', { x: r.x, y: r.y, text: `HOLE OPEN`, color: `#c23b22` }), soundEngine.playBoardBreak()));
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	nearestHole(e: any) {
@@ -909,10 +941,11 @@ export class ZombieSim {
 	boardHole(e: any) {
 		if (!e.boarded) {
 			if (this.eng.scrap < 25) {
-				(this.eng as any).spawnFloater(e.x, e.y - 20, `NEED SCRAP`, `#c23b22`); // CONTEXT-GAP: spawnFloater
+				(this.eng as any).emitJuice('floater', { x: e.x, y: e.y - 20, text: `NEED SCRAP`, color: `#c23b22` });
+				(this.eng as any).drainJuiceEvents();
 				return;
 			}
-			this.eng.scrap -= 25, e.boarded = true, e.boardHealth = e.maxBoardHealth, (this.eng as any).addScore(40), (this.eng as any).spawnFloater(e.x, e.y - 18, `BOARDED`, `#d4a017`), soundEngine.playBoard(); // CONTEXT-GAP: addScore, spawnFloater
+			this.eng.scrap -= 25, e.boarded = true, e.boardHealth = e.maxBoardHealth, (this.eng as any).addScore(40), (this.eng as any).emitJuice('floater', { x: e.x, y: e.y - 18, text: `BOARDED`, color: `#d4a017` }), (this.eng as any).drainJuiceEvents(), soundEngine.playBoard(); // CONTEXT-GAP: addScore
 			for (let t = 0; t < 8; t++) {
 				let t = Math.random() * Math.PI * 2;
 				this.eng.particles.push(Object.assign((this.eng as any).allocParticle(), { // CONTEXT-GAP: allocParticle
@@ -930,6 +963,7 @@ export class ZombieSim {
 			}
 			this.eng.holes.length > 0 && this.eng.holes.every((e) => e.boarded) && this.eng.callbacks.onRadio?.(`Unknown`, `The holes went quiet. Keep the lantern. They'll try the boards.`);
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	personalityTarget(r: any,  i: any,  a: any,  o: any) {
@@ -1023,8 +1057,10 @@ export class ZombieSim {
 			remainingDistance: 450
 		});
 		// Batch 7: spit telegraph — the renderer drains state.telegraphs.
-		(this.eng as any).pushTelegraph(`ranged`, r.x, r.y, 90, .6); // CONTEXT-GAP: pushTelegraph
+		(this.eng as any).emitJuice('telegraph', { kind: `ranged`, x: r.x, y: r.y, r: 90, dur: .6 });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.playZombieHit(false);
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	// Batch 6 (Lane A): bomber formal spec — fuseRange starts the fuse, fuseTime burns
@@ -1098,7 +1134,8 @@ export class ZombieSim {
 		else if (r.chewKind === `barricade`) this.smashBarricadeAt(r.chewX, r.chewY, dmg * .8);
 		else if (r.chewKind === `post`) this.damagePostAt(r.chewX, r.chewY, dmg);
 		r.angle = Math.atan2(r.chewY - r.y, r.chewX - r.x);
-		(this.eng as any).createHitSparks(r.chewX, r.chewY, `#b45309`); // CONTEXT-GAP: createHitSparks
+		(this.eng as any).emitJuice('hitSparks', { x: r.chewX, y: r.chewY, color: `#b45309` });
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	damagePostAt(x: any,  y: any,  dmg: any) {
@@ -1108,11 +1145,13 @@ export class ZombieSim {
 			t.hp = (t.hp ?? 70) - dmg;
 			if (t.hp <= 0) {
 				t.live = false; t.blown = true;
-				(this.eng as any).spawnFloater(t.x, t.y - 30, `POST DOWN`, `#c23b22`); // CONTEXT-GAP: spawnFloater
+				(this.eng as any).emitJuice('floater', { x: t.x, y: t.y - 30, text: `POST DOWN`, color: `#c23b22` });
+				(this.eng as any).drainJuiceEvents();
 				soundEngine.playBoardBreak();
 			}
 			return;
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	// Batch 6 (Lane A): off-screen objectives — zombies with no player stimulus drift
@@ -1191,8 +1230,10 @@ export class ZombieSim {
 			z.shieldHp -= dmg;
 			if (z.shieldHp <= 0) {
 				z.shieldHp = 0;
-				(this.eng as any).spawnFloater(z.x, z.y - z.radius - 10, z.type === `riot_shield` ? `RIOT SHIELD DOWN` : `SHIELD DOWN`, `#4cc3ff`); // CONTEXT-GAP: spawnFloater
-				(this.eng as any).createHitSparks(z.x, z.y, `#e8e4da`); // CONTEXT-GAP: createHitSparks
+				(this.eng as any).emitJuice('floater', { x: z.x, y: z.y - z.radius - 10, text: z.type === `riot_shield` ? `RIOT SHIELD DOWN` : `SHIELD DOWN`, color: `#4cc3ff` });
+				(this.eng as any).drainJuiceEvents();
+				(this.eng as any).emitJuice('hitSparks', { x: z.x, y: z.y, color: `#e8e4da` });
+				(this.eng as any).drainJuiceEvents();
 				soundEngine.playZombieHit(false); // clank
 				soundEngine.tone({ f: 620, f2: 170, type: `square`, dur: .18, vol: .22 });
 			}

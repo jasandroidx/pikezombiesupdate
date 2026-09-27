@@ -23,9 +23,9 @@ export interface SimCamera {
 }
 
 /** The GameObject contract (backlog item): every sim entity implements
- *  update(dt) for simulation and draw(camera) for rendering. The contract
- *  is introduced here so the renderer can later treat entities uniformly;
- *  adoption per entity type is a follow-up batch. */
+ *  update(dt) for simulation and draw(camera) for rendering. Dispatch runs
+ *  through the per-kind registry in sim/gameobjects.ts; adoption proceeds one
+ *  entity kind at a time (`pickup` first, throwing stubs for the rest). */
 export interface GameObject {
 	update(dt: number): void;
 	draw(camera: SimCamera): void;

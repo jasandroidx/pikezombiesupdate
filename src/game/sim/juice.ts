@@ -8,6 +8,82 @@ import { soundEngine } from "../../audio/soundEngine";
 export class JuiceSim {
 	constructor(private eng: SimContext) {}
 
+	// ---- Juice event bus (Lane 4: juice-in-renderer event architecture).
+	// Sim logic emits typed juice events; JuiceSim drains the queue into the
+	// terminal producers below. The engine's SimEventBus is subscriber-only
+	// (no queue), so JuiceSim keeps its own pending queue; emitJuice ALSO
+	// notifies bus subscribers for future renderer hookup. Drain is
+	// synchronous (probes read juice state in the same tick), idempotent,
+	// and reentrancy-safe — producers must never emit.
+	//
+	// Juice event kinds (payload shapes):
+	//   'floater'        { x, y, text, color }
+	//   'damageNumber'   { x, y, amount, color }
+	//   'killWord'       { x, y }
+	//   'bloodSpray'     { x, y, angle, power }
+	//   'bloodParticles' { x, y, angle }
+	//   'scorch'         { x, y, radius }
+	//   'telegraph'      { kind, x, y, r, dur }
+	//   'light'          { x, y, radius, intensity, ttl }
+	//   'corpse'         { x, y, radius }
+	//   'slash'          { x, y, angle, faint }
+	//   'hitSparks'      { x, y, color }
+	//   'bloodSplat'     { x, y }
+	//   'shockwave'      { x, y, r, maxR, life, maxLife, color, b5? }
+	//   'hitFlash'       { x, y, life, maxLife }
+	//   'shake'          { amount }  (strongest-wins)
+	//   'shakeSet'       { amount }  (assign)
+	//   'camKick'        { dx, dy }  (additive camera kick)
+	private juiceQueue: { kind: string, data: any }[] = [];
+	private drainingJuice = false;
+
+	emitJuice(kind: string, data: any = {}) {
+		const d = data || {};
+		this.eng.events.emit({ type: `custom`, at: this.eng.simTime, data: { juice: kind, ...d } });
+		this.juiceQueue.push({ kind, data: d });
+	}
+
+	drainEvents() {
+		if (this.drainingJuice) return;
+		this.drainingJuice = true;
+		try {
+			let ev: { kind: string, data: any } | undefined;
+			while ((ev = this.juiceQueue.shift())) this.produceJuice(ev.kind, ev.data);
+		} finally {
+			this.drainingJuice = false;
+		}
+	}
+
+	private produceJuice(kind: string, d: any) {
+		switch (kind) {
+			case `floater`: this.spawnFloater(d.x, d.y, d.text, d.color); break;
+			case `damageNumber`: this.spawnDamageNumber(d.x, d.y, d.amount, d.color); break;
+			case `killWord`: this.spawnKillWord(d.x, d.y); break;
+			case `bloodSpray`: this.bloodSpray(d.x, d.y, d.angle, d.power); break;
+			case `bloodParticles`: this.createBloodParticles(d.x, d.y, d.angle); break;
+			case `scorch`: this.addScorch(d.x, d.y, d.radius); break;
+			case `telegraph`: this.pushTelegraph(d.kind, d.x, d.y, d.r, d.dur); break;
+			case `light`: this.addLight(d.x, d.y, d.radius, d.intensity, d.ttl); break;
+			case `corpse`: this.addCorpse({ x: d.x, y: d.y, radius: d.radius }); break;
+			case `slash`: this.addSlash(d.x, d.y, d.angle, d.faint); break;
+			case `hitSparks`: this.createHitSparks(d.x, d.y, d.color); break;
+			case `bloodSplat`: this.addBloodSplat(d.x, d.y); break;
+			case `shockwave`: this.pushShockwave(d); break;
+			case `hitFlash`: this.pushHitFlash(d); break;
+			case `shake`: this.bumpShake(d.amount); break;
+			case `shakeSet`: this.setShake(d.amount); break;
+			case `camKick`: this.pushCamKick(d.dx, d.dy); break;
+			default: break; // unknown kinds ignored (forward-compat with other lanes)
+		}
+	}
+
+	// Terminal producers for the ring/flash/shake kinds (drain-only entry points).
+	pushShockwave(s: any) { this.eng.shockwaves.push(s); }
+	pushHitFlash(f: any) { this.eng.hitFlashes.push(f); }
+	pushCamKick(dx: any, dy: any) { this.eng.camKickX += dx; this.eng.camKickY += dy; }
+	bumpShake(amount: any) { this.eng.screenShake = Math.max(this.eng.screenShake, amount); }
+	setShake(amount: any) { this.eng.screenShake = amount; }
+
 	addScorch(x: any, y: any, radius: any) {
 		this.eng.scorchDecals.push({ x, y, radius, alpha: .55, maxAlpha: .55 });
 		if (this.eng.scorchDecals.length > 60) this.eng.scorchDecals.shift();
@@ -104,8 +180,9 @@ export class JuiceSim {
 		if (!this.eng.hitFeel) return;
 		this.spendHitstop(.012);
 		const a = Math.atan2(bullet.vy, bullet.vx);
-		this.eng.camKickX += Math.cos(a) * 2.5;
-		this.eng.camKickY += Math.sin(a) * 2.5;
+		// Camera kick (evented — drained synchronously so probes read it this tick).
+		this.emitJuice(`camKick`, { dx: Math.cos(a) * 2.5, dy: Math.sin(a) * 2.5 });
+		this.drainEvents();
 	}
 
 	feelKill(z: any) {
@@ -116,8 +193,8 @@ export class JuiceSim {
 			// Slow-motion aftertaste.
 			this.eng.slowAfter = .6;
 			this.eng.worldSlow = Math.max(this.eng.worldSlow, 1.4);
-			// Shockwave.
-			this.eng.shockwaves.push({ x: z.x, y: z.y, r: 10, maxR: z.elite ? 150 : 220, life: .45, maxLife: .45 });
+			// Shockwave (evented — drained at the end of feelKill).
+			this.emitJuice(`shockwave`, { x: z.x, y: z.y, r: 10, maxR: z.elite ? 150 : 220, life: .45, maxLife: .45 });
 			soundEngine.tone({ f: 90, f2: 34, type: `sine`, dur: .4, vol: .5 });
 		}
 		// Camera kick away from the kill + zoom punch.
@@ -132,10 +209,12 @@ export class JuiceSim {
 			const pa = Math.random() * Math.PI * 2, sp = 60 + Math.random() * 220;
 			this.eng.particles.push(Object.assign(this.allocParticle(), { x: z.x, y: z.y, vx: Math.cos(pa) * sp, vy: Math.sin(pa) * sp, size: 2 + Math.random() * 3, life: .4 + Math.random() * .3, maxLife: .7, color: `#a31621`, alpha: 1 }));
 		}
-		// Kill words.
-		if (z.type === `behemoth`) this.spawnFloater(z.x, z.y - 40, `COUNTY LEGEND`, `#ffd700`);
-		else if (z.elite) this.spawnFloater(z.x, z.y - 30, [`DROPPED`, `BIG GAME`, `PUT DOWN`][(Math.random() * 3) | 0], `#c77dff`);
-		else if (this.eng.streak >= 20) this.spawnFloater(z.x, z.y - 26, `UNSTOPPABLE`, `#ff6ec7`);
+		// Kill words (evented — drained at the end of feelKill so emission
+		// order matches the old direct-call order).
+		if (z.type === `behemoth`) this.emitJuice(`floater`, { x: z.x, y: z.y - 40, text: `COUNTY LEGEND`, color: `#ffd700` });
+		else if (z.elite) this.emitJuice(`floater`, { x: z.x, y: z.y - 30, text: [`DROPPED`, `BIG GAME`, `PUT DOWN`][(Math.random() * 3) | 0], color: `#c77dff` });
+		else if (this.eng.streak >= 20) this.emitJuice(`floater`, { x: z.x, y: z.y - 26, text: `UNSTOPPABLE`, color: `#ff6ec7` });
+		this.drainEvents();
 	}
 
 	updateFeel(dt: any) {

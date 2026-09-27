@@ -61,7 +61,9 @@ for (const f of files) {
   let text;
   try { text = await r.text(); } catch { skipped++; continue; }
   fetched++;
-  const m = text.match(BANNED);
+  // The one allowed hit is the ban comment itself (documents the naming guard).
+  const scrubbed = text.replace(/never bayville\/griggsville\/illinois/gi, "");
+  const m = scrubbed.match(BANNED);
   if (m) {
     const i = m.index;
     hits.push(`${rel}: ...${text.slice(Math.max(0, i - 40), i + 40).replace(/\s+/g, " ")}...`);

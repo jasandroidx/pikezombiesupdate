@@ -21,7 +21,8 @@ export class BossSim {
 		if (r.enraged || frac < cfg.enrageAt) {
 			if (!r.enraged) {
 				r.enraged = true;
-				(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `ENRAGED`, `#ef4444`); // CONTEXT-GAP: spawnFloater
+				(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `ENRAGED`, color: `#ef4444` });
+				(this.eng as any).drainJuiceEvents();
 				soundEngine.tone({ f: 140, f2: 60, type: `sawtooth`, dur: .6, vol: .3 });
 			}
 			r.bossPhase = `enrage`;
@@ -38,7 +39,8 @@ export class BossSim {
 				const c = (this.eng as any).pushZombie(type, r.x + Math.cos(a) * (r.radius + 40), r.y + Math.sin(a) * (r.radius + 40)); // CONTEXT-GAP: pushZombie
 				c.ai = `chase`;
 			}
-			(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `THE GROUND STIRS`, `#a78bfa`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `THE GROUND STIRS`, color: `#a78bfa` });
+			(this.eng as any).drainJuiceEvents();
 			soundEngine.tone({ f: 90, f2: 220, type: `sawtooth`, dur: .5, vol: .25 });
 			r.bossPhase = `fight`;
 			return;
@@ -55,7 +57,8 @@ export class BossSim {
 				r.chargeDashT = 0.55;
 				r.bossPhase = `fight`;
 				r.chargeCd = cfg.chargeEvery * (0.8 + Math.random() * 0.4);
-				this.eng.screenShake = Math.max(this.eng.screenShake, 8 * (this.eng as any).tune(`shake`)); // CONTEXT-GAP: tune
+				(this.eng as any).emitJuice('shake', { amount: 8 * (this.eng as any).tune(`shake`) }); // CONTEXT-GAP: tune
+				(this.eng as any).drainJuiceEvents();
 				soundEngine.tone({ f: 200, f2: 900, type: `sawtooth`, dur: .3, vol: .2 });
 			}
 			return;
@@ -70,11 +73,14 @@ export class BossSim {
 		if (r.chargeCd <= 0 && o > 120 && o < 800) {
 			r.chargeWindupT = cfg.chargeWindup;
 			r.bossPhase = `charge`;
-			(this.eng as any).pushTelegraph(`charge`, r.x, r.y, cfg.chargeLaneR, cfg.chargeWindup); // CONTEXT-GAP: pushTelegraph
-			(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `!`, `#fbbf24`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('telegraph', { kind: `charge`, x: r.x, y: r.y, r: cfg.chargeLaneR, dur: cfg.chargeWindup });
+			(this.eng as any).drainJuiceEvents();
+			(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `!`, color: `#fbbf24` });
+			(this.eng as any).drainJuiceEvents();
 			return;
 		}
 		r.bossPhase = `fight`;
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	// Batch 13 (Lane 1): Boss #2 — Old Ben. Three telegraphed attack patterns
@@ -91,7 +97,8 @@ export class BossSim {
 		const frac = r.maxHealth > 0 ? r.health / r.maxHealth : 1;
 		if (!r.fury && frac < cfg.furyAt) {
 			r.fury = true;
-			(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `OLD BEN IS FURIOUS`, `#ef4444`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `OLD BEN IS FURIOUS`, color: `#ef4444` });
+			(this.eng as any).drainJuiceEvents();
 			soundEngine.tone({ f: 120, f2: 55, type: `sawtooth`, dur: .6, vol: .3 });
 		}
 		// Mid-attack state machines.
@@ -111,6 +118,7 @@ export class BossSim {
 		if (r.slamCd <= 0 && o < 700) { this.benStart(`slam`, r); return; }
 		if (r.callCd <= 0) { this.benStart(`call`, r); return; }
 		if (r.chargeCd <= 0 && o > 150 && o < 900) { this.benStart(`charge`, r); return; }
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	benStart(atk: any,  r: any) {
@@ -123,8 +131,10 @@ export class BossSim {
 			r.benWindupT = cfg.slamWindup;
 			r.slamX = this.eng.player.x; r.slamY = this.eng.player.y;
 			r.bossPhase = `slam`;
-			(this.eng as any).pushTelegraph(`ranged`, r.slamX, r.slamY, cfg.slamR, cfg.slamWindup); // CONTEXT-GAP: pushTelegraph
-			(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `TREMOR SLAM`, `#fbbf24`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('telegraph', { kind: `ranged`, x: r.slamX, y: r.slamY, r: cfg.slamR, dur: cfg.slamWindup });
+			(this.eng as any).drainJuiceEvents();
+			(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `TREMOR SLAM`, color: `#fbbf24` });
+			(this.eng as any).drainJuiceEvents();
 			soundEngine.tone({ f: 70, f2: 40, type: `sine`, dur: .8, vol: .3 });
 			r.slamCd = cfg.slamCd * (0.8 + Math.random() * 0.4) * cdMul;
 		} else if (atk === `call`) {
@@ -133,8 +143,9 @@ export class BossSim {
 			r.benWindupT = cfg.callWindup;
 			r.bossPhase = `call`;
 			const open = this.eng.holes.filter((h) => !h.boarded);
-			for (const h of open.slice(0, 3)) (this.eng as any).pushTelegraph(`ranged`, h.x, h.y, 90, cfg.callWindup); // CONTEXT-GAP: pushTelegraph
-			(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `THE BRIAR CALLS`, `#a3e635`); // CONTEXT-GAP: spawnFloater
+			for (const h of open.slice(0, 3)) (this.eng as any).emitJuice('telegraph', { kind: `ranged`, x: h.x, y: h.y, r: 90, dur: cfg.callWindup });
+			(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `THE BRIAR CALLS`, color: `#a3e635` });
+			(this.eng as any).drainJuiceEvents();
 			soundEngine.tone({ f: 200, f2: 420, type: `triangle`, dur: .9, vol: .22 });
 			r.callCd = cfg.callCd * (0.8 + Math.random() * 0.4) * cdMul;
 		} else {
@@ -144,11 +155,14 @@ export class BossSim {
 			r.bossPhase = `charge`;
 			const a = Math.atan2(this.eng.player.y - r.y, this.eng.player.x - r.x);
 			r.chargeVx = Math.cos(a); r.chargeVy = Math.sin(a);
-			(this.eng as any).pushTelegraph(`charge`, r.x, r.y, cfg.chargeLaneR, cfg.chargeWindup); // CONTEXT-GAP: pushTelegraph
-			(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `!`, `#fbbf24`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('telegraph', { kind: `charge`, x: r.x, y: r.y, r: cfg.chargeLaneR, dur: cfg.chargeWindup });
+			(this.eng as any).drainJuiceEvents();
+			(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `!`, color: `#fbbf24` });
+			(this.eng as any).drainJuiceEvents();
 			soundEngine.tone({ f: 150, f2: 600, type: `sawtooth`, dur: .5, vol: .2 });
 			r.chargeCd = cfg.chargeCd * (0.8 + Math.random() * 0.4) * cdMul;
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	tickBenSlam(r: any,  dt: any) {
@@ -162,9 +176,11 @@ export class BossSim {
 		if (r.fury) {
 			// Furious second ring: staggered strike + its own visible telegraph.
 			r.slamRing2T = 0.45;
-			(this.eng as any).pushTelegraph(`ranged`, r.slamX, r.slamY, cfg.slamR2, 0.45); // CONTEXT-GAP: pushTelegraph
+			(this.eng as any).emitJuice('telegraph', { kind: `ranged`, x: r.slamX, y: r.slamY, r: cfg.slamR2, dur: 0.45 });
+			(this.eng as any).drainJuiceEvents();
 		}
 		r.benAtk = null; r.bossPhase = `fight`;
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	benSlamStrike(r: any,  radius: any,  isSecond: any) {
@@ -181,11 +197,13 @@ export class BossSim {
 			const nx = z.x + Math.cos(a) * kb, ny = z.y + Math.sin(a) * kb;
 			if (!(this.eng as any).checkObstacleCollision(nx, ny, z.radius)) { z.x = nx; z.y = ny; } // CONTEXT-GAP: checkObstacleCollision
 		}
-		this.eng.shockwaves.push({ x: r.slamX, y: r.slamY, r: 10, maxR: radius, life: .5, maxLife: .5, color: `#b45309` });
-		this.eng.screenShake = Math.max(this.eng.screenShake, 10 * (this.eng as any).tune('shake')); // CONTEXT-GAP: tune
+		(this.eng as any).emitJuice('shockwave', { x: r.slamX, y: r.slamY, r: 10, maxR: radius, life: .5, maxLife: .5, color: `#b45309` });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('shake', { amount: 10 * (this.eng as any).tune('shake') }); // CONTEXT-GAP: tune
+		(this.eng as any).drainJuiceEvents();
 		this.eng.trauma = Math.min(1, this.eng.trauma + .35 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
 		soundEngine.tone({ f: 60, f2: 28, type: `sine`, dur: .5, vol: .5 });
-		if (isSecond) (this.eng as any).spawnFloater(r.slamX, r.slamY - 60, `SECOND RING`, `#ef4444`); // CONTEXT-GAP: spawnFloater
+		if (isSecond) (this.eng as any).emitJuice('floater', { x: r.slamX, y: r.slamY - 60, text: `SECOND RING`, color: `#ef4444` }); (this.eng as any).drainJuiceEvents();
 	}
 
 	tickBenCall(r: any,  dt: any) {
@@ -204,9 +222,11 @@ export class BossSim {
 			const z = (this.eng as any).pushZombie(type, hx, hy); // CONTEXT-GAP: pushZombie
 			z.ai = `chase`;
 		}
-		(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `THE BRIAR RISES`, `#a3e635`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `THE BRIAR RISES`, color: `#a3e635` });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.tone({ f: 90, f2: 300, type: `sawtooth`, dur: .4, vol: .25 });
 		r.benAtk = null; r.bossPhase = `fight`;
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	tickBenCharge(r: any,  dt: any) {
@@ -238,8 +258,10 @@ export class BossSim {
 		r.chargeDashT = cfg.chargeDashT;
 		r.benDashing = true; r.chargeHitPlayer = false;
 		r.trampled = new Set();
-		this.eng.screenShake = Math.max(this.eng.screenShake, 6 * (this.eng as any).tune('shake')); // CONTEXT-GAP: tune
+		(this.eng as any).emitJuice('shake', { amount: 6 * (this.eng as any).tune('shake') }); // CONTEXT-GAP: tune
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.tone({ f: 200, f2: 900, type: `sawtooth`, dur: .3, vol: .2 });
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	benTrample(r: any) {
@@ -252,13 +274,15 @@ export class BossSim {
 			const a = Math.atan2(z.y - r.y, z.x - r.x) || 0;
 			const nx = z.x + Math.cos(a) * 120, ny = z.y + Math.sin(a) * 120;
 			if (!(this.eng as any).checkObstacleCollision(nx, ny, z.radius)) { z.x = nx; z.y = ny; } // CONTEXT-GAP: checkObstacleCollision
-			(this.eng as any).createBloodParticles(z.x, z.y, a); // CONTEXT-GAP: createBloodParticles
+			(this.eng as any).emitJuice('bloodParticles', { x: z.x, y: z.y, angle: a });
+			(this.eng as any).drainJuiceEvents();
 			if (z.health <= 0) (this.eng as any).killZombie(z, this.eng.zombies.indexOf(z)); // CONTEXT-GAP: killZombie
 		}
 		if (!r.chargeHitPlayer && Math.hypot(this.eng.player.x - r.x, this.eng.player.y - r.y) <= r.radius + this.eng.player.radius + 10) {
 			r.chargeHitPlayer = true;
 			(this.eng as any).damagePlayer(45, r); // CONTEXT-GAP: damagePlayer
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	benWallImpact(r: any) {
@@ -272,12 +296,16 @@ export class BossSim {
 			z.health -= 60;
 			if (z.health <= 0) (this.eng as any).killZombie(z, this.eng.zombies.indexOf(z)); // CONTEXT-GAP: killZombie
 		}
-		this.eng.shockwaves.push({ x: r.x, y: r.y, r: 10, maxR: cfg.wallShockR, life: .55, maxLife: .55, color: `#b45309` });
-		this.eng.screenShake = Math.max(this.eng.screenShake, 12 * (this.eng as any).tune('shake')); // CONTEXT-GAP: tune
+		(this.eng as any).emitJuice('shockwave', { x: r.x, y: r.y, r: 10, maxR: cfg.wallShockR, life: .55, maxLife: .55, color: `#b45309` });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('shake', { amount: 12 * (this.eng as any).tune('shake') }); // CONTEXT-GAP: tune
+		(this.eng as any).drainJuiceEvents();
 		this.eng.trauma = Math.min(1, this.eng.trauma + .4 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
-		(this.eng as any).spawnFloater(r.x, r.y - r.radius - 24, `THE WALL REMEMBERS`, `#fbbf24`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: r.x, y: r.y - r.radius - 24, text: `THE WALL REMEMBERS`, color: `#fbbf24` });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.tone({ f: 55, f2: 25, type: `sine`, dur: .6, vol: .5 });
 		r.benDashing = false; r.benAtk = null; r.bossPhase = `fight`;
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	// Batch 13 (Lane 1): Old Ben death — big grit shower, guaranteed boon
@@ -287,10 +315,12 @@ export class BossSim {
 			const an = Math.random() * Math.PI * 2;
 			(this.eng as any).dropGritOrb(e.x, e.y, Math.cos(an) * 160, Math.sin(an) * 160, 3 + (i % 3)); // CONTEXT-GAP: dropGritOrb
 		}
-		(this.eng as any).spawnFloater(e.x, e.y - 64, `OLD BEN FELLED`, `#ffd700`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: e.x, y: e.y - 64, text: `OLD BEN FELLED`, color: `#ffd700` });
+		(this.eng as any).drainJuiceEvents();
 		this.eng.codexSeen?.add(`boss_old_ben`);
 		this.eng.callbacks.onRadio?.(`WJPS`, `Old Ben's down! The briars are settling — somebody get a crew out to the company store and make sure he stays down.`);
 		if (!this.eng.draft) (this.eng as any).offerDraft(); // CONTEXT-GAP: offerDraft
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	// Batch 13 (Lane 1): mound shield aura — the boss-fight tank add shields
@@ -324,7 +354,7 @@ export class BossSim {
 			c.damage = 0;
 			c.ai = `chase`;
 		}
-		if (n > 0) (this.eng as any).spawnFloater(r.x, r.y - 40, `HAINT MULTIPLIES`, `#a78bfa`); // CONTEXT-GAP: spawnFloater
+		if (n > 0) (this.eng as any).emitJuice('floater', { x: r.x, y: r.y - 40, text: `HAINT MULTIPLIES`, color: `#a78bfa` }); (this.eng as any).drainJuiceEvents();
 		r.cloneCd = 6;
 	}
 
@@ -355,7 +385,7 @@ export class BossSim {
 			c.scrapValue = 0;
 			c.ai = `chase`;
 		}
-		if (n > 0) (this.eng as any).spawnFloater(r.x, r.y - 40, `SLEIGHT OF HAND`, `#a78bfa`); // CONTEXT-GAP: spawnFloater
+		if (n > 0) (this.eng as any).emitJuice('floater', { x: r.x, y: r.y - 40, text: `SLEIGHT OF HAND`, color: `#a78bfa` }); (this.eng as any).drainJuiceEvents();
 		r.cloneCd = cfg.cloneCooldown;
 	}
 
@@ -380,7 +410,8 @@ export class BossSim {
 		else if (cid === `eula_stillwell`) this.sigStillHeart();
 		else if (cid === `silas_mccord`) this.sigMashBomb();
 		else if (cid === `thea_kettler`) this.sigDraglineSweep();
-		(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 56, (this.signatureState().name || `SPECIAL`).toUpperCase(), `#f6c453`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 56, text: (this.signatureState().name || `SPECIAL`).toUpperCase(), color: `#f6c453` });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.playPowerup();
 		return true;
 	}
@@ -399,7 +430,8 @@ export class BossSim {
 	// update()) plus guaranteed crits (critChance: 1 stamped in fireCurrentWeapon).
 	sigStillHeart() {
 		this.eng.stillHeartUntil = this.eng.simTime + SIGNATURE_TUNING.eula_stillwell.durSec;
-		(this.eng as any).addLight(this.eng.player.x, this.eng.player.y, 380, .8, .3); // CONTEXT-GAP: addLight
+		(this.eng as any).emitJuice('light', { x: this.eng.player.x, y: this.eng.player.y, radius: 380, intensity: .8, ttl: .3 });
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	// Batch 10 (Lane 1): Silas's Mash Bomb — lob a still-charge at the densest
@@ -429,13 +461,17 @@ export class BossSim {
 			// Batch 11 (Lane 1): thorned elites bite back against the sweep.
 			(this.eng as any).thornedReflect(z, dmg); // CONTEXT-GAP: thornedReflect
 			this.eng.stats.damageDealt += dmg;
-			(this.eng as any).createBloodParticles(z.x, z.y, a + Math.PI); // CONTEXT-GAP: createBloodParticles
+			(this.eng as any).emitJuice('bloodParticles', { x: z.x, y: z.y, angle: a + Math.PI });
+			(this.eng as any).drainJuiceEvents();
 			if (z.health <= 0) (this.eng as any).killZombie(z, i); // CONTEXT-GAP: killZombie
 		}
-		this.eng.shockwaves.push({ x: this.eng.player.x, y: this.eng.player.y, r: 12, maxR: R, life: .3, maxLife: .3, color: `#fbbf24` });
-		this.eng.screenShake = Math.max(this.eng.screenShake, 8 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
+		(this.eng as any).emitJuice('shockwave', { x: this.eng.player.x, y: this.eng.player.y, r: 12, maxR: R, life: .3, maxLife: .3, color: `#fbbf24` });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('shake', { amount: 8 * (this.eng as any).tune('shake') * (this.eng as any).motionScale() }); // CONTEXT-GAP: tune, motionScale
+		(this.eng as any).drainJuiceEvents();
 		this.eng.trauma = Math.min(1, this.eng.trauma + .35 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
 		soundEngine.playShotFor(soundEngine.kindForWeapon({ soundType: `chainsaw` }), { power: 1.4 });
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	// Batch 10 (Lane 1): densest-cluster targeting, shared by the Mortar and

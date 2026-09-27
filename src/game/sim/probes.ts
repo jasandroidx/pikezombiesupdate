@@ -764,6 +764,8 @@ export function installControlsProbe(eng: SimContext) {
 		zSpd: (i: any) => eng.zombies[i] ? +((eng.zombies[i].lastSpd || 0).toFixed(3)) : -1,
 		zLod: (i: any) => { const z = eng.zombies[i]; return z ? { think: !!z.lodThink, off: z.lodOff ?? -1, ai: z.ai } : null; },
 		zVel: (i: any) => { const z = eng.zombies[i]; return z ? { vx: +((z.vx || 0).toFixed(3)), vy: +((z.vy || 0).toFixed(3)) } : null; },
+		// Batch 16 Lane 1 probe: fixed-timestep accumulator state (loop never steps via probes).
+		tsInfo: () => ({ fixedDt: 1 / 60, acc: +(((eng as any)._tsAcc || 0).toFixed(4)), sim: +eng.simTime.toFixed(3) }),
 	};
 	let e = window.__controlsTest;
 	e.teleport = (e: any, t: any) => {

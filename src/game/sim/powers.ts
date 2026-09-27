@@ -162,14 +162,19 @@ export class PowersSim {
 			const f = 1 - .5 * (d / (R + z.radius));
 			const dmg = Math.round(n.damage * f * (this.eng as any).playerDamageMul(z, n.weaponType)); // CONTEXT-GAP: playerDamageMul
 			z.health -= dmg; z.hitFlash = .12; this.eng.stats.damageDealt += dmg;
-			(this.eng as any).createBloodParticles(z.x, z.y, Math.atan2(z.y - n.y, z.x - n.x)); // CONTEXT-GAP: createBloodParticles
+			(this.eng as any).emitJuice('bloodParticles', { x: z.x, y: z.y, angle: Math.atan2(z.y - n.y, z.x - n.x) });
+			(this.eng as any).drainJuiceEvents();
 		}
-		this.eng.shockwaves.push({ x: n.x, y: n.y, r: 8, maxR: R, life: .35, maxLife: .35, color: `#f87171` });
-		(this.eng as any).addScorch(n.x, n.y, 60); // CONTEXT-GAP: addScorch
-		this.eng.screenShake = Math.max(this.eng.screenShake, 5);
+		(this.eng as any).emitJuice('shockwave', { x: n.x, y: n.y, r: 8, maxR: R, life: .35, maxLife: .35, color: `#f87171` });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('scorch', { x: n.x, y: n.y, radius: 60 });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('shake', { amount: 5 });
+		(this.eng as any).drainJuiceEvents();
 		this.eng.trauma = Math.min(1, this.eng.trauma + .3 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
 		(this.eng as any).emitNoise(n.x, n.y, 420); // CONTEXT-GAP: emitNoise
 		soundEngine.playBarrelExplosion();
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	dropVacuumAt(x: any, y: any) {
@@ -181,8 +186,10 @@ export class PowersSim {
 			this.eng.nextVacuumAt = this.eng.simTime + 55 + Math.random() * 25;
 			const a = Math.random() * Math.PI * 2, d = 140 + Math.random() * 100;
 			this.eng.dropVacuumAt(this.eng.player.x + Math.cos(a) * d, this.eng.player.y + Math.sin(a) * d);
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 56, `DUST DEVIL SIGHTED`, `#7dd3fc`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 56, text: `DUST DEVIL SIGHTED`, color: `#7dd3fc` });
+			(this.eng as any).drainJuiceEvents();
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	updateSalt(dt: any) {
@@ -217,8 +224,10 @@ export class PowersSim {
 		const w = this.eng.weapons[this.eng.currentWeaponIndex];
 		w.reserveAmmo += w.id === `shotgun` ? 6 : 10;
 		this.eng.player.health = Math.min(this.eng.player.maxHealth, this.eng.player.health + 22);
-		(this.eng as any).spawnFloater(this.eng.beacon.x, this.eng.beacon.y - 24, "SUPPLY", "#d4a017"); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: this.eng.beacon.x, y: this.eng.beacon.y - 24, text: "SUPPLY", color: "#d4a017" });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.playPickup();
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	tickBounty(kind: any) {
@@ -231,8 +240,10 @@ export class PowersSim {
 		this.eng.stats.scrapCollected += 40;
 		this.eng.player.health = Math.min(this.eng.player.maxHealth, this.eng.player.health + 14);
 		this.eng.bountyBoostUntil = this.eng.simTime + 8;
-		(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 32, "BOUNTY", "#d4a017"); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 32, text: "BOUNTY", color: "#d4a017" });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.playPowerup();
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	updateOrbiters(dt: any) {
@@ -273,7 +284,8 @@ export class PowersSim {
 	lobCharge(x: any, y: any, delaySec: any, radius: any, baseDmg: any, label: any) {
 		this.eng.lobbedCharges.push({ x, y, t: delaySec, max: delaySec, radius, baseDmg, label });
 		(this.eng as any).emitNoise(x, y, 300); // CONTEXT-GAP: emitNoise
-		(this.eng as any).spawnFloater(x, y - 34, label + ` INCOMING`, `#f97316`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: x, y: y - 34, text: label + ` INCOMING`, color: `#f97316` });
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	updateLobbedCharges(dt: any) {
@@ -292,20 +304,26 @@ export class PowersSim {
 			const dmg = Math.round(c.baseDmg * f * (this.eng as any).explosionDmgMul(z)); // CONTEXT-GAP: explosionDmgMul
 			z.health -= dmg; z.hitFlash = .12;
 			this.eng.stats.damageDealt += dmg;
-			(this.eng as any).createBloodParticles(z.x, z.y, Math.atan2(z.y - c.y, z.x - c.x)); // CONTEXT-GAP: createBloodParticles
+			(this.eng as any).emitJuice('bloodParticles', { x: z.x, y: z.y, angle: Math.atan2(z.y - c.y, z.x - c.x) });
+			(this.eng as any).drainJuiceEvents();
 		}
 		for (let i = this.eng.zombies.length - 1; i >= 0; i--) {
 			if (this.eng.zombies[i].health <= 0) (this.eng as any).killZombie(this.eng.zombies[i], i); // CONTEXT-GAP: killZombie
 		}
 		this.eng.spawnBrinePatch(c.x, c.y); // Batch 10 (Lane 4): Mash Bomb leaves a burning brine patch.
-		this.eng.shockwaves.push({ x: c.x, y: c.y, r: 8, maxR: c.radius, life: .35, maxLife: .35, color: `#f97316` });
-		(this.eng as any).addScorch(c.x, c.y, Math.min(130, c.radius)); // CONTEXT-GAP: addScorch
-		this.eng.screenShake = Math.max(this.eng.screenShake, 7 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
+		(this.eng as any).emitJuice('shockwave', { x: c.x, y: c.y, r: 8, maxR: c.radius, life: .35, maxLife: .35, color: `#f97316` });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('scorch', { x: c.x, y: c.y, radius: Math.min(130, c.radius) });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('shake', { amount: 7 * (this.eng as any).tune('shake') * (this.eng as any).motionScale() }); // CONTEXT-GAP: tune, motionScale
+		(this.eng as any).drainJuiceEvents();
 		this.eng.trauma = Math.min(1, this.eng.trauma + .4 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
-		(this.eng as any).addLight(c.x, c.y, 420, 1, .5); // CONTEXT-GAP: addLight
+		(this.eng as any).emitJuice('light', { x: c.x, y: c.y, radius: 420, intensity: 1, ttl: .5 });
+		(this.eng as any).drainJuiceEvents();
 		(this.eng as any).emitNoise(c.x, c.y, 500); // CONTEXT-GAP: emitNoise
 		soundEngine.playBarrelExplosion();
-		(this.eng as any).spawnFloater(c.x, c.y - c.radius - 10, c.label, `#f97316`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: c.x, y: c.y - c.radius - 10, text: c.label, color: `#f97316` });
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	spawnBrinePatch(x: any, y: any) {
@@ -352,15 +370,18 @@ export class PowersSim {
 			z.health -= dealt;
 			z.hitFlash = Math.max(z.hitFlash, .15);
 			this.eng.stats.damageDealt += dealt;
-			(this.eng as any).createBloodParticles(z.x, z.y, Math.atan2(z.y - y1, z.x - x1)); // CONTEXT-GAP: createBloodParticles
+			(this.eng as any).emitJuice('bloodParticles', { x: z.x, y: z.y, angle: Math.atan2(z.y - y1, z.x - x1) });
+			(this.eng as any).drainJuiceEvents();
 			hits++;
 			if (z.health <= 0) (this.eng as any).killZombie(z, this.eng.zombies.indexOf(z)); // CONTEXT-GAP: killZombie
 		}
 		this.eng.lastLance = { beams: this.eng.arcBeams.length, hits, tx: Math.round(b.tx), ty: Math.round(b.ty) };
 		// Heat-glow visual: jagged orange beam + light bloom + heat sparks.
 		this.eng.heatArc(x1, y1, x2, y2);
-		(this.eng as any).addLight(x2, y2, 260, .9, .4); // CONTEXT-GAP: addLight
-		this.eng.screenShake = Math.max(this.eng.screenShake, 3 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
+		(this.eng as any).emitJuice('light', { x: x2, y: y2, radius: 260, intensity: .9, ttl: .4 });
+		(this.eng as any).drainJuiceEvents();
+		(this.eng as any).emitJuice('shake', { amount: 3 * (this.eng as any).tune('shake') * (this.eng as any).motionScale() }); // CONTEXT-GAP: tune, motionScale
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	heatArc(x1: any, y1: any, x2: any, y2: any) {

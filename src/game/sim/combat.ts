@@ -17,7 +17,7 @@ export class CombatSim {
 			this.eng.codexSeen?.add(this.eng.weapons[e].id);
 			if (this.eng.currentWeaponIndex !== e) {
 				this.eng.switchBanner = 1.6;
-				(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 44, this.eng.weapons[e].name, "#d4a017"); // CONTEXT-GAP: spawnFloater
+				(this.eng as any).emitJuice(`floater`, { x: this.eng.player.x, y: this.eng.player.y - 44, text: this.eng.weapons[e].name, color: `#d4a017` }); // Batch 16 (Lane 2): juice event
 				soundEngine.playPickup();
 			}
 			this.eng.currentWeaponIndex = e;
@@ -55,12 +55,12 @@ export class CombatSim {
 				if (!w.unlocked) continue;
 				if (w.currentMag > 0 || w.reserveAmmo > 0) {
 					this.selectWeapon(idx);
-					(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 48, `${cur.name.split(" ").pop()} DRY`, "#e11d2e"); // CONTEXT-GAP: spawnFloater
+					(this.eng as any).emitJuice(`floater`, { x: this.eng.player.x, y: this.eng.player.y - 48, text: `${cur.name.split(" ").pop()} DRY`, color: `#e11d2e` }); // Batch 16 (Lane 2): juice event
 					this.eng.callbacks.onRadio?.("Unknown", `${cur.name} is dry. ${w.name}.`);
 					return true;
 				}
 			}
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 44, "EMPTY", "#e11d2e"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice(`floater`, { x: this.eng.player.x, y: this.eng.player.y - 44, text: `EMPTY`, color: `#e11d2e` }); // Batch 16 (Lane 2): juice event
 			return false;
 		}
 
@@ -102,14 +102,14 @@ export class CombatSim {
 				color: `#f6c453`
 			}));
 			soundEngine.playGunshot(`carbine`);
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 36, "FLARE", "#f6c453"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice(`floater`, { x: this.eng.player.x, y: this.eng.player.y - 36, text: `FLARE`, color: `#f6c453` }); // Batch 16 (Lane 2): juice event
 			return true;
 		}
 
 		plantFlare(x: any, y: any) {
 			this.eng.flares.push({ x, y, until: this.eng.simTime + 9, born: this.eng.simTime });
 			(this.eng as any).alertZombies(x, y, 560); // CONTEXT-GAP: alertZombies
-			(this.eng as any).spawnFloater(x, y - 18, "THEY HEAR IT", "#f6c453"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice(`floater`, { x, y: y - 18, text: `THEY HEAR IT`, color: `#f6c453` }); // Batch 16 (Lane 2): juice event
 			soundEngine.playBottleShatter();
 			for (let i = 0; i < 10; i++) {
 				const a = Math.random() * Math.PI * 2;
@@ -141,6 +141,7 @@ export class CombatSim {
 		}
 
 		fireCurrentWeapon() {
+			try {
 			let e = this.eng.weapons[this.eng.currentWeaponIndex];
 			(this.eng as any).hasPowerup(`infinite_ammo`) || e.currentMag--; // CONTEXT-GAP: hasPowerup
 			this.eng.stats.shotsFired++;
@@ -201,7 +202,7 @@ export class CombatSim {
 					z.x += ax * 8;
 					z.y += ay * 8;
 					this.eng.stats.damageDealt += e.damage;
-					(this.eng as any).createBloodParticles(z.x, z.y, this.eng.player.angle); // CONTEXT-GAP: createBloodParticles
+					(this.eng as any).emitJuice(`bloodParticles`, { x: z.x, y: z.y, angle: this.eng.player.angle }); // Batch 16 (Lane 2): juice event
 				}
 				for (let i = 0; i < 6; i++) this.eng.particles.push(Object.assign((this.eng as any).allocParticle(), { // CONTEXT-GAP: allocParticle
 					x: this.eng.player.x + ax * 28,
@@ -318,9 +319,16 @@ export class CombatSim {
 				type: `shell`
 			}));
 			if (e.currentMag === 0) this.reloadCurrentWeapon();
+			} finally { (this.eng as any).drainJuiceEvents(); } // Batch 16 (Lane 2): drain juice queue — idempotent; keeps probe paths synchronous
 		}
 
 		updateBullets(e: any, t: any) {
+			// Batch 16 (Lane 2): structured collision — collect contacts first,
+			// resolve once, in a defined order. Phase 1 moves every projectile
+			// and handles non-zombie contacts (obstacles, barrels, expiry);
+			// Phase 2 gathers swept-segment contact pairs without mutation;
+			// Phase 3 resolves them by projectile array order, then t ascending.
+			const segs: any[] = [];
 			for (let t = this.eng.bullets.length - 1; t >= 0; t--) {
 				let n = this.eng.bullets[t], r = e * 60;
 				const ox = n.x, oy = n.y;
@@ -412,56 +420,122 @@ export class CombatSim {
 						(this.eng as any).freeBulletAt(t); // CONTEXT-GAP: freeBulletAt
 						continue;
 					}
-					const bq = (this.eng as any).queryZombies((ox + n.x) / 2, (oy + n.y) / 2, Math.hypot(n.x - ox, n.y - oy) / 2 + this.eng.zhashMaxR + n.radius, []); // CONTEXT-GAP: queryZombies
-					bq.sort((x: any, y: any) => y - x);
 					if (n.lastHitCd > 0) n.lastHitCd -= e;
-				for (const e of bq) {
-						let r = this.eng.zombies[e];
-						if (!r) continue;
-						const zi = e; // Batch 6: damage-path index for Lane B hit-flash.
-						if (r === n.lastHit && n.lastHitCd > 0) continue;
-						if (!(this.eng as any).segmentHitsCircle(ox, oy, n.x, n.y, n.radius, r.x, r.y, r.radius)) continue; // CONTEXT-GAP: segmentHitsCircle
-						{
-							if (n.isFlare) {
-								this.plantFlare(n.x, n.y);
-								(this.eng as any).freeBulletAt(t); // CONTEXT-GAP: freeBulletAt
-								break;
-							}
-							if (n.isMissile) {
-								(this.eng as any).detonateMissile(n); // CONTEXT-GAP: detonateMissile
-								(this.eng as any).freeBulletAt(t); // CONTEXT-GAP: freeBulletAt
-								break;
-							}
-							this.eng.stats.shotsHit++;
-							let e = this.checkHeadshot(n, r), i = n.damage;
-							// Batch 6: per-instance damage flash (Lane B) + per-weapon crit
-							// (evolved signature bonus). No crit stacking with headshots.
-							registerZombieHit(zi);
-							if (!e && (n.critChance || 0) > 0 && Math.random() < n.critChance) {
-								i *= 2;
-								(this.eng as any).spawnFloater(r.x, r.y - r.radius, `CRIT`, `#fef08a`); // CONTEXT-GAP: spawnFloater
-								soundEngine.playZombieHit(true);
-							}
-							(this.eng as any).hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, (this.eng as any).createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4 * (this.eng.runHeadshotMul || 1), this.eng.stats.headshots++, (this.eng as any).bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= (this.eng as any).playerDamageMul(r, n.weaponType), i = (this.eng as any).applyAffixDefense(r, i), r.health -= i, this.eng.stats.damageDealt += i, this.applyCopperhead(r, n.weaponType); // CONTEXT-GAP: hasPowerup, createHitSparks, bumpLifetime, playerDamageMul, applyAffixDefense
-							if (!n.isSplinter && r.health > 0 && r.health <= r.maxHealth * .2 && r.type !== `behemoth` && r.type !== `old_ben` && r.type !== `miner_brute`) r.health = 0;
-							if (e) (this.eng as any).tickBounty(`head`); // CONTEXT-GAP: tickBounty
-							if (r.health <= 0 && !n.isSplinter) r.shatter = true;
-							if (this.eng.evolved === `lincoln` && n.weaponType === `revolver` && e) this.eng.player.health = Math.min(this.eng.player.maxHealth, this.eng.player.health + 4);
-							let a = Math.atan2(n.vy, n.vx), o = (this.eng as any).knockbackFor(n.weaponType, r.type); // CONTEXT-GAP: knockbackFor
-							this.spawnForkChildren(n, a);
-							// Batch 5: hit-track for the kill spray + slash streak + body reaction.
-							r.lastHitPower = i; r.lastHitAngle = a;
-							(this.eng as any).addSlash(n.x, n.y, a); // CONTEXT-GAP: addSlash
-							(this.eng as any).reactHit(r, i, a); // CONTEXT-GAP: reactHit
-							if (r.x += Math.cos(a) * o, r.y += Math.sin(a) * o, (this.eng as any).createBloodParticles(n.x, n.y, a), r.hitFlash = .08, e ? (this.eng as any).spawnFloater(r.x, r.y - r.radius, `HEAD`, `#ff4d3a`) : (this.eng as any).spawnDamageNumber(r.x, r.y - r.radius, i, `#e8b34b`), soundEngine.playImpact(), (this.eng as any).feelHit(n, r), i > 80 && (this.eng.hitstop = Math.max(this.eng.hitstop, (.04) * (this.eng as any).tune('hitstop'))), n.pierce--, n.pierce <= 0) { // CONTEXT-GAP: createBloodParticles, spawnFloater, spawnDamageNumber, feelHit, tune
-								if (this.tryRicochet(n, r)) break;
-								(this.eng as any).freeBulletAt(t); // CONTEXT-GAP: freeBulletAt
-								break;
-							}
-						}
-					}
+					segs.push({ n, ox, oy });
 				}
 			}
+			// Phase 2 — collect contacts. No game-state mutation here.
+			segs.reverse(); // restore projectile creation (array) order
+			const contacts: any[] = [];
+			for (let s = 0; s < segs.length; s++) {
+				const sg = segs[s], n = sg.n, ox = sg.ox, oy = sg.oy;
+				const bq = (this.eng as any).queryZombies((ox + n.x) / 2, (oy + n.y) / 2, Math.hypot(n.x - ox, n.y - oy) / 2 + this.eng.zhashMaxR + n.radius, []); // CONTEXT-GAP: queryZombies
+				for (const qi of bq) {
+					const z = this.eng.zombies[qi];
+					if (!z) continue;
+					if (z === n.lastHit && n.lastHitCd > 0) continue;
+					if (!(this.eng as any).segmentHitsCircle(ox, oy, n.x, n.y, n.radius, z.x, z.y, z.radius)) continue; // CONTEXT-GAP: segmentHitsCircle
+					contacts.push({ n, z, t: this.segT(ox, oy, n.x, n.y, z.x, z.y), order: s });
+				}
+			}
+			contacts.sort((a: any, b: any) => a.order - b.order || a.t - b.t);
+			// Phase 3 — resolve pairs in the defined deterministic order.
+			const spent = new Set<any>(), done = new Set<any>();
+			for (const c of contacts) {
+				const n = c.n, z = c.z;
+				if (spent.has(n) || done.has(n)) continue;
+				if (!this.eng.zombies.includes(z) || z.health <= 0) continue;
+				if (z === n.lastHit && n.lastHitCd > 0) continue;
+				if (n.isFlare) {
+					this.plantFlare(n.x, n.y);
+					spent.add(n); done.add(n);
+					continue;
+				}
+				if (n.isMissile) {
+					(this.eng as any).detonateMissile(n); // CONTEXT-GAP: detonateMissile
+					spent.add(n); done.add(n);
+					continue;
+				}
+				this.resolveBulletHit(n, z);
+				n.pierce--;
+				if (n.pierce <= 0) {
+					done.add(n);
+					if (!this.tryRicochet(n, z)) spent.add(n);
+				}
+			}
+			for (let t = this.eng.bullets.length - 1; t >= 0; t--) {
+				if (spent.has(this.eng.bullets[t])) (this.eng as any).freeBulletAt(t); // CONTEXT-GAP: freeBulletAt
+			}
+			(this.eng as any).drainJuiceEvents(); // Batch 16 (Lane 2): drain juice queue
+		}
+
+		// Batch 16 (Lane 2): along-segment parameter of the closest approach
+		// to (zx, zy), clamped to [0,1]. Orders collected contacts only —
+		// the swept hit test itself is unchanged.
+		segT(ox: any, oy: any, nx: any, ny: any, zx: any, zy: any) {
+			const dx = nx - ox, dy = ny - oy;
+			const len2 = dx * dx + dy * dy;
+			if (len2 <= 0) return 0;
+			const t = ((zx - ox) * dx + (zy - oy) * dy) / len2;
+			return t < 0 ? 0 : t > 1 ? 1 : t;
+		}
+
+		// Batch 16 (Lane 2): resolve one collected projectile-vs-zombie
+		// contact. Applies EXACTLY the legacy on-hit effects — damage math,
+		// falloff, affinities, crit, knockback and juice are untouched.
+		resolveBulletHit(n: any, z: any) {
+			this.eng.stats.shotsHit++;
+			const head = this.checkHeadshot(n, z);
+			let dmg = n.damage;
+			// Batch 6: per-instance damage flash (Lane B) + per-weapon crit
+			// (evolved signature bonus). No crit stacking with headshots.
+			registerZombieHit(this.eng.zombies.indexOf(z));
+			if (!head && (n.critChance || 0) > 0 && Math.random() < n.critChance) {
+				dmg *= 2;
+				(this.eng as any).emitJuice(`floater`, { x: z.x, y: z.y - z.radius, text: `CRIT`, color: `#fef08a` }); // Batch 16 (Lane 2): juice event
+				soundEngine.playZombieHit(true);
+			}
+			if ((this.eng as any).hasPowerup(`insta_kill`)) { // CONTEXT-GAP: hasPowerup
+				dmg = 99999;
+			} else if (head) {
+				if (z.hasHelmet) {
+					z.hasHelmet = false;
+					(this.eng as any).createHitSparks(z.x, z.y, `#eab308`); // CONTEXT-GAP: createHitSparks
+					soundEngine.playZombieHit(false);
+					dmg *= .6;
+				} else {
+					dmg *= 2.4 * (this.eng.runHeadshotMul || 1);
+					this.eng.stats.headshots++;
+					(this.eng as any).bumpLifetime(`headshots`); // CONTEXT-GAP: bumpLifetime
+					soundEngine.playZombieHit(true);
+				}
+			} else {
+				soundEngine.playZombieHit(false);
+			}
+			dmg *= (this.eng as any).playerDamageMul(z, n.weaponType); // CONTEXT-GAP: playerDamageMul
+			dmg = (this.eng as any).applyAffixDefense(z, dmg); // CONTEXT-GAP: applyAffixDefense
+			z.health -= dmg;
+			this.eng.stats.damageDealt += dmg;
+			this.applyCopperhead(z, n.weaponType);
+			if (!n.isSplinter && z.health > 0 && z.health <= z.maxHealth * .2 && z.type !== `behemoth` && z.type !== `old_ben` && z.type !== `miner_brute`) z.health = 0;
+			if (head) (this.eng as any).tickBounty(`head`); // CONTEXT-GAP: tickBounty
+			if (z.health <= 0 && !n.isSplinter) z.shatter = true;
+			if (this.eng.evolved === `lincoln` && n.weaponType === `revolver` && head) this.eng.player.health = Math.min(this.eng.player.maxHealth, this.eng.player.health + 4);
+			const a = Math.atan2(n.vy, n.vx), o = (this.eng as any).knockbackFor(n.weaponType, z.type); // CONTEXT-GAP: knockbackFor
+			this.spawnForkChildren(n, a);
+			// Batch 5: hit-track for the kill spray + slash streak + body reaction.
+			z.lastHitPower = dmg; z.lastHitAngle = a;
+			(this.eng as any).addSlash(n.x, n.y, a); // CONTEXT-GAP: addSlash
+			(this.eng as any).reactHit(z, dmg, a); // CONTEXT-GAP: reactHit
+			z.x += Math.cos(a) * o;
+			z.y += Math.sin(a) * o;
+			(this.eng as any).emitJuice(`bloodParticles`, { x: n.x, y: n.y, angle: a }); // Batch 16 (Lane 2): juice event
+			z.hitFlash = .08;
+			if (head) (this.eng as any).emitJuice(`floater`, { x: z.x, y: z.y - z.radius, text: `HEAD`, color: `#ff4d3a` }); // Batch 16 (Lane 2): juice event
+			else (this.eng as any).emitJuice(`damageNumber`, { x: z.x, y: z.y - z.radius, amount: dmg, color: `#e8b34b` }); // Batch 16 (Lane 2): juice event
+			soundEngine.playImpact();
+			(this.eng as any).feelHit(n, z); // CONTEXT-GAP: feelHit
+			if (dmg > 80) this.eng.hitstop = Math.max(this.eng.hitstop, (.04) * (this.eng as any).tune('hitstop')); // CONTEXT-GAP: tune
 		}
 
 		checkHeadshot(e: any, t: any) {
@@ -485,7 +559,7 @@ export class CombatSim {
 		detonateExplosiveBarrel(e: any, t: any) {
 			(this.eng as any).emitNoise(e.x, e.y, 500), // CONTEXT-GAP: emitNoise
 			(this.eng as any).addLight(e.x, e.y, 420, 1, .5), // CONTEXT-GAP: addLight
-			this.eng.explosiveBarrels.splice(t, 1), this.eng.screenShake = 10 * (this.eng as any).tune('shake') * (this.eng as any).motionScale(), this.eng.trauma = Math.min(1, this.eng.trauma + .55 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()), soundEngine.playBarrelExplosion(), (this.eng as any).addScorch(e.x, e.y, 90), (this.eng as any).alertZombies(e.x, e.y, 700), this.eng.firePuddles.push({ // CONTEXT-GAP: tune, motionScale, addScorch, alertZombies
+			this.eng.explosiveBarrels.splice(t, 1), this.eng.screenShake = 10 * (this.eng as any).tune('shake') * (this.eng as any).motionScale(), this.eng.trauma = Math.min(1, this.eng.trauma + .55 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()), soundEngine.playBarrelExplosion(), (this.eng as any).emitJuice(`scorch`, { x: e.x, y: e.y, radius: 90 }), (this.eng as any).alertZombies(e.x, e.y, 700), this.eng.firePuddles.push({ // CONTEXT-GAP: tune, motionScale, addScorch, alertZombies
 				id: Math.random().toString(),
 				x: e.x,
 				y: e.y,
@@ -514,7 +588,7 @@ export class CombatSim {
 					let i = 1 - r / 140, a = 350 * (.4 + i * .6) * brineExplosionMul((this.eng as any).boon(`brinebarrel`)); // Batch 10 (Lane 4): brine boosts barrel blasts. // CONTEXT-GAP: boon
 					n.health -= a, n.isBurning = 4e3;
 					let o = Math.atan2(n.y - e.y, n.x - e.x);
-					n.x += 18 * i * Math.cos(o), n.y += 18 * i * Math.sin(o), this.eng.stats.damageDealt += a, this.eng.beastDmgAcc = (this.eng.beastDmgAcc || 0) + a, (this.eng as any).createBloodParticles(n.x, n.y, o), n.lastHitPower = a, n.lastHitAngle = o, n.chewAggroT = this.eng.simTime + 3, n.health <= 0 && (this.eng as any).killZombie(n, t); // CONTEXT-GAP: createBloodParticles, killZombie
+					n.x += 18 * i * Math.cos(o), n.y += 18 * i * Math.sin(o), this.eng.stats.damageDealt += a, this.eng.beastDmgAcc = (this.eng.beastDmgAcc || 0) + a, (this.eng as any).emitJuice(`bloodParticles`, { x: n.x, y: n.y, angle: o }), n.lastHitPower = a, n.lastHitAngle = o, n.chewAggroT = this.eng.simTime + 3, n.health <= 0 && (this.eng as any).killZombie(n, t); // CONTEXT-GAP: createBloodParticles, killZombie
 				}
 			}
 			(this.eng as any).spawnBrinePatch(e.x, e.y); // Batch 10 (Lane 4): brine leaves a burning patch at the blast center. // CONTEXT-GAP: spawnBrinePatch
@@ -589,7 +663,7 @@ export class CombatSim {
 				z.isBurning = BURN_REFRESH_MS;
 				(this.eng as any).thornedReflect(z, cfg.dmg * dmgMul); // CONTEXT-GAP: thornedReflect
 				this.eng.stats.damageDealt += dealt;
-				(this.eng as any).createBloodParticles(z.x, z.y, this.eng.player.angle); // CONTEXT-GAP: createBloodParticles
+				(this.eng as any).emitJuice(`bloodParticles`, { x: z.x, y: z.y, angle: this.eng.player.angle }); // Batch 16 (Lane 2): juice event
 				hits++;
 				if (z.health <= 0) (this.eng as any).killZombie(z, this.eng.zombies.indexOf(z)); // CONTEXT-GAP: killZombie
 			}
@@ -626,7 +700,7 @@ export class CombatSim {
 			this.eng.railChargeT = cfg.chargeSec;
 			this.eng.railChargeDmg = w.damage * dmgMul;
 			this.eng.railChargeW = w;
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 56, `RAILGUN CHARGING`, `#7dd3fc`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice(`floater`, { x: this.eng.player.x, y: this.eng.player.y - 56, text: `RAILGUN CHARGING`, color: `#7dd3fc` }); // Batch 16 (Lane 2): juice event
 			soundEngine.tone({ f: 120, f2: 900, type: `sawtooth`, dur: cfg.chargeSec, vol: .2 });
 		}
 
@@ -659,7 +733,7 @@ export class CombatSim {
 			if (this.eng.bombCharges < BOMB_MAX_CHARGES && Date.now() - this.eng.bombLastRegen >= BOMB_REGEN_MS) {
 				this.eng.bombCharges++;
 				this.eng.bombLastRegen = Date.now();
-				(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 48, `BOMB READY`, "#fde68a"); // CONTEXT-GAP: spawnFloater
+				(this.eng as any).emitJuice(`floater`, { x: this.eng.player.x, y: this.eng.player.y - 48, text: `BOMB READY`, color: `#fde68a` }); // Batch 16 (Lane 2): juice event
 				soundEngine.playPickup();
 			}
 		}
@@ -682,19 +756,19 @@ export class CombatSim {
 				z.health -= bfall;
 				z.hitFlash = .3;
 				this.eng.stats.damageDealt += bfall;
-				(this.eng as any).createBloodParticles(z.x, z.y, Math.atan2(dy, dx)); // CONTEXT-GAP: createBloodParticles
+				(this.eng as any).emitJuice(`bloodParticles`, { x: z.x, y: z.y, angle: Math.atan2(dy, dx) }); // Batch 16 (Lane 2): juice event
 			}
 			(this.eng as any).spawnBrinePatch(this.eng.player.x, this.eng.player.y); // Batch 10 (Lane 4): brine patch at ground zero. // CONTEXT-GAP: spawnBrinePatch
 			(this.eng as any).emitNoise(this.eng.player.x, this.eng.player.y, 700), // CONTEXT-GAP: emitNoise
 			(this.eng as any).addLight(this.eng.player.x, this.eng.player.y, 520, 1, .6), // CONTEXT-GAP: addLight
-			(this.eng as any).addScorch(this.eng.player.x, this.eng.player.y, 130), // CONTEXT-GAP: addScorch
+			(this.eng as any).emitJuice(`scorch`, { x: this.eng.player.x, y: this.eng.player.y, radius: 130 }), // Batch 16 (Lane 2): juice event
 			this.eng.screenShake = Math.max(this.eng.screenShake, 12 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()), this.eng.trauma = Math.min(1, this.eng.trauma + .8 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
 			this.eng.hitstop = Math.max(this.eng.hitstop, (.12) * (this.eng as any).tune('hitstop')); // CONTEXT-GAP: tune
 			for (let k = 0; k < 28; k++) {
 				const a = (Math.PI * 2 * k) / 28;
 				this.eng.particles.push(Object.assign((this.eng as any).allocParticle(), { x: this.eng.player.x, y: this.eng.player.y, vx: Math.cos(a) * 9, vy: Math.sin(a) * 9, size: 5, life: .5, maxLife: .5, alpha: 1, color: `#fde68a` })); // CONTEXT-GAP: allocParticle
 			}
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 64, `BOMB`, "#f97316"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice(`floater`, { x: this.eng.player.x, y: this.eng.player.y - 64, text: `BOMB`, color: `#f97316` }); // Batch 16 (Lane 2): juice event
 			soundEngine.playNuke();
 			return true;
 		}
@@ -737,7 +811,7 @@ export class CombatSim {
 				cur.health -= dealt;
 				cur.hitFlash = Math.max(cur.hitFlash, .18);
 				this.eng.stats.damageDealt += dealt;
-				(this.eng as any).createBloodParticles(cur.x, cur.y, Math.atan2(cur.y - fy, cur.x - fx)); // CONTEXT-GAP: createBloodParticles
+				(this.eng as any).emitJuice(`bloodParticles`, { x: cur.x, y: cur.y, angle: Math.atan2(cur.y - fy, cur.x - fx) }); // Batch 16 (Lane 2): juice event
 				this.arcSegment(fx, fy, cur.x, cur.y);
 				if (cur.health <= 0) (this.eng as any).killZombie(cur, this.eng.zombies.indexOf(cur)); // CONTEXT-GAP: killZombie
 				if (jumps >= cfg.chainJumps) break;
@@ -795,7 +869,7 @@ export class CombatSim {
 				(this.eng as any).thornedReflect(z, dealt); // CONTEXT-GAP: thornedReflect
 				z.hitFlash = Math.max(z.hitFlash, .15);
 				this.eng.stats.damageDealt += dealt;
-				(this.eng as any).createBloodParticles(z.x, z.y, Math.atan2(z.y - this.eng.player.y, z.x - this.eng.player.x)); // CONTEXT-GAP: createBloodParticles
+				(this.eng as any).emitJuice(`bloodParticles`, { x: z.x, y: z.y, angle: Math.atan2(z.y - this.eng.player.y, z.x - this.eng.player.x) }); // Batch 16 (Lane 2): juice event
 				if (z.health <= 0) (this.eng as any).killZombie(z, this.eng.zombies.indexOf(z)); // CONTEXT-GAP: killZombie
 			}
 			this.eng.shockwaves.push({ x: this.eng.player.x, y: this.eng.player.y, r: 10, maxR: R, life: .25, maxLife: .25, color: `#7dd3fc` });
@@ -871,13 +945,13 @@ export class CombatSim {
 				const dmg = Math.round((n.mortarDmg || n.damage) * f * (this.eng as any).explosionDmgMul(z)); // CONTEXT-GAP: explosionDmgMul
 				z.health -= dmg; z.hitFlash = .12;
 				this.eng.stats.damageDealt += dmg;
-				(this.eng as any).createBloodParticles(z.x, z.y, Math.atan2(z.y - n.y, z.x - n.x)); // CONTEXT-GAP: createBloodParticles
+				(this.eng as any).emitJuice(`bloodParticles`, { x: z.x, y: z.y, angle: Math.atan2(z.y - n.y, z.x - n.x) }); // Batch 16 (Lane 2): juice event
 			}
 			for (let i = this.eng.zombies.length - 1; i >= 0; i--) {
 				if (this.eng.zombies[i].health <= 0) (this.eng as any).killZombie(this.eng.zombies[i], i); // CONTEXT-GAP: killZombie
 			}
 			this.eng.shockwaves.push({ x: n.x, y: n.y, r: 8, maxR: R, life: .35, maxLife: .35, color: `#d6a05c` });
-			(this.eng as any).addScorch(n.x, n.y, Math.min(130, R)); // CONTEXT-GAP: addScorch
+			(this.eng as any).emitJuice(`scorch`, { x: n.x, y: n.y, radius: Math.min(130, R) }); // Batch 16 (Lane 2): juice event
 			this.eng.screenShake = Math.max(this.eng.screenShake, 6 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
 			this.eng.trauma = Math.min(1, this.eng.trauma + .35 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
 			(this.eng as any).addLight(n.x, n.y, 420, 1, .5); // CONTEXT-GAP: addLight

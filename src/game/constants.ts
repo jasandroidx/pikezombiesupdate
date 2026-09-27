@@ -1,6 +1,6 @@
 import { Weapon, GameLocation, Perk, ZombieType } from "../types/game";
 
-// Naming guard: Pike County, Indiana flavor only — never any other town or state.
+// Naming guard: Pike County flavor only — never bayville/griggsville/illinois.
 
 export const INITIAL_WEAPONS: Weapon[] = [
   {

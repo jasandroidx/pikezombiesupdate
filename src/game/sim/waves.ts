@@ -19,9 +19,11 @@ export class WaveSim {
 			if (this.eng.simTime >= m && !this.eng.miniBossFired.has(m)) {
 				this.eng.miniBossFired.add(m);
 				(this.eng as any).spawnGuaranteedElite(); // CONTEXT-GAP: spawnGuaranteedElite
-				(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 64, `MINI-BOSS — THE COUNTY STIRS`, `#c77dff`); // CONTEXT-GAP: spawnFloater
+				(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 64, text: `MINI-BOSS — THE COUNTY STIRS`, color: `#c77dff` });
+				(this.eng as any).drainJuiceEvents();
 			}
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	skipWaveBreak() {
@@ -44,7 +46,8 @@ export class WaveSim {
 				(this.eng as any).pushZombie("crawler", hole.x + Math.cos(a) * (hole.radius + 10), hole.y + Math.sin(a) * (hole.radius + 10)); // CONTEXT-GAP: pushZombie
 			}
 			this.eng.callbacks.onRadio?.("WJPS", "They're coming up through the floor.");
-			(this.eng as any).spawnFloater(hole.x, hole.y - 30, "HOLE BURST", "#c23b22"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: hole.x, y: hole.y - 30, text: "HOLE BURST", color: "#c23b22" });
+			(this.eng as any).drainJuiceEvents();
 		} else if (roll < .68) {
 			for (let i = 0; i < 2; i++) {
 				const edge = Math.floor(Math.random() * 4);
@@ -69,6 +72,7 @@ export class WaveSim {
 			this.eng.fogUntil = 9;
 			this.eng.callbacks.onRadio?.("WJPS", "Fog in the bottoms. Watch your beam.");
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	updateWaveManager(e: any) {
@@ -106,8 +110,10 @@ export class WaveSim {
 		if (this.eng.outbreakWaves > 0 || this.eng.wave % 5 !== 0) return;
 		this.eng.chests.push({ x: this.eng.player.x + 60, y: this.eng.player.y });
 		this.eng.player.health = Math.min(this.eng.player.maxHealth, this.eng.player.health + 30);
-		(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 56, `WAVE ${this.eng.wave} — THE COUNTY PROVIDES`, "#ffd700"); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 56, text: `WAVE ${this.eng.wave} — THE COUNTY PROVIDES`, color: "#ffd700" });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.playPowerup();
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	eventMods() {
@@ -123,13 +129,16 @@ export class WaveSim {
 	fireEvent(ev: any) {
 		this.eng.firedEvents.push(ev.id);
 		this.eng.activeEvents.push({ id: ev.id, endsAt: Date.now() + ev.durationSec * 1000 });
-		(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 72, ev.banner, "#ffd700"); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 72, text: ev.banner, color: "#ffd700" });
+		(this.eng as any).drainJuiceEvents();
 		this.eng.callbacks.onRadio?.(`WJPS Petersburg`, ev.radio);
 		soundEngine.playWaveHorn();
-		this.eng.screenShake = Math.max(this.eng.screenShake, 6);
+		(this.eng as any).emitJuice('shake', { amount: 6 });
+		(this.eng as any).drainJuiceEvents();
 		// Batch 12 (Lane 1): event-specific payloads.
 		if (ev.id === `powerup_shower`) this.eng.beginPowerupShower();
 		else if (ev.id === `elite_hunt`) this.eng.beginEliteHunt();
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	updateEvents() {
@@ -197,9 +206,11 @@ export class WaveSim {
 			z.ty = this.eng.player.y;
 			(this.eng as any).assignAffix(z); // CONTEXT-GAP: assignAffix
 			this.eng.huntTargets.push(z);
-			(this.eng as any).spawnFloater(z.x, z.y - z.radius - 14, `MARKED ${type.replace(`_`, ` `).toUpperCase()}`, `#c77dff`); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('floater', { x: z.x, y: z.y - z.radius - 14, text: `MARKED ${type.replace(`_`, ` `).toUpperCase()}`, color: `#c77dff` });
+			(this.eng as any).drainJuiceEvents();
 		}
 		this.eng.huntState = { wave: this.eng.wave, total: n, killed: 0, done: false };
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	grantHuntBonus() {
@@ -209,9 +220,11 @@ export class WaveSim {
 			(this.eng as any).dropGritOrb(this.eng.player.x, this.eng.player.y, Math.cos(an) * 140, Math.sin(an) * 140, 3); // CONTEXT-GAP: dropGritOrb
 		}
 		this.eng.huntBonusReroll = true;
-		(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 72, `HUNT COMPLETE — FREE REROLL`, `#ffd700`); // CONTEXT-GAP: spawnFloater
+		(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 72, text: `HUNT COMPLETE — FREE REROLL`, color: `#ffd700` });
+		(this.eng as any).drainJuiceEvents();
 		this.eng.callbacks.onRadio?.(`WJPS Petersburg`, `Clean sweep on those marked ones. The county's grateful — next shop reroll's on the house.`);
 		soundEngine.playPowerup();
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	checkEvolutions() {
@@ -242,8 +255,10 @@ export class WaveSim {
 			if (r.rangeMul) w.range *= r.rangeMul;
 			w.description = r.evolvedDescription;
 			this.eng.hitstop = Math.max(this.eng.hitstop, (.35) * (this.eng as any).tune('hitstop')); // CONTEXT-GAP: tune
-			this.eng.screenShake = Math.max(this.eng.screenShake, 8 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()); // CONTEXT-GAP: tune, motionScale
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 36, `${r.evolvedName.toUpperCase()} EVOLVED`, "#f6c453"); // CONTEXT-GAP: spawnFloater
+			(this.eng as any).emitJuice('shake', { amount: 8 * (this.eng as any).tune('shake') * (this.eng as any).motionScale() }); // CONTEXT-GAP: tune, motionScale
+			(this.eng as any).drainJuiceEvents();
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 36, text: `${r.evolvedName.toUpperCase()} EVOLVED`, color: "#f6c453" });
+			(this.eng as any).drainJuiceEvents();
 			this.eng.callbacks.onRadio?.(`Unknown`, r.evolvedRadio);
 			soundEngine.playPowerup();
 			return r;

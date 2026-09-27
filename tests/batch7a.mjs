@@ -247,10 +247,16 @@ const walk = (dir) => {
   return out;
 };
 let badHits = [];
+// The one allowed hit is the ban comment itself (documents the naming guard).
+const banRe = /never bayville\/griggsville\/illinois/i;
 for (const f of walk("src")) {
-  const low = readFileSync(f, "utf8").toLowerCase();
-  for (const bad of ["bayville", "griggsville", "illinois"]) {
-    if (low.includes(bad)) badHits.push(`${f}: ${bad}`);
+  const lines = readFileSync(f, "utf8").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const low = lines[i].toLowerCase();
+    if (banRe.test(lines[i])) continue;
+    for (const bad of ["bayville", "griggsville", "illinois"]) {
+      if (low.includes(bad)) badHits.push(`${f}:${i + 1}: ${bad}`);
+    }
   }
 }
 ok("no bayville/griggsville/illinois strings in src", badHits.length === 0, badHits.slice(0, 5).join("; "));

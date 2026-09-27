@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { SimEventBus } from "./sim/context";
+import { accumulateSteps, FIXED_DT } from "./sim/timestep"; // Batch 16 (Lane 1): fixed-timestep loop
 import { PlayerSim } from "./sim/player";
 import { CombatSim } from "./sim/combat";
 import { PowersSim } from "./sim/powers";
@@ -10,6 +11,7 @@ import { PickupSim } from "./sim/pickups";
 import { MapSim } from "./sim/mapfeatures";
 import { JuiceSim } from "./sim/juice";
 import { installControlsProbe } from "./sim/probes";
+import { gameObjectRegistry } from "./sim/gameobjects"; // Batch 16 (Lane 3): GameObject registry dispatch for pickup draws
 import {
   Weapon,
   Zombie,
@@ -537,7 +539,8 @@ export class GameEngine {
 			this.rig.until = this.simTime + 8;
 			this.rig.cool = this.simTime + 26;
 			this.rig.shot = 0;
-			this.spawnFloater(this.rig.x, this.rig.y - 28, this.rig.name.toUpperCase(), `#d4a017`);
+			this.emitJuice('floater', { x: this.rig.x, y: this.rig.y - 28, text: this.rig.name.toUpperCase(), color: `#d4a017` });
+			this.drainJuiceEvents();
 			soundEngine.playPowerup();
 			return;
 		}
@@ -569,6 +572,7 @@ export class GameEngine {
 				duration: 4e4
 			});
 		}
+		this.drainJuiceEvents();
 	}
 	setupListeners() {
 		window.addEventListener(`keydown`, this.handleKeyDown), window.addEventListener(`keyup`, this.handleKeyUp), this.canvas.addEventListener(`mousemove`, this.handleMouseMove), this.canvas.addEventListener(`mousedown`, this.handleMouseDown), window.addEventListener(`mouseup`, this.handleMouseUp), this.canvas.addEventListener(`contextmenu`, (e) => e.preventDefault()), this.canvas.addEventListener(`wheel`, this.handleWheel, { passive: true });
@@ -589,6 +593,7 @@ export class GameEngine {
 	setPaused(e) {
 		if (!e && this.levelHold) return;
 		this.isPaused = e, !e && this.isRunning && (this.lastTimestamp = performance.now(), this.loop(performance.now()));
+		this.drainJuiceEvents();
 	}
 	handleKeyDown = (e) => {
 		// Batch 4: Konami-code secret weapon — works on title / game-over screens too.
@@ -598,7 +603,8 @@ export class GameEngine {
 			this.codexSeen?.add(`konami`);
 			this.codexSeen?.add(SECRET_WEAPON.id);
 			this.konamiBuf = [];
-			this.spawnFloater(this.player.x, this.player.y - 56, `WOMPUS HOWLER UNLOCKED`, `#c77dff`);
+			this.emitJuice('floater', { x: this.player.x, y: this.player.y - 56, text: `WOMPUS HOWLER UNLOCKED`, color: `#c77dff` });
+			this.drainJuiceEvents();
 			this.callbacks.onRadio?.(`Unknown`, `Thirty years the Wompus cat yowled on the ridge. Now it yowls through your barrel.`);
 			soundEngine.playAchievement();
 		}
@@ -723,17 +729,9 @@ export class GameEngine {
 	renderVacuumDrops(e) {
 		for (const d of this.drops) {
 			if (d.type !== `dust_devil`) continue;
-			e.save();
-			e.translate(d.x, d.y);
-			const t = this.simTime * 6;
-			e.strokeStyle = `rgba(125, 211, 252, .9)`;
-			e.lineWidth = 3;
-			for (let k = 0; k < 3; k++) {
-				e.beginPath();
-				e.arc(0, 0, 8 + k * 5, t + k * 2, t + k * 2 + 4.2);
-				e.stroke();
-			}
-			e.restore();
+			// Batch 16 (Lane 3): per-drop GameObject dispatch; the 'pickup'
+			// draw op owns the dust-devil art (drawn in world space here).
+			gameObjectRegistry.drawKind(`pickup`, [d], { x: this.camX, y: this.camY, zoom: this.viewZoom(), width: this.viewSize().w, height: this.viewSize().h, ctx: e });
 		}
 	}
 		updateSalt(...args) {
@@ -985,11 +983,18 @@ export class GameEngine {
 			this.openQueuedDraft();
 		}
 		if (this.isPaused) return;
-		let t = Math.min((e - this.lastTimestamp) / 1e3, .1);
+		// Batch 16 (Lane 1): fixed-timestep sim — feed variable frame dt through the
+		// accumulator, then run whole 1/60 sim steps. Slow-mo scales time fed to the
+		// accumulator, so slowed frames queue fewer steps.
+		let frameDt = Math.min((e - this.lastTimestamp) / 1e3, .1);
 		// Batch 7: celebration stack — poll draft/shrine/bomb transitions, scale sim dt during the slow-mo window.
 		render7.celebration.poll({ draftOpen: !!this.draft, shrinesAttuned: this.shrines.reduce((n, s) => n + (s.attuned ? 1 : 0), 0), bombCharges: this.bombCharges }, this.player.x, this.player.y);
-		t *= render7.celebration.slowmoFactor(performance.now());
-		this.lastTimestamp = e, this.update(t), this.render(), this.animationFrameId = requestAnimationFrame(this.loop);
+		frameDt *= render7.celebration.slowmoFactor(performance.now());
+		this.lastTimestamp = e;
+		const ts = accumulateSteps((this as any)._tsAcc || 0, frameDt);
+		(this as any)._tsAcc = ts.acc;
+		for (let i = 0; i < ts.steps; i++) this.update(FIXED_DT);
+		this.render(), this.animationFrameId = requestAnimationFrame(this.loop);
 	};
 	update(e) {
 		let t = Date.now();
@@ -1118,6 +1123,7 @@ export class GameEngine {
 			switchBanner: this.switchBanner,
 			helpVisible: this.stats.shotsFired === 0 && this.simTime < 12
 		});
+		this.drainJuiceEvents();
 	}
 		updatePlayer(...args) {
 		return this.playerSim.updatePlayer(...args);
@@ -1142,7 +1148,7 @@ export class GameEngine {
 			let r = t.reloadTime * (1 - Math.min(.65, n)) * (hands ? .38 : 1);
 			if (e - this.reloadStartTime >= r) {
 				let e = t.magazineSize - t.currentMag, n = Math.min(e, t.reserveAmmo);
-				t.currentMag += n, t.reserveAmmo -= n, this.isReloading = false, this.freshUntil = this.simTime + 1.45, this.spawnFloater(this.player.x, this.player.y - 40, "FRESH", "#fde68a");
+				t.currentMag += n, t.reserveAmmo -= n, this.isReloading = false, this.freshUntil = this.simTime + 1.45, this.emitJuice('floater', { x: this.player.x, y: this.player.y - 40, text: "FRESH", color: "#fde68a" }), this.drainJuiceEvents();
 			}
 			return;
 		}
@@ -1153,6 +1159,7 @@ export class GameEngine {
 		a /= cornLiquorFireRateMul(this.boon(`cornliquor`));
 		this._lastFireInterval = a;
 		i && e - this.lastShotTime >= a && (t.currentMag > 0 || n ? (this.fireCurrentWeapon(), this.lastShotTime = e) : t.reserveAmmo > 0 ? this.reloadCurrentWeapon() : this.autoSwapFromDry());
+		this.drainJuiceEvents();
 	}
 		nearestTarget(...args) {
 		return this.combat.nearestTarget(...args);
@@ -1163,6 +1170,9 @@ export class GameEngine {
 		updateBullets(...args) {
 		return this.combat.updateBullets(...args);
 	}
+	// Lane 4: juice event bus — sim modules emit via eng.emitJuice, JuiceSim drains.
+	emitJuice(kind: string, data?: any) { return (this.juice as any).emitJuice(kind, data); }
+	drainJuiceEvents() { return (this.juice as any).drainEvents(); }
 		checkHeadshot(...args) {
 		return this.combat.checkHeadshot(...args);
 	}
@@ -1264,19 +1274,23 @@ export class GameEngine {
 			z.health -= dealt;
 			z.hitFlash = .3;
 			this.stats.damageDealt += dealt;
-			this.createBloodParticles(z.x, z.y, Math.atan2(dy, dx));
+			this.emitJuice('bloodParticles', { x: z.x, y: z.y, angle: Math.atan2(dy, dx) });
+			this.drainJuiceEvents();
 			this.thornedReflect(z, dmg);
 			hits++;
 			if (z.health <= 0) this.killZombie(z, this.zombies.indexOf(z));
 		}
 		// Hitscan-ish piercing beam visual: hot white-violet core.
 		this.heatArc(this.player.x, this.player.y, this.player.x + ax * len, this.player.y + ay * len);
-		this.addLight(this.player.x + ax * len * .5, this.player.y + ay * len * .5, 420, .9, .5);
+		this.emitJuice('light', { x: this.player.x + ax * len * .5, y: this.player.y + ay * len * .5, radius: 420, intensity: .9, ttl: .5 });
+		this.drainJuiceEvents();
 		soundEngine.tone({ f: 1800, f2: 200, type: `sawtooth`, dur: .3, vol: .3 });
-		this.screenShake = Math.max(this.screenShake, 8 * this.tune('shake') * this.motionScale());
+		this.emitJuice('shake', { amount: 8 * this.tune('shake') * this.motionScale() });
+		this.drainJuiceEvents();
 		this.lastRail = { hits, len: Math.round(len) };
 		this.alertZombies(this.player.x, this.player.y, 420);
 		if (w && w.currentMag === 0) this.reloadCurrentWeapon();
+		this.drainJuiceEvents();
 	}
 	// Batch 12 (Lane 1): Copperhead Rounds — bullet hits stack a bleeding
 	// poison on the zombie (tag-gated to rapid+precise weapons). Each stack
@@ -1323,9 +1337,11 @@ export class GameEngine {
 		const w = this.windowFor(Math.max(1, this.wave));
 		if (w.id !== this.currentWindowId) {
 			this.currentWindowId = w.id;
-			this.spawnFloater(this.player.x, this.player.y - 64, w.name.toUpperCase(), `#f6c453`);
+			this.emitJuice('floater', { x: this.player.x, y: this.player.y - 64, text: w.name.toUpperCase(), color: `#f6c453` });
+			this.drainJuiceEvents();
 			this.callbacks.onRadio?.(`WJPS`, `${w.name} — ${w.blurb}`);
 		}
+		this.drainJuiceEvents();
 	}
 		spawnRandomZombie(...args) {
 		return this.zombieSim.spawnRandomZombie(...args);
@@ -1869,33 +1885,11 @@ export class GameEngine {
 	// Batch 5: score_surge drop art, drawn engine-side (world space) since the
 	// drop renderer has no case for the new type.
 	renderSurgeDrops(e) {
-		const now = Date.now();
 		for (const d of this.drops) {
 			if (d.type !== `score_surge`) continue;
-			const bob = Math.sin(now * .006 + d.x) * 3;
-			const pulse = .85 + Math.sin(now * .01 + d.y) * .15;
-			// Batch 10 (Lane 1): Lane 2's tweened pickup pop-in — scale 0.1 -> 1 over 150ms.
-			const pop = pickupPopScale(d.id, now);
-			e.save();
-			e.translate(d.x, d.y + bob);
-			e.scale(pop, pop);
-			e.fillStyle = `rgba(255, 215, 0, 0.35)`;
-			e.beginPath();
-			e.arc(0, 0, 22 * pulse, 0, Math.PI * 2);
-			e.fill();
-			e.fillStyle = `#d4a017`;
-			e.beginPath();
-			e.arc(0, 0, 12, 0, Math.PI * 2);
-			e.fill();
-			e.strokeStyle = `#7c5a00`;
-			e.lineWidth = 2;
-			e.stroke();
-			e.fillStyle = `#ffffff`;
-			e.font = `bold 11px monospace`;
-			e.textAlign = `center`;
-			e.textBaseline = `middle`;
-			e.fillText(`2X`, 0, 0);
-			e.restore();
+			// Batch 16 (Lane 3): per-drop GameObject dispatch; the 'pickup'
+			// draw op owns the score_surge art (drawn in world space here).
+			gameObjectRegistry.drawKind(`pickup`, [d], { x: this.camX, y: this.camY, zoom: this.viewZoom(), width: this.viewSize().w, height: this.viewSize().h, ctx: e });
 		}
 	}
 	renderHurtDir(e, w, h) {		if (this.hurtFlash <= 0) return;
@@ -2009,7 +2003,7 @@ export class GameEngine {
 			n.x += n.vx * e * 60, n.y += n.vy * e * 60, n.life -= e, n.alpha = Math.max(0, n.life / n.maxLife);
 			if (n.life <= 0) {
 				// Batch 5: blood spray particles leave persistent fading ground splats.
-				if (n.type === `blood` && n.splat) this.addBloodSplat(n.x, n.y);
+				if (n.type === `blood` && n.splat) { this.emitJuice('bloodSplat', { x: n.x, y: n.y }); this.drainJuiceEvents(); }
 				this.particlePool.push(n), this.particles.splice(t, 1);
 			}
 		}
@@ -2053,7 +2047,8 @@ export class GameEngine {
 		return this.mapSim.relightLantern(...args);
 	}
 	snuffLantern() {
-		this.lanternLit && (this.lanternLit = false, this.lanternWentOut = true, this.trauma = Math.min(1, this.trauma + .35 * this.tune('shake') * this.motionScale()), soundEngine.playSnuff(), this.spawnFloater(this.currentLocation.lantern.x, this.currentLocation.lantern.y - 24, `LANTERN OUT`, `#c23b22`), this.callbacks.onRadio?.(`Unknown`, `The lantern's gone. Cellar holes are coughing. They know the Trace.`));
+		this.lanternLit && (this.lanternLit = false, this.lanternWentOut = true, this.trauma = Math.min(1, this.trauma + .35 * this.tune('shake') * this.motionScale()), soundEngine.playSnuff(), this.emitJuice('floater', { x: this.currentLocation.lantern.x, y: this.currentLocation.lantern.y - 24, text: `LANTERN OUT`, color: `#c23b22` }), this.drainJuiceEvents(), this.callbacks.onRadio?.(`Unknown`, `The lantern's gone. Cellar holes are coughing. They know the Trace.`));
+		this.drainJuiceEvents();
 	}
 		updateLantern(...args) {
 		return this.mapSim.updateLantern(...args);
@@ -2182,8 +2177,10 @@ export class GameEngine {
 		this.levelHold = true;
 		this.isPaused = true;
 		soundEngine.playLevel();
-		this.spawnFloater(this.player.x, this.player.y - 56, `LEVEL ${this.level}`, "#f6c453");
+		this.emitJuice('floater', { x: this.player.x, y: this.player.y - 56, text: `LEVEL ${this.level}`, color: "#f6c453" });
+		this.drainJuiceEvents();
 		this.offerDraft();
+		this.drainJuiceEvents();
 	}
 		addXp(...args) {
 		return this.pickupSim.addXp(...args);
@@ -3135,16 +3132,20 @@ export class GameEngine {
 		if (z.type === "crawler" && pump && Math.random() < 0.62) {
 			const n = 4 + Math.floor(Math.random() * 4);
 			pump.reserveAmmo = Math.min(pump.maxReserveAmmo, pump.reserveAmmo + n);
-			this.spawnFloater(z.x, z.y - z.radius - 10, `+${n} SHELLS`, "#d4a017");
+			this.emitJuice('floater', { x: z.x, y: z.y - z.radius - 10, text: `+${n} SHELLS`, color: "#d4a017" });
+			this.drainJuiceEvents();
 		} else if ((z.type === "shambler" || z.type === "sprinter") && mag && Math.random() < 0.5) {
 			const n = 3 + Math.floor(Math.random() * 4);
 			mag.reserveAmmo = Math.min(mag.maxReserveAmmo, mag.reserveAmmo + n);
-			this.spawnFloater(z.x, z.y - z.radius - 10, `+${n} .357`, "#d4a017");
+			this.emitJuice('floater', { x: z.x, y: z.y - z.radius - 10, text: `+${n} .357`, color: "#d4a017" });
+			this.drainJuiceEvents();
 		} else if (z.type === "miner_brute") {
 			this.scrap += 18;
 			this.stats.scrapCollected += 18;
-			this.spawnFloater(z.x, z.y - z.radius - 10, "+SCRAP", "#d4a017");
+			this.emitJuice('floater', { x: z.x, y: z.y - z.radius - 10, text: "+SCRAP", color: "#d4a017" });
+			this.drainJuiceEvents();
 		}
+		this.drainJuiceEvents();
 	}
 	renderProjectiles(e) {
 		for (let t of this.bullets) {

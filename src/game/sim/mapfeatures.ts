@@ -137,15 +137,17 @@ export class MapSim {
 		if (this.eng.postRank >= 3) return false;
 		const cost = this.postStats().cost;
 		if (this.eng.scrap < cost) {
-			// CONTEXT-GAP: spawnFloater
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 36, `NEED ${cost} SCRAP`, `#8a7a64`);
+
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 36, text: `NEED ${cost} SCRAP`, color: `#8a7a64` });
+			(this.eng as any).drainJuiceEvents();
 			return false;
 		}
 		this.eng.scrap -= cost;
 		this.eng.postRank++;
 		const st = this.postStats();
-		// CONTEXT-GAP: spawnFloater
-		(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 40, `POST MK${this.eng.postRank}`, `#d4a017`);
+
+		(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 40, text: `POST MK${this.eng.postRank}`, color: `#d4a017` });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.playPickup();
 		this.eng.callbacks.onRadio?.(`Unknown`, `Post rebuilt to mark ${this.eng.postRank}. ${st.maxPosts > 2 ? `It'll hold a third post now.` : `Heavier tube, faster trigger.`}`);
 		return true;
@@ -154,14 +156,16 @@ export class MapSim {
 	plantPost() {
 		if (this.eng.isPaused || !this.eng.isRunning) return false;
 		if (this.eng.posts <= 0) {
-			// CONTEXT-GAP: spawnFloater
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 36, "NO POST", "#8a7a64");
+
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 36, text: "NO POST", color: "#8a7a64" });
+			(this.eng as any).drainJuiceEvents();
 			return false;
 		}
 		const ps = this.postStats();
 		if (this.eng.traps.filter((t: any) => t.kind === "post").length >= ps.maxPosts) {
-			// CONTEXT-GAP: spawnFloater
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 36, ps.maxPosts > 2 ? "THREE POSTS" : "TWO POSTS", "#8a7a64");
+
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 36, text: ps.maxPosts > 2 ? "THREE POSTS" : "TWO POSTS", color: "#8a7a64" });
+			(this.eng as any).drainJuiceEvents();
 			return false;
 		}
 		const ang = this.eng.player.angle;
@@ -174,8 +178,9 @@ export class MapSim {
 		}
 		this.eng.posts--;
 		this.eng.traps.push({ kind: "post", x, y, angle: ang, shot: 0.25, left: ps.mag, arm: 0, live: true, blown: false, dmg: ps.dmg, interval: ps.interval, hp: 70 });
-		// CONTEXT-GAP: spawnFloater
-		(this.eng as any).spawnFloater(x, y - 30, "POST", "#d4a017");
+
+		(this.eng as any).emitJuice('floater', { x: x, y: y - 30, text: "POST", color: "#d4a017" });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.playPickup();
 		if (!this.eng.toldPost) {
 			this.eng.toldPost = true;
@@ -187,13 +192,15 @@ export class MapSim {
 	dropPipe() {
 		if (this.eng.isPaused || !this.eng.isRunning) return false;
 		if (this.eng.pipes <= 0) {
-			// CONTEXT-GAP: spawnFloater
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 36, "NO PIPE", "#8a7a64");
+
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 36, text: "NO PIPE", color: "#8a7a64" });
+			(this.eng as any).drainJuiceEvents();
 			return false;
 		}
 		if (this.eng.traps.filter((t: any) => t.kind === "pipe").length >= 4) {
-			// CONTEXT-GAP: spawnFloater
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 36, "GROUND'S FULL", "#8a7a64");
+
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 36, text: "GROUND'S FULL", color: "#8a7a64" });
+			(this.eng as any).drainJuiceEvents();
 			return false;
 		}
 		const ang = this.eng.player.angle;
@@ -206,8 +213,9 @@ export class MapSim {
 		}
 		this.eng.pipes--;
 		this.eng.traps.push({ kind: "pipe", x, y, angle: 0.4, shot: 0, left: 0, arm: 0.8, live: false, blown: false });
-		// CONTEXT-GAP: spawnFloater
-		(this.eng as any).spawnFloater(x, y - 24, "PIPE", "#c23b22");
+
+		(this.eng as any).emitJuice('floater', { x: x, y: y - 24, text: "PIPE", color: "#c23b22" });
+		(this.eng as any).drainJuiceEvents();
 		soundEngine.playPickup();
 		if (!this.eng.toldPipe) {
 			this.eng.toldPipe = true;
@@ -219,14 +227,17 @@ export class MapSim {
 	packBetweenWaves() {
 		if (this.eng.pipes < 3) {
 			this.eng.pipes++;
-			// CONTEXT-GAP: spawnFloater
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 42, "PACKED A PIPE", "#c23b22");
+
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 42, text: "PACKED A PIPE", color: "#c23b22" });
+			(this.eng as any).drainJuiceEvents();
 		}
 		if (this.eng.wave > 0 && this.eng.wave % 2 === 0 && this.eng.posts < 2) {
 			this.eng.posts++;
-			// CONTEXT-GAP: spawnFloater
-			(this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 58, "CEDAR POST", "#d4a017");
+
+			(this.eng as any).emitJuice('floater', { x: this.eng.player.x, y: this.eng.player.y - 58, text: "CEDAR POST", color: "#d4a017" });
+			(this.eng as any).drainJuiceEvents();
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	updateTraps(dt: any) {
@@ -286,12 +297,14 @@ export class MapSim {
 			soundEngine.playGunshot(`rifle`);
 			this.alertZombies(t.x, t.y, 90, true);
 			if (t.left <= 0) {
-				// CONTEXT-GAP: spawnFloater
-				(this.eng as any).spawnFloater(t.x, t.y - 22, "POST DRY", "#8a7a64");
+
+				(this.eng as any).emitJuice('floater', { x: t.x, y: t.y - 22, text: "POST DRY", color: "#8a7a64" });
+				(this.eng as any).drainJuiceEvents();
 				t.blown = true;
 			}
 		}
 		if (this.eng.traps.some((t: any) => t.blown)) this.eng.traps = this.eng.traps.filter((t: any) => !t.blown);
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	blowPipe(t: any) {
@@ -321,13 +334,15 @@ export class MapSim {
 				if (Math.hypot(o.x - bomb.x, o.y - bomb.y) > 70) continue;
 				queue.push(o);
 			}
-			this.eng.screenShake = Math.max(this.eng.screenShake, 9);
+			(this.eng as any).emitJuice('shake', { amount: 9 });
+			(this.eng as any).drainJuiceEvents();
 			// CONTEXT-GAP: tune
 			this.eng.hitstop = Math.max(this.eng.hitstop, (0.045) * (this.eng as any).tune('hitstop'));
 			this.alertZombies(bomb.x, bomb.y, 260);
 			soundEngine.playGunshot(`shotgun`);
-			// CONTEXT-GAP: spawnFloater
-			(this.eng as any).spawnFloater(bomb.x, bomb.y - 26, "STOVEPIPE", "#e11d2e");
+
+			(this.eng as any).emitJuice('floater', { x: bomb.x, y: bomb.y - 26, text: "STOVEPIPE", color: "#e11d2e" });
+			(this.eng as any).drainJuiceEvents();
 			for (let k = 0; k < 18; k++) {
 				const a = Math.random() * Math.PI * 2;
 				const sp = 1.6 + Math.random() * 4.2;
@@ -346,6 +361,7 @@ export class MapSim {
 				}));
 			}
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	spawnShrines() {
@@ -370,8 +386,9 @@ export class MapSim {
 				// CONTEXT-GAP: tune, motionScale
 				this.eng.trauma = Math.min(1, this.eng.trauma + .3 * (this.eng as any).tune('shake') * (this.eng as any).motionScale());
 				soundEngine.playPowerup();
-				// CONTEXT-GAP: spawnFloater
-				(this.eng as any).spawnFloater(s.x, s.y - 30, `SHRINE ATTUNED`, `#d4a017`);
+
+				(this.eng as any).emitJuice('floater', { x: s.x, y: s.y - 30, text: `SHRINE ATTUNED`, color: `#d4a017` });
+				(this.eng as any).drainJuiceEvents();
 				this.eng.callbacks.onRadio?.(`Unknown`, `The stones hum against your palm. Your rounds will bite the big ones harder now.`);
 				return true;
 			}
@@ -487,8 +504,9 @@ export class MapSim {
 				if (!w || w.unlocked) return false;
 				w.unlocked = true;
 				this.eng.codexSeen?.add(w.id);
-				// CONTEXT-GAP: spawnFloater
-				(this.eng as any).spawnFloater(p.x, p.y - 44, w.name + ` UNLOCKED`, `#d4a017`);
+
+				(this.eng as any).emitJuice('floater', { x: p.x, y: p.y - 44, text: w.name + ` UNLOCKED`, color: `#d4a017` });
+				(this.eng as any).drainJuiceEvents();
 				return true;
 			}
 			case `bombcharge`:
@@ -500,8 +518,9 @@ export class MapSim {
 	}
 
 	relightLantern() {
-		// CONTEXT-GAP: spawnFloater
-		this.eng.lanternLit = true, soundEngine.playLantern(), (this.eng as any).spawnFloater(this.eng.currentLocation.lantern.x, this.eng.currentLocation.lantern.y - 24, `LIT`, `#d4a017`), this.eng.callbacks.onRadio?.(`Unknown`, `East window's burning again. Hold it.`);
+
+		this.eng.lanternLit = true, soundEngine.playLantern(), (this.eng as any).emitJuice('floater', { x: this.eng.currentLocation.lantern.x, y: this.eng.currentLocation.lantern.y - 24, text: `LIT`, color: `#d4a017` }), this.eng.callbacks.onRadio?.(`Unknown`, `East window's burning again. Hold it.`);
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	updateLantern() {
@@ -519,10 +538,11 @@ export class MapSim {
 		let e = this.eng.currentLocation.bell;
 		if (e && !this.eng.bellRung) {
 			// CONTEXT-GAP: tune, motionScale
-			this.eng.bellRung = true, this.eng.bellReady = false, this.eng.bellHold = 2.2, this.eng.bellLureUntil = this.eng.simTime + 10, this.eng.extractActive = true, this.eng.trauma = Math.min(1, this.eng.trauma + .7 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()), this.eng.screenShake = 12 * (this.eng as any).tune('shake') * (this.eng as any).motionScale(), soundEngine.playBell(), this.alertZombies(e.x, e.y, 2e3);
+			this.eng.bellRung = true, this.eng.bellReady = false, this.eng.bellHold = 2.2, this.eng.bellLureUntil = this.eng.simTime + 10, this.eng.extractActive = true, this.eng.trauma = Math.min(1, this.eng.trauma + .7 * (this.eng as any).tune('shake') * (this.eng as any).motionScale()), (this.eng as any).emitJuice('shakeSet', { amount: 12 * (this.eng as any).tune('shake') * (this.eng as any).motionScale() }), (this.eng as any).drainJuiceEvents(), soundEngine.playBell(), this.alertZombies(e.x, e.y, 2e3);
 			for (let t of this.eng.zombies) t.hearX = e.x, t.hearY = e.y, t.ai = `investigate`;
 			this.eng.callbacks.onExtractReady?.(), this.eng.callbacks.onRadio?.(`WJPS Petersburg`, `The bell. Truck's lit. Get off this ground.`);
 		}
+		(this.eng as any).drainJuiceEvents();
 	}
 
 	updateBellHold(e: any) {

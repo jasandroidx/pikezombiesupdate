@@ -1,6 +1,8 @@
 import type { SimContext } from "./context";
+import { gameObjectRegistry, type DrawCamera } from "./gameobjects";
 import { rollBoons, LOCKOUTS, BOON_CATALOG, sifterRadiusMul, sifterValueMul } from "../boons";
 import { GRIT_GROUND_CAP, BOMB_MAX_CHARGES, SLOT_MACHINE_NAME, rollSlotSymbol, classifySlotWin, slotPairSymbol } from "../constants";
+import { pickupPopScale } from "../mapRenderer";
 import { soundEngine } from "../../audio/soundEngine";
 
 // Batch 14 (modularization) lane M3: extracted verbatim from GameEngine.
@@ -8,7 +10,26 @@ import { soundEngine } from "../../audio/soundEngine";
 // Cross-module/engine calls use `(this.eng as any).x()` + CONTEXT-GAP.
 
 export class PickupSim {
-	constructor(private eng: SimContext) {}
+	constructor(private eng: SimContext) {
+		// Batch 16 (Lane 3): GameObject contract adoption for drops. The
+		// registry maps kind 'pickup' -> per-drop update/draw ops closing over
+		// this sim; updateDrops and the engine's drop-draw passes dispatch
+		// through it. Re-registering on a fresh engine is harmless (overwrite).
+		gameObjectRegistry.register(`pickup`, {
+			update: (d, dt) => this.updateDrop(d, dt),
+			draw: (d, camera) => this.drawDrop(d, camera),
+		});
+		// Test bridge: batch tests reach the live drops array and the per-drop
+		// contract methods without importing the engine module.
+		if (typeof window !== `undefined`) {
+			(window as any).__pzPickups = {
+				drops: () => this.eng.drops,
+				updateDrops: (dt?: number) => this.updateDrops(dt),
+				updateDrop: (d: any, dt: number) => this.updateDrop(d, dt),
+				drawDrop: (d: any, camera: any) => this.drawDrop(d, camera),
+			};
+		}
+	}
 
 	hasPowerup(e: any) {
 		return this.eng.activePowerups.some((t: any) => t.type === e && t.durationRemaining > 0);
@@ -343,24 +364,100 @@ export class PickupSim {
 	}
 
 	updateDrops(dt = 1 / 60) {
-		const magnet = (Math.max(280, (this.eng as any).viewSize().w * 0.28) + (this.eng as any).getPerkLevel(`scavenger`) * 36) * (1 + this.eng.shopMagnetBonus); // CONTEXT-GAP: viewSize, getPerkLevel
 		for (let e = this.eng.drops.length - 1; e >= 0; e--) {
-			let t = this.eng.drops[e];
-			const dx = this.eng.player.x - t.x, dy = this.eng.player.y - t.y;
-			const dist = Math.hypot(dx, dy);
-			const loot = t.type === `ammo_universal` || t.type === `moonshine_med` || t.type === `molotov_pickup` || t.type === `scrap` || t.type === `dust_devil`;
-			if (loot && dist < magnet && dist > this.eng.player.radius + 18) {
-				const pull = (1 - dist / magnet) * 340 * dt;
-				t.x += (dx / dist) * pull;
-				t.y += (dy / dist) * pull;
+			const t = this.eng.drops[e];
+			// Batch 16 (Lane 3): GameObject contract — each drop steps through
+			// the registry's 'pickup' update op. A collected drop is removed
+			// here so eng.drops stays the same plain-object array probes read.
+			if (gameObjectRegistry.updateOne(`pickup`, t, dt)) this.eng.drops.splice(e, 1);
+		}
+	}
+
+	/**
+	 * GameObject-style per-drop update for the `pickup` kind (eng.drops entries).
+	 * Verbatim extraction of the old updateDrops loop body: magnet/vacuum
+	 * attraction for loot types, pickup effects on collect. Returns true when
+	 * the drop was collected (the caller removes it from eng.drops).
+	 *
+	 * Juice note: the spawnFloater calls below are deliberately NOT converted
+	 * to emitJuice — emitJuice/drainJuiceEvents do not exist on the engine at
+	 * this base (Batch 15 modularization), so the 1:1 swap would throw the
+	 * first time a dust_devil/score_surge is collected. The juice lane makes
+	 * that swap when it lands.
+	 */
+	updateDrop(d: any, dt: number): boolean {
+		const magnet = (Math.max(280, (this.eng as any).viewSize().w * 0.28) + (this.eng as any).getPerkLevel(`scavenger`) * 36) * (1 + this.eng.shopMagnetBonus); // CONTEXT-GAP: viewSize, getPerkLevel
+		let t = d;
+		const dx = this.eng.player.x - t.x, dy = this.eng.player.y - t.y;
+		const dist = Math.hypot(dx, dy);
+		const loot = t.type === `ammo_universal` || t.type === `moonshine_med` || t.type === `molotov_pickup` || t.type === `scrap` || t.type === `dust_devil`;
+		if (loot && dist < magnet && dist > this.eng.player.radius + 18) {
+			const pull = (1 - dist / magnet) * 340 * dt;
+			t.x += (dx / dist) * pull;
+			t.y += (dy / dist) * pull;
+		}
+		if (Math.hypot(this.eng.player.x - t.x, this.eng.player.y - t.y) <= this.eng.player.radius + 22) {
+			if (soundEngine.playPickup(), t.type === `ammo_universal`) for (let e of this.eng.weapons) e.unlocked && (e.reserveAmmo = Math.min(e.maxReserveAmmo, e.reserveAmmo + Math.floor(e.magazineSize * 1)));
+			else t.type === `dust_devil` ? (this.eng.vacuumSurge = 1.6, (this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 48, `DUST DEVIL`, `#7dd3fc`)) : t.type === `moonshine_med` ? (this.eng.player.health = Math.min(this.eng.player.maxHealth, this.eng.player.health + t.amount), this.eng.player.stamina = this.eng.player.maxStamina) : t.type === `molotov_pickup` ? this.eng.player.molotovs = Math.min(this.eng.player.maxMolotovs, this.eng.player.molotovs + 1) : t.type === `scrap` ? (this.eng.scrap += t.amount, this.eng.stats.scrapCollected += t.amount) : (t.type === `nuke` || t.type === `insta_kill` || t.type === `double_points` || t.type === `infinite_ammo` || t.type === `speed_boost` || t.type === `score_surge`) && this.eng.activatePowerup(t.type); // CONTEXT-GAP: spawnFloater
+			// Batch 5: score_surge pickup callout.
+			t.type === `score_surge` && ((this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 56, `SCORE SURGE — 2X`, `#ffd700`), soundEngine.tone({ f: 880, f2: 1320, type: `triangle`, dur: .2, vol: .2 })); // CONTEXT-GAP: spawnFloater
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * GameObject-style per-drop draw for the `pickup` kind. Implements the
+	 * two drop types drawn engine-side in world space (the engine's
+	 * renderVacuumDrops/renderSurgeDrops passes dispatch here per drop);
+	 * every other drop type is drawn by mapRenderer's drop switch inside
+	 * renderEnvironment and is a no-op here. `camera.ctx` is the world-space
+	 * 2D context.
+	 */
+	drawDrop(d: any, camera: DrawCamera) {
+		const e = camera.ctx;
+		if (d.type === `dust_devil`) {
+			// Batch 4: dust-devil icon — was drawn inline in engine.ts
+			// renderVacuumDrops (mapRenderer's drop switch has no case for it).
+			e.save();
+			e.translate(d.x, d.y);
+			const t = this.eng.simTime * 6;
+			e.strokeStyle = `rgba(125, 211, 252, .9)`;
+			e.lineWidth = 3;
+			for (let k = 0; k < 3; k++) {
+				e.beginPath();
+				e.arc(0, 0, 8 + k * 5, t + k * 2, t + k * 2 + 4.2);
+				e.stroke();
 			}
-			if (Math.hypot(this.eng.player.x - t.x, this.eng.player.y - t.y) <= this.eng.player.radius + 22) {
-				if (soundEngine.playPickup(), t.type === `ammo_universal`) for (let e of this.eng.weapons) e.unlocked && (e.reserveAmmo = Math.min(e.maxReserveAmmo, e.reserveAmmo + Math.floor(e.magazineSize * 1)));
-				else t.type === `dust_devil` ? (this.eng.vacuumSurge = 1.6, (this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 48, `DUST DEVIL`, `#7dd3fc`)) : t.type === `moonshine_med` ? (this.eng.player.health = Math.min(this.eng.player.maxHealth, this.eng.player.health + t.amount), this.eng.player.stamina = this.eng.player.maxStamina) : t.type === `molotov_pickup` ? this.eng.player.molotovs = Math.min(this.eng.player.maxMolotovs, this.eng.player.molotovs + 1) : t.type === `scrap` ? (this.eng.scrap += t.amount, this.eng.stats.scrapCollected += t.amount) : (t.type === `nuke` || t.type === `insta_kill` || t.type === `double_points` || t.type === `infinite_ammo` || t.type === `speed_boost` || t.type === `score_surge`) && this.eng.activatePowerup(t.type); // CONTEXT-GAP: spawnFloater
-				// Batch 5: score_surge pickup callout.
-				t.type === `score_surge` && ((this.eng as any).spawnFloater(this.eng.player.x, this.eng.player.y - 56, `SCORE SURGE — 2X`, `#ffd700`), soundEngine.tone({ f: 880, f2: 1320, type: `triangle`, dur: .2, vol: .2 })); // CONTEXT-GAP: spawnFloater
-				this.eng.drops.splice(e, 1);
-			}
+			e.restore();
+		} else if (d.type === `score_surge`) {
+			// Batch 5: score_surge drop art — was drawn inline in engine.ts
+			// renderSurgeDrops (the drop renderer has no case for the type).
+			const now = Date.now();
+			const bob = Math.sin(now * .006 + d.x) * 3;
+			const pulse = .85 + Math.sin(now * .01 + d.y) * .15;
+			// Batch 10 (Lane 1): Lane 2's tweened pickup pop-in — scale 0.1 -> 1 over 150ms.
+			const pop = pickupPopScale(d.id, now);
+			e.save();
+			e.translate(d.x, d.y + bob);
+			e.scale(pop, pop);
+			e.fillStyle = `rgba(255, 215, 0, 0.35)`;
+			e.beginPath();
+			e.arc(0, 0, 22 * pulse, 0, Math.PI * 2);
+			e.fill();
+			e.fillStyle = `#d4a017`;
+			e.beginPath();
+			e.arc(0, 0, 12, 0, Math.PI * 2);
+			e.fill();
+			e.strokeStyle = `#7c5a00`;
+			e.lineWidth = 2;
+			e.stroke();
+			e.fillStyle = `#ffffff`;
+			e.font = `bold 11px monospace`;
+			e.textAlign = `center`;
+			e.textBaseline = `middle`;
+			e.fillText(`2X`, 0, 0);
+			e.restore();
 		}
 	}
 
