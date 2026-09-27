@@ -8,6 +8,7 @@ interface GameOverModalProps {
   stats: PlayerStats;
   score: number;
   wave: number;
+  level: number;
   locationName: string;
   killer: string;
   mode: "survival" | "outbreak";
@@ -23,6 +24,7 @@ export function GameOverModal({
   stats,
   score,
   wave,
+  level,
   locationName,
   killer,
   mode,
@@ -96,6 +98,7 @@ export function GameOverModal({
           <Stat label="Time" value={`${minutes}:${seconds.toString().padStart(2, "0")}`} />
           <Stat label="Notes" value={stats.notesFound} />
           <Stat label="Scrap" value={stats.scrapCollected} />
+          <Stat label="Level" value={level} />
           <Stat label="Best harvest streak" value={`x${stats.maxStreak ?? 0}`} />
         </div>
 

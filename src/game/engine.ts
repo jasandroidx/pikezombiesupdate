@@ -22,7 +22,7 @@ import {
   NoisePulse,
 } from "../types/game";
 import { rollBoons, BoonOffer } from "./boons";
-import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE } from "./constants";
+import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVE_WINDOWS } from "./constants";
 import { loadMeta, saveMeta } from "./meta";
 import { soundEngine } from "../audio/soundEngine";
 import { renderEnvironment } from "./mapRenderer";
@@ -236,6 +236,9 @@ export class GameEngine {
 	hurtFlash = 0;
 	lastHurtFromX = 0;
 	lastHurtFromY = 0;
+	// VS-2: guaranteed elite cadence (~45s) and named wave windows.
+	lastEliteAt = 0;
+	currentWindowId = ``;
 	stats = {
 		kills: 0,
 		headshots: 0,
@@ -420,6 +423,16 @@ export class GameEngine {
 			playImpact: () => soundEngine.playImpact(),
 			playKillSub: () => soundEngine.playKillSub(),
 			playBanishSfx: () => soundEngine.playBanish(),
+			// VS-2 probes: evolutions, family affinity, elites, wave windows.
+			forceEvo: () => this.checkEvolutions()?.evolvedName || null,
+			weap: (id) => { const w = this.weapons.find((x) => x.id === id); return w ? { name: w.name, dmg: w.damage, pellets: w.pellets, pierce: w.pierce, mag: w.magazineSize } : null; },
+			unlockW: (id) => { const w = this.weapons.find((x) => x.id === id); if (w) w.unlocked = true; },
+			famMul: (wt) => this.playerDamageMul({ type: `shambler` }, wt),
+			spawnElite: () => { const z = this.spawnGuaranteedElite(); return { elite: !!z.elite, hp: Math.round(z.maxHealth), type: z.type }; },
+			eliteCount: () => this.zombies.filter((z) => z.elite).length,
+			windowFor: (w) => this.windowFor(w).name,
+			schedule: () => this.waveSchedule(),
+			curWindow: () => this.currentWindowId,
 			giveBoon: (id, n = 1) => { this.boonStacks[id] = (this.boonStacks[id] || 0) + n; },
 			openChest: () => this.openChest(),
 			sweepGrit: () => this.sweepGritToBag(),
@@ -512,6 +525,9 @@ export class GameEngine {
 			score: this.score,
 			wave: this.wave,
 			waveState: this.waveState,
+			waveWindow: this.windowFor(Math.max(1, this.wave)).name,
+			waveSchedule: this.waveSchedule(),
+			eliteIn: Math.max(0, Math.ceil(45 - (this.simTime - this.lastEliteAt))),
 			break: this.waveBreakCountdown,
 			kills: this.stats.kills,
 			hint: this.interactHint,
@@ -745,7 +761,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -1367,14 +1383,30 @@ export class GameEngine {
 			}
 		}
 	}
-	playerDamageMul(z) {
+	playerDamageMul(z, weaponType = ``) {
 		let m = this.questDmgMul * this.shopDmgMul;
+		if (weaponType) m *= this.familyAffinity(weaponType);
 			if (z.type === `behemoth` || z.type === `miner_brute` || z.elite) {
 				let attuned = 0;
 				for (const s of this.shrines) s.attuned && attuned++;
 				m *= 1 + SHRINE_BOSS_DMG_PER * attuned;
 			}
 			return m;
+	}
+
+	// VS-2: weapon-family support affinity — 2+ unlocked weapons in a family
+	// (an evolved weapon counts as two) gives family weapons +12% damage.
+	familyAffinity(weaponType) {
+		for (const f of Object.values(WEAPON_FAMILIES)) {
+			if (!f.members.includes(weaponType)) continue;
+			let count = 0;
+			for (const id of f.members) {
+				if (this.weapons.some((w) => w.id === id && w.unlocked)) count++;
+				if (this.evolutionDone[id]) count++;
+			}
+			return count >= 2 ? 1.12 : 1;
+		}
+		return 1;
 	}
 	tryDash() {
 		if (this.dashCd > 0 || this.dashTimer > 0 || this.dashCharges < 1) return false;
@@ -1629,6 +1661,9 @@ export class GameEngine {
 			dashCharges: this.dashCharges,
 			dashMax: this.dashMax,
 			waveState: this.waveState,
+			waveWindow: this.windowFor(Math.max(1, this.wave)).name,
+			waveSchedule: this.waveSchedule(),
+			eliteIn: Math.max(0, Math.ceil(45 - (this.simTime - this.lastEliteAt))),
 			shopOffers: this.shopOffers.map((o) => {
 				const d = SHOP_POOL.find((x) => x.id === o.offerId);
 				return d ? { id: d.id, name: d.name, desc: d.desc, cost: this.shopCost(d), locked: o.locked, afford: this.scrap >= this.shopCost(d) } : null;
@@ -2119,7 +2154,7 @@ export class GameEngine {
 						}
 						this.stats.shotsHit++;
 						let e = this.checkHeadshot(n, r), i = n.damage;
-						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4, this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r), r.health -= i, this.stats.damageDealt += i;
+						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4, this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r, n.weaponType), r.health -= i, this.stats.damageDealt += i;
 						if (!n.isSplinter && r.health > 0 && r.health <= r.maxHealth * .2 && r.type !== `behemoth` && r.type !== `miner_brute`) r.health = 0;
 						if (e) this.tickBounty(`head`);
 						if (r.health <= 0 && !n.isSplinter) r.shatter = true;
@@ -2240,6 +2275,11 @@ export class GameEngine {
 			}
 			this.lastZombieSpawnTime = e;
 		}
+		// VS-2: guaranteed elite cadence — roughly every 45 seconds of run time.
+		if (this.simTime - this.lastEliteAt >= 45) {
+			this.lastEliteAt = this.simTime;
+			this.spawnGuaranteedElite();
+		}
 		if (this.zombiesToSpawn === 0 && this.zombies.length === 0) {
 			this.packBetweenWaves(); this.sweepGritToBag();
 			if (this.waveState = `break`, this.waveBreakCountdown = 6, this.stats.wavesCompleted++, this.bumpLifetime(`wavesCleared`), this.rollShop(), this.endlessMilestone(), this.scrap += 120 + this.wave * 25, soundEngine.playWaveHorn(), this.callbacks.onWaveComplete(this.wave), this.outbreakWaves > 0 && this.stats.wavesCompleted >= this.outbreakWaves) this.currentLocation.bell && !this.bellRung ? (this.bellReady = true, this.callbacks.onRadio?.(`WJPS Petersburg`, `The square is yours if you can ring it. Get to the tower before they take the steps.`)) : (this.extractActive = true, this.callbacks.onExtractReady?.());
@@ -2329,9 +2369,14 @@ export class GameEngine {
 			if (!w || this.boon(r.requiredBoon) < r.requiredStacks) continue;
 			this.evolutionDone[r.baseWeapon] = true;
 			w.name = r.evolvedName;
-			w.damage = Math.round(w.damage * 1.7);
-			w.fireRate = +(w.fireRate * 1.35).toFixed(2);
-			w.pierce = Math.max(w.pierce, 3);
+			w.damage = Math.round(w.damage * (r.dmgMul ?? 1.7));
+			w.fireRate = +(w.fireRate * (r.fireMul ?? 1.35)).toFixed(2);
+			w.pierce = Math.max(w.pierce, r.pierceSet ?? 3);
+			if (r.magMul) w.magazineSize = Math.round(w.magazineSize * r.magMul);
+			if (r.pelletsAdd) w.pellets += r.pelletsAdd;
+			if (r.spreadMul) w.spread *= r.spreadMul;
+			if (r.projSpeedMul) w.bulletSpeed *= r.projSpeedMul;
+			if (r.rangeMul) w.range *= r.rangeMul;
 			w.description = r.evolvedDescription;
 			this.hitstop = Math.max(this.hitstop, .35);
 			this.screenShake = Math.max(this.screenShake, 8);
@@ -2355,6 +2400,7 @@ export class GameEngine {
 	}
 	startNextWave() {
 		this.wave++, this.waveState = `active`;
+		this.checkWindowChange();
 		this.eventCd = this.wave === 1 ? 99 : 14 + Math.random() * 8;
 		let e = this.wave === 1 ? Math.floor(18 * this.difficultyMultiplier) : Math.floor((16 + this.wave * 6 + Math.max(0, this.wave - 10) * 4) * this.difficultyMultiplier);
 		if (this.wave > 1) e += 4;
@@ -2382,6 +2428,44 @@ export class GameEngine {
 			if (Math.hypot(e.x - px, e.y - py) >= minDist && !this.checkObstacleCollision(e.x, e.y, 16)) return e;
 		}
 		return edges[edges.length - 1];
+	}
+	// VS-2: guaranteed elite — the director never lets the pressure fully drop.
+	spawnGuaranteedElite() {
+		const pool = this.wave >= 8 ? [`behemoth`, `miner_brute`, `bloater_spitter`] : this.wave >= 5 ? [`miner_brute`, `bloater_spitter`, `riot`, `sprinter`] : [`sprinter`, `riot`, `bloater_spitter`];
+		const type = pool[Math.floor(Math.random() * pool.length)];
+		const edge = this.farEdgeSpawn(480);
+		const z = this.pushZombie(type, edge.x, edge.y);
+		if (!z.elite) {
+			z.elite = true;
+			z.maxHealth = Math.round(z.maxHealth * 2.2);
+			z.health = z.maxHealth;
+			z.speed = z.speed * 1.15;
+			z.scoreValue = z.scoreValue * 3;
+			z.scrapValue = Math.round(z.scrapValue * 2);
+		}
+		z.ai = `chase`;
+		z.tx = this.player.x;
+		z.ty = this.player.y;
+		this.spawnFloater(z.x, z.y - z.radius - 14, `ELITE ${type.replace(`_`, ` `).toUpperCase()}`, `#c77dff`);
+		this.callbacks.onRadio?.(`WJPS`, `Something big just walked out of the treeline. Watch yourself.`);
+		soundEngine.playWaveHorn();
+		return z;
+	}
+	// VS-2: named wave windows — data-driven schedule.
+	windowFor(wave) {
+		return WAVE_WINDOWS.find((w) => wave >= w.waveStart && wave <= w.waveEnd) || WAVE_WINDOWS[WAVE_WINDOWS.length - 1];
+	}
+	waveSchedule() {
+		const cur = Math.max(1, this.wave);
+		return WAVE_WINDOWS.map((w) => ({ id: w.id, name: w.name, waves: w.waveEnd >= 999 ? `${w.waveStart}+` : `${w.waveStart}-${w.waveEnd}`, blurb: w.blurb, current: cur >= w.waveStart && cur <= w.waveEnd }));
+	}
+	checkWindowChange() {
+		const w = this.windowFor(Math.max(1, this.wave));
+		if (w.id !== this.currentWindowId) {
+			this.currentWindowId = w.id;
+			this.spawnFloater(this.player.x, this.player.y - 64, w.name.toUpperCase(), `#f6c453`);
+			this.callbacks.onRadio?.(`WJPS`, `${w.name} — ${w.blurb}`);
+		}
 	}
 	spawnRandomZombie() {
 		const open = this.holes.filter((h) => !h.boarded);

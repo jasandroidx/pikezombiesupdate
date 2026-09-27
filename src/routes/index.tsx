@@ -95,6 +95,9 @@ function GameApp() {
     dashCharges: 2,
     dashMax: 2,
     waveState: "break",
+    waveWindow: "Dusk Settles",
+    waveSchedule: [] as { id: string; name: string; waves: string; blurb: string; current: boolean }[],
+    eliteIn: 45,
     shopOffers: [] as { id: string; name: string; desc: string; cost: number; locked: boolean; afford: boolean }[],
     shopRerollCost: 15,
     activeEvents: [] as string[],
@@ -107,7 +110,7 @@ function GameApp() {
     helpVisible: true,
   });
 
-  const [gameOverData, setGameOverData] = useState<{ stats: PlayerStats; score: number; wave: number }>({
+  const [gameOverData, setGameOverData] = useState<{ stats: PlayerStats; score: number; wave: number; level: number }>({
     stats: {
       kills: 0,
       headshots: 0,
@@ -123,6 +126,7 @@ function GameApp() {
     },
     score: 0,
     wave: 1,
+    level: 1,
   });
 
   const updateCanvasDimensions = useCallback(() => {
@@ -214,6 +218,7 @@ function GameApp() {
             stats,
             score: finalScore,
             wave: engineRef.current ? engineRef.current.wave : 1,
+            level: engineRef.current ? engineRef.current.level : 1,
           });
           setScreen("game_over");
         },
@@ -267,7 +272,7 @@ function GameApp() {
     setOutbreakStep(next);
     if (next >= OUTBREAK_ORDER.length) {
       setWon(true);
-      setGameOverData({ stats: snap.stats, score: snap.score, wave: engine.wave });
+      setGameOverData({ stats: snap.stats, score: snap.score, wave: engine.wave, level: engine.level });
       setScreen("game_over");
       engine.destroy();
       engineRef.current = null;
@@ -478,6 +483,9 @@ function GameApp() {
             combo={hudStats.combo}
             wave={hudStats.wave}
             waveTimer={hudStats.waveTimer}
+            waveWindow={hudStats.waveWindow}
+            waveSchedule={hudStats.waveSchedule}
+            eliteIn={hudStats.eliteIn}
             zombiesRemaining={hudStats.zombiesRemaining}
             isReloading={hudStats.isReloading}
             reloadProgress={hudStats.reloadProgress}
@@ -643,6 +651,7 @@ function GameApp() {
           stats={gameOverData.stats}
           score={gameOverData.score}
           wave={gameOverData.wave}
+          level={gameOverData.level}
           locationName={loc?.name || "Pike County"}
           killer={killer}
           mode={mode}

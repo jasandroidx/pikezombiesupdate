@@ -700,6 +700,15 @@ export interface EvolutionRecipe {
   evolvedName: string;
   evolvedDescription: string;
   evolvedRadio: string;
+  // Per-recipe stat transforms (defaults match the original Deadeye).
+  dmgMul?: number;
+  fireMul?: number;
+  pierceSet?: number;
+  magMul?: number;
+  pelletsAdd?: number;
+  spreadMul?: number;
+  projSpeedMul?: number;
+  rangeMul?: number;
 }
 
 export const EVOLUTIONS: EvolutionRecipe[] = [
@@ -712,6 +721,85 @@ export const EVOLUTIONS: EvolutionRecipe[] = [
     evolvedDescription: "Evolved in a chest: storm-forged .357. Hits 70% harder, cycles faster, punches through three deep.",
     evolvedRadio: "That hand-cannon drank the lightning. Deadeye now — and it don't miss twice.",
   },
+  {
+    baseWeapon: "shotgun",
+    requiredBoon: "bone",
+    requiredBoonName: "Buck and bone",
+    requiredStacks: 2,
+    evolvedName: "Widow's Bell",
+    evolvedDescription: "Evolved: the '90 tornado took the Whiteoak chapel bell — this rings like it. Two more pellets, meaner and wider.",
+    evolvedRadio: "She tolls for them now. The Widow's Bell don't need a steeple.",
+    dmgMul: 1.5, fireMul: 1.15, pelletsAdd: 2, spreadMul: 1.25,
+  },
+  {
+    baseWeapon: "lever_rifle",
+    requiredBoon: "salt",
+    requiredBoonName: "Salt line",
+    requiredStacks: 2,
+    evolvedName: "White Oak Longrifle",
+    evolvedDescription: "Evolved: blessed salt down a White Oak barrel. Punches through five deep, faster and truer.",
+    evolvedRadio: "One shot, clean through the tree line. That's a White Oak longrifle, boy.",
+    dmgMul: 1.8, fireMul: 1.1, pierceSet: 5, projSpeedMul: 1.4,
+  },
+  {
+    baseWeapon: "carbine",
+    requiredBoon: "trigger",
+    requiredBoonName: "Filed trigger",
+    requiredStacks: 2,
+    evolvedName: "Enos Corner Repeater",
+    evolvedDescription: "Evolved: filed trigger on a Patoka carbine. Twice the cycle, half again the magazine.",
+    evolvedRadio: "Enos Corner never heard anything that fast that wasn't weather.",
+    dmgMul: 1.2, fireMul: 2.0, magMul: 1.5,
+  },
+  {
+    baseWeapon: "crossbow",
+    requiredBoon: "hide",
+    requiredBoonName: "County hide",
+    requiredStacks: 2,
+    evolvedName: "Buffalo Trace Stalker",
+    evolvedDescription: "Evolved: county hide wraps a Buffalo Trace bow. Twice the bite, faster bolts, quiet as snowfall.",
+    evolvedRadio: "They never heard the Trace coming. That's how the old ones hunted.",
+    dmgMul: 2.0, fireMul: 1.2, pierceSet: 3, projSpeedMul: 1.5,
+  },
+  {
+    baseWeapon: "chainsaw",
+    requiredBoon: "jug",
+    requiredBoonName: "Another jug",
+    requiredStacks: 2,
+    evolvedName: "Kindill Ripper",
+    evolvedDescription: "Evolved: a Kindill saw mill chain drinking moonshine. Bigger bite, longer reach.",
+    evolvedRadio: "You can hear that ripper from Logtown. Feed it.",
+    dmgMul: 1.6, fireMul: 1.25, rangeMul: 1.5,
+  },
+];
+
+// VS-2: weapon-family support affinities. Two or more unlocked weapons in a
+// family (an evolved weapon counts as two) gives every family weapon +12% damage.
+export const WEAPON_FAMILIES: Record<string, { name: string; members: string[]; blurb: string }> = {
+  iron: { name: "Iron & Oak", members: ["revolver", "lever_rifle"], blurb: "Wheelguns and levers — the old iron of Pike County." },
+  scatter: { name: "Barn Burner", members: ["shotgun"], blurb: "One barn gun, perfected." },
+  rapid: { name: "Patoka Rapid", members: ["carbine"], blurb: "One fast gun, perfected." },
+  silent: { name: "Trace Hunter", members: ["crossbow"], blurb: "One quiet bow, perfected." },
+  heavy: { name: "Mill Saw", members: ["chainsaw"], blurb: "One loud saw, perfected." },
+};
+
+export interface WaveWindowDef {
+  id: string;
+  name: string;
+  waveStart: number;
+  waveEnd: number; // inclusive; 999 = endless
+  blurb: string;
+}
+
+// VS-2: data-driven named wave windows — the visible run schedule.
+export const WAVE_WINDOWS: WaveWindowDef[] = [
+  { id: "dusk", name: "Dusk Settles", waveStart: 1, waveEnd: 2, blurb: "The county goes quiet. Then it doesn't." },
+  { id: "golden", name: "Golden Swarm", waveStart: 3, waveEnd: 3, blurb: "The creek bed glitters — double grit for the wave." },
+  { id: "howl", name: "The Trace Howls", waveStart: 4, waveEnd: 5, blurb: "Fast ones on the Buffalo Trace. Keep moving." },
+  { id: "blood", name: "Blood Moon", waveStart: 6, waveEnd: 6, blurb: "Red moon over the county. Faster, meaner, double XP." },
+  { id: "hartwell", name: "The Hartwell Shift", waveStart: 7, waveEnd: 9, blurb: "The shift change at the mines. They come in waves." },
+  { id: "damp", name: "Black Damp", waveStart: 10, waveEnd: 12, blurb: "Bad air from the old shafts. Heavies in the dark." },
+  { id: "ben", name: "Old Ben Wakes", waveStart: 13, waveEnd: 999, blurb: "Old Ben don't sleep no more. Endless." },
 ];
 
 export interface RunEventDef {

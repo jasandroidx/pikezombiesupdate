@@ -59,6 +59,9 @@ interface HUDProps {
   dashMax?: number;
   gritBag?: number;
   activeEvents?: string[];
+  waveWindow?: string;
+  waveSchedule?: { id: string; name: string; waves: string; blurb: string; current: boolean }[];
+  eliteIn?: number;
 }
 
 export function HUD({
@@ -119,6 +122,9 @@ export function HUD({
   dashMax = 2,
   gritBag = 0,
   activeEvents = [],
+  waveWindow = "",
+  waveSchedule = [],
+  eliteIn = 45,
 }: HUDProps) {
   const hpPercent = Math.max(0, Math.min(100, (health / maxHealth) * 100));
   const isCritical = hpPercent < 25;
@@ -160,6 +166,24 @@ export function HUD({
                 <div className="h-full bg-accent transition-[width] duration-150" style={{ width: `${gritPct}%` }} />
               </div>
             </div>
+            {(waveWindow || (waveSchedule && waveSchedule.length > 0)) && (
+              <div className="mt-1 border-t border-border/60 pt-1" title={waveSchedule?.find((w) => w.current)?.blurb ?? ""}>
+                <div className="flex items-baseline justify-between font-mono text-[9px] uppercase tracking-widest">
+                  <span className="text-accent">{waveWindow}</span>
+                  <span className="text-muted">elite {eliteIn ?? 45}s</span>
+                </div>
+                <div className="mt-0.5 flex flex-wrap gap-x-1.5 gap-y-0.5">
+                  {waveSchedule?.map((w) => (
+                    <span
+                      key={w.id}
+                      className={`font-mono text-[8px] uppercase tracking-wider ${w.current ? "text-accent" : "text-muted/50"}`}
+                    >
+                      {w.name} {w.waves}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="mt-1 flex items-center justify-between font-mono text-[9px] uppercase tracking-widest">
               <span className="text-accent">
                 Bomb{" "}
