@@ -20,6 +20,8 @@ interface UpgradeShopModalProps {
   onBuyAmmoRefill: () => void;
   onBuyMolotov: () => void;
   onBuyFlare: () => void;
+  postRank: number;
+  onUpgradePost: () => void;
 }
 
 export function UpgradeShopModal({
@@ -39,6 +41,8 @@ export function UpgradeShopModal({
   onBuyAmmoRefill,
   onBuyMolotov,
   onBuyFlare,
+  postRank,
+  onUpgradePost,
 }: UpgradeShopModalProps) {
   const [activeTab, setActiveTab] = useState<"weapons" | "perks" | "supplies">("weapons");
 
@@ -249,6 +253,42 @@ export function UpgradeShopModal({
 
           {activeTab === "supplies" && (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="flex flex-col justify-between rounded border border-border bg-bg p-4">
+                <div className="mb-2 flex items-center gap-3">
+                  <div className="rounded border border-accent/40 bg-surface p-2">
+                    <Target className="h-6 w-6 text-accent" />
+                  </div>
+                  <div>
+                    <h3 className="font-heading text-base font-bold text-fg">Cedar-post rifle · Mk{postRank}</h3>
+                    <p className="font-lore text-xs text-muted">
+                      {postRank >= 3
+                        ? "Fully rebuilt. Three posts, heavy tube, fast trigger."
+                        : postRank === 2
+                        ? "Next: Mk3 — heavier tube, faster trigger, a third post. (300 scrap)"
+                        : "Next: Mk2 — heavier tube, faster trigger, bigger mag. (150 scrap)"}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  id="upgrade-post-btn"
+                  type="button"
+                  onClick={() => {
+                    if (postRank < 3) {
+                      onUpgradePost();
+                      soundEngine.playPickup();
+                    }
+                  }}
+                  disabled={postRank >= 3 || scrap < (postRank === 1 ? 150 : 300)}
+                  className={`mt-4 flex w-full items-center justify-center gap-2 rounded border px-3 py-2 font-heading text-xs font-bold uppercase tracking-wider ${
+                    postRank < 3 && scrap >= (postRank === 1 ? 150 : 300)
+                      ? "border-accent bg-accent text-bg"
+                      : "cursor-not-allowed border-border bg-surface-2 text-muted"
+                  }`}
+                >
+                  <Wrench className="h-4 w-4" />
+                  {postRank >= 3 ? "Mk3 — maxed" : `Rebuild to Mk${postRank + 1} · ${postRank === 1 ? 150 : 300} scrap`}
+                </button>
+              </div>
               <div className="flex flex-col justify-between rounded border border-border bg-bg p-4">
                 <div className="mb-2 flex items-center gap-3">
                   <div className="rounded border border-border bg-surface p-2">

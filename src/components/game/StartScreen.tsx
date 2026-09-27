@@ -2,6 +2,7 @@ import { useState } from "react";
 import { GAME_LOCATIONS, OUTBREAK_ORDER } from "@/game/constants";
 import { buyRank, loadSave, rankCost } from "@/game/save";
 import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield, Wind } from "lucide-react";
+import { ControlsModal } from "./ControlsModal";
 import { loadMeta } from "@/game/meta";
 import { QUESTS } from "@/game/constants";
 
@@ -225,12 +226,7 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
         </div>
       </div>
 
-      {showHelp && (
-        <div className="relative z-20 mx-auto mt-4 max-w-xl rounded border border-border bg-surface p-4 font-mono text-xs leading-relaxed text-muted">
-          WASD move. The gun aims and fires by itself. Hold the mouse button when you want to point it. C plants a cedar-post rifle. X lays a stovepipe — black powder in a capped pipe, and they are the ones who step on it. Ctrl makes the walk quiet. 1 magnum · 2 pump · Q mash · G road flare · E for notes, the bench, the bell · Tab workbench · Esc pause.
-          The dead drop grit. The bar fills slower now. One card after a real piece of the night, not after two shamblers.
-        </div>
-      )}
+      {showHelp && <ControlsModal onClose={() => setShowHelp(false)} />}
 
       {showJournal && (
         <div className="relative z-20 mx-auto mt-4 max-w-xl rounded border border-border bg-surface p-4">

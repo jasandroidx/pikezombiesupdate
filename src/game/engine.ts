@@ -98,6 +98,7 @@ export class GameEngine {
 	activeEvents: { id: string; endsAt: number }[] = [];
 	posts = 1;
 	pipes = 1;
+	postRank = 1;
 	traps: { kind: string; x: number; y: number; angle: number; shot: number; left: number; arm: number; live: boolean; blown: boolean }[] = [];
 	toldPost = false;
 	toldPipe = false;
@@ -324,6 +325,14 @@ export class GameEngine {
 				this.posts += posts;
 				this.pipes += pipes;
 			},
+			postRank: () => this.postRank,
+			upgradePost: () => this.upgradePost(),
+			weapon: (id) => { const w = this.weapons.find((x) => x.id === id); return w && { reserve: w.reserveAmmo, max: w.maxReserveAmmo }; },
+			setWave: (n) => { this.wave = n; },
+			spawnType: (t) => this.pushZombie(t, this.player.x + 120, this.player.y),
+			lastZombie: () => { const z = this.zombies[this.zombies.length - 1]; return z && { t: z.type, hp: Math.round(z.health) }; },
+			barrels: () => this.explosiveBarrels.map((b) => ({ x: Math.round(b.x), y: Math.round(b.y) })),
+			spawnPt: () => ({ x: this.currentLocation.spawn.x, y: this.currentLocation.spawn.y }),
 			sys: () => ({
 				bomb: { charges: this.bombCharges, max: BOMB_MAX_CHARGES },
 				grit: { bag: Math.round(this.gritBag), ground: this.grit.length },
@@ -674,7 +683,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -955,7 +964,7 @@ export class GameEngine {
 		if (this.beacon.hold < 2) return;
 		this.beacon.done = true;
 		const w = this.weapons[this.currentWeaponIndex];
-		w.reserveAmmo += w.id === `shotgun` ? 8 : 16;
+		w.reserveAmmo += w.id === `shotgun` ? 6 : 10;
 		this.player.health = Math.min(this.player.maxHealth, this.player.health + 22);
 		this.spawnFloater(this.beacon.x, this.beacon.y - 24, "SUPPLY", "#d4a017");
 		soundEngine.playPickup();
@@ -1004,14 +1013,37 @@ export class GameEngine {
 			color: `#fde68a`
 		});
 	}
+	postStats() {
+		return this.postRank >= 3
+			? { dmg: 85, interval: .42, mag: 24, maxPosts: 3, cost: 0 }
+			: this.postRank === 2
+			? { dmg: 65, interval: .5, mag: 18, maxPosts: 2, cost: 300 }
+			: { dmg: 46, interval: .58, mag: 14, maxPosts: 2, cost: 150 };
+	}
+	upgradePost() {
+		if (this.postRank >= 3) return false;
+		const cost = this.postStats().cost;
+		if (this.scrap < cost) {
+			this.spawnFloater(this.player.x, this.player.y - 36, `NEED ${cost} SCRAP`, `#8a7a64`);
+			return false;
+		}
+		this.scrap -= cost;
+		this.postRank++;
+		const st = this.postStats();
+		this.spawnFloater(this.player.x, this.player.y - 40, `POST MK${this.postRank}`, `#d4a017`);
+		soundEngine.playPickup();
+		this.callbacks.onRadio?.(`Unknown`, `Post rebuilt to mark ${this.postRank}. ${st.maxPosts > 2 ? `It'll hold a third post now.` : `Heavier tube, faster trigger.`}`);
+		return true;
+	}
 	plantPost() {
 		if (this.isPaused || !this.isRunning) return false;
 		if (this.posts <= 0) {
 			this.spawnFloater(this.player.x, this.player.y - 36, "NO POST", "#8a7a64");
 			return false;
 		}
-		if (this.traps.filter((t) => t.kind === "post").length >= 2) {
-			this.spawnFloater(this.player.x, this.player.y - 36, "TWO POSTS", "#8a7a64");
+		const ps = this.postStats();
+		if (this.traps.filter((t) => t.kind === "post").length >= ps.maxPosts) {
+			this.spawnFloater(this.player.x, this.player.y - 36, ps.maxPosts > 2 ? "THREE POSTS" : "TWO POSTS", "#8a7a64");
 			return false;
 		}
 		const ang = this.player.angle;
@@ -1022,7 +1054,7 @@ export class GameEngine {
 			y = this.player.y;
 		}
 		this.posts--;
-		this.traps.push({ kind: "post", x, y, angle: ang, shot: 0.25, left: 14, arm: 0, live: true, blown: false });
+		this.traps.push({ kind: "post", x, y, angle: ang, shot: 0.25, left: ps.mag, arm: 0, live: true, blown: false, dmg: ps.dmg, interval: ps.interval });
 		this.spawnFloater(x, y - 30, "POST", "#d4a017");
 		soundEngine.playPickup();
 		if (!this.toldPost) {
@@ -1105,7 +1137,7 @@ export class GameEngine {
 			while (da < -Math.PI) da += Math.PI * 2;
 			t.angle += da * Math.min(1, dt * 7);
 			if (t.shot > 0) continue;
-			t.shot = 0.58;
+			t.shot = t.interval || 0.58;
 			t.left--;
 			const a = t.angle;
 			this.bullets.push({
@@ -1114,7 +1146,7 @@ export class GameEngine {
 				y: t.y + Math.sin(a) * 22,
 				vx: Math.cos(a) * 14,
 				vy: Math.sin(a) * 14,
-				damage: 46,
+				damage: t.dmg || 46,
 				pierce: 1,
 				rangeRemaining: 360,
 				weaponType: `lever_rifle`,
@@ -2309,8 +2341,8 @@ export class GameEngine {
 		else if (this.wave >= 5 && this.wave % 5 == 0 && this.zombiesToSpawn === 1) a = `behemoth`;
 		else if (this.lanternWentOut && o < .18) a = `crawler`;
 		else if (this.wave >= 4 && o < .2) a = `bloater_spitter`;
-		else if (this.wave >= 4 && o < .3) a = `bomber`;
-		else if (this.wave >= 5 && o < .4) a = `riot`;
+		else if (this.wave >= 3 && o < .3) a = `bomber`;
+		else if (this.wave >= 4 && o < .4) a = `riot`;
 		else if (this.wave >= 3 && o < .5) a = `miner_brute`;
 		else if (this.wave >= 2 && o < .72) a = `sprinter`;
 		this.pushZombie(a, n, r);
@@ -2319,6 +2351,7 @@ export class GameEngine {
 		let r = 58, i = 2.15, a = 14, o = 17, s = `#475569`, c = false, l = 100, u = 15;
 		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `bomber` ? (r = 45, i = 2.7, a = 12, o = 15, s = `#b45309`, l = 120, u = 18) : e === `riot` ? (r = 520, i = 0.85, a = 30, o = 24, s = `#3f3f46`, c = true, l = 300, u = 60) : e === `behemoth` && (r = 1400 + this.wave * 250, i = 1.55, a = 45, o = 38, s = `#581c87`, l = 1500, u = 250);
 		const em = this.eventMods();
+		if (e !== `behemoth`) r = Math.round(r * (1 + Math.max(0, this.wave - 2) * .07));
 		let d = {
 			id: Math.random().toString(),
 			type: e,
@@ -2346,7 +2379,7 @@ export class GameEngine {
 			wanderAngle: Math.random() * Math.PI * 2,
 			hitFlash: 0
 		};
-		if (this.wave >= 2 && e !== `behemoth` && Math.random() < 0.12) {
+		if (this.wave >= 2 && e !== `behemoth` && Math.random() < Math.min(.25, .08 + this.wave * .015)) {
 			d.elite = true;
 			d.maxHealth = Math.round(d.maxHealth * 2.2);
 			d.health = d.maxHealth;
@@ -2460,13 +2493,14 @@ export class GameEngine {
 			const beforeX = r.x, beforeY = r.y;
 			const hitX = this.checkObstacleCollision(m, r.y, r.radius);
 			const hitY = this.checkObstacleCollision(r.x, h, r.radius);
+			const boardMul = 1 + this.wave * .04;
 			if (hitX) {
 				this.smashBarricadeAt(m, r.y, r.damage * .08);
-				this.smashHoleAt(m, r.y, r.damage * .12);
+				this.smashHoleAt(m, r.y, r.damage * .12 * boardMul);
 			} else r.x = m;
 			if (hitY) {
 				this.smashBarricadeAt(r.x, h, r.damage * .08);
-				this.smashHoleAt(r.x, h, r.damage * .12);
+				this.smashHoleAt(r.x, h, r.damage * .12 * boardMul);
 			} else r.y = h;
 			if (u > 0 && (r.ai === `chase` || r.ai === `investigate` || r.ai === `attack`)) {
 				const moved = Math.hypot(r.x - beforeX, r.y - beforeY);
@@ -2740,7 +2774,7 @@ export class GameEngine {
 				t.y += (dy / dist) * pull;
 			}
 			if (Math.hypot(this.player.x - t.x, this.player.y - t.y) <= this.player.radius + 22) {
-				if (soundEngine.playPickup(), t.type === `ammo_universal`) for (let e of this.weapons) e.unlocked && (e.reserveAmmo = Math.min(e.maxReserveAmmo, e.reserveAmmo + Math.floor(e.magazineSize * 1.5)));
+				if (soundEngine.playPickup(), t.type === `ammo_universal`) for (let e of this.weapons) e.unlocked && (e.reserveAmmo = Math.min(e.maxReserveAmmo, e.reserveAmmo + Math.floor(e.magazineSize * 1)));
 				else t.type === `moonshine_med` ? (this.player.health = Math.min(this.player.maxHealth, this.player.health + t.amount), this.player.stamina = this.player.maxStamina) : t.type === `molotov_pickup` ? this.player.molotovs = Math.min(this.player.maxMolotovs, this.player.molotovs + 1) : t.type === `scrap` ? (this.scrap += t.amount, this.stats.scrapCollected += t.amount) : (t.type === `nuke` || t.type === `insta_kill` || t.type === `double_points` || t.type === `infinite_ammo` || t.type === `speed_boost`) && this.activatePowerup(t.type);
 				this.drops.splice(e, 1);
 			}

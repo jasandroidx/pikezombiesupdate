@@ -13,6 +13,7 @@ import { LoreNoteModal } from "@/components/game/LoreNoteModal";
 import { MobileControls } from "@/components/game/MobileControls";
 import { WaveShop } from "@/components/game/WaveShop";
 import { PauseMenu } from "@/components/game/PauseMenu";
+import { ControlsModal } from "@/components/game/ControlsModal";
 import { TailgateDraft } from "@/components/game/TailgateDraft";
 import type { BoonOffer } from "@/game/boons";
 import type { ActivePowerup, EngineSnapshot, GameMode, LoreNote, Perk, PlayerStats, Weapon } from "@/types/game";
@@ -41,6 +42,7 @@ function GameApp() {
   const [radio, setRadio] = useState<{ call: string; body: string } | null>(null);
   const [foundNotes, setFoundNotes] = useState<string[]>([]);
   const [paused, setPaused] = useState(false);
+  const [showControls, setShowControls] = useState(false);
   const [draft, setDraft] = useState<BoonOffer[] | null>(null);
   const [boonStacks, setBoonStacks] = useState<Record<string, number>>({});
   const [rerolls, setRerolls] = useState(1);
@@ -248,6 +250,7 @@ function GameApp() {
     setPaused(false);
     setDraft(null);
     setIsWorkbenchOpen(false);
+    setPostRank(1);
     engine.start(difficultyMultiplier);
   };
 
@@ -284,6 +287,17 @@ function GameApp() {
     });
   };
 
+  const handleToggleControls = () => {
+    if (screen !== "playing") return;
+    setPaused(false);
+    setIsWorkbenchOpen(false);
+    setShowControls((prev) => {
+      const next = !prev;
+      engineRef.current?.setPaused(next);
+      return next;
+    });
+  };
+
   const handleCloseLoreNote = () => {
     setActiveLoreNote(null);
     if (engineRef.current && !isWorkbenchOpen) engineRef.current.setPaused(false);
@@ -299,7 +313,17 @@ function GameApp() {
         return;
       }
       if (draft) return;
-      if (e.code === "Tab") {
+      if (showControls) {
+        if (e.code === "KeyH" || e.code === "Escape") {
+          e.preventDefault();
+          handleToggleControls();
+        }
+        return;
+      }
+      if (e.code === "KeyH") {
+        e.preventDefault();
+        handleToggleControls();
+      } else if (e.code === "Tab") {
         e.preventDefault();
         handleToggleWorkbench();
       } else if (e.code === "KeyM") {
@@ -318,7 +342,7 @@ function GameApp() {
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [screen, isWorkbenchOpen, activeLoreNote, draft]);
+  }, [screen, isWorkbenchOpen, activeLoreNote, draft, showControls]);
 
   const handleUnlockWeapon = (index: number) => {
     const engine = engineRef.current;
@@ -381,6 +405,13 @@ function GameApp() {
       molotovs: engine.player.molotovs,
       flares: engine.player.flares,
     }));
+  };
+
+  const [postRank, setPostRank] = useState(1);
+  const handleUpgradePost = () => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (engine.upgradePost()) setPostRank(engine.postRank);
   };
 
   const handleBuyAmmoRefill = () => {
@@ -558,6 +589,10 @@ function GameApp() {
             setIsWorkbenchOpen(true);
             engineRef.current?.setPaused(true);
           }}
+          onControls={() => {
+            setPaused(false);
+            handleToggleControls();
+          }}
           onHome={() => {
             engineRef.current?.destroy();
             engineRef.current = null;
@@ -567,6 +602,8 @@ function GameApp() {
           }}
         />
       )}
+
+      {showControls && screen === "playing" && <ControlsModal onClose={handleToggleControls} />}
 
       {isWorkbenchOpen && screen === "playing" && (
         <UpgradeShopModal
@@ -586,6 +623,8 @@ function GameApp() {
           onBuyAmmoRefill={handleBuyAmmoRefill}
           onBuyMolotov={handleBuyMolotov}
           onBuyFlare={handleBuyFlare}
+          postRank={postRank}
+          onUpgradePost={handleUpgradePost}
         />
       )}
 
