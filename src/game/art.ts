@@ -1,3 +1,5 @@
+import { ResourceMap } from "./resourceMap";
+
 export const ZOMBIE_LABELS: Record<string, string> = {
   shambler: "WILD",
   sprinter: "FERAL",
@@ -21,15 +23,50 @@ const PATHS: Record<string, string> = {
   riot: "/sprites/cast/miner_brute.jpg",
 };
 
-const cache = new Map<string, HTMLCanvasElement>();
+// Batch 14 (Lane B): sprite images live in a reference-counted resource map.
+// Contract: loadArt() prefetches every sprite key and pins one reference per
+// key for the session lifetime. Game code that draws sprites never needs to
+// release; releaseSprite()/unloadArt() exist for tests and future
+// level-scoped unloading. Two sprite ids may share a source path (e.g.
+// bomber -> sprinter.jpg); keys stay per-id so draw results are identical to
+// the old per-id canvas cache.
+const artSprites = new ResourceMap<HTMLCanvasElement>();
 let loaded = false;
+let drawCount = 0;
 
 export function isArtReady() {
   return loaded;
 }
 
 export function getSprite(id: string): HTMLCanvasElement | null {
-  return cache.get(id) ?? null;
+  return artSprites.get(id) ?? null;
+}
+
+/** Drop one sprite's session pin (test/probe use). */
+export function releaseSprite(id: string): boolean {
+  return artSprites.release(id);
+}
+
+/** Drop all session pins (test/probe use). */
+export function unloadArt(): void {
+  for (const key of artSprites.stats().keys) artSprites.release(key);
+}
+
+/** Probe for tests: ready flag, per-id load state, draw call count. */
+export function artStats() {
+  const s = artSprites.stats();
+  const sprites: Record<string, boolean> = {};
+  const dims: Record<string, [number, number] | null> = {};
+  for (const key of Object.keys(PATHS)) {
+    const c = artSprites.get(key);
+    sprites[key] = c != null;
+    dims[key] = c ? [c.width, c.height] : null;
+  }
+  return { ready: loaded, sprites, dims, draws: drawCount, map: s };
+}
+
+if (typeof window !== "undefined") {
+  (window as unknown as { __pzArt?: unknown }).__pzArt = { stats: artStats };
 }
 
 function keyGreen(img: HTMLImageElement) {
@@ -72,6 +109,19 @@ function keyGreen(img: HTMLImageElement) {
   return out;
 }
 
+function loadImageSprite(src: string): Promise<HTMLCanvasElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => resolve(keyGreen(img));
+    // Old behavior swallowed load errors (the key simply stayed uncached).
+    // The map rejects per-key instead so failed loads retry; loadArt treats
+    // a failure the same way: the sprite stays missing and draws miss.
+    img.onerror = () => reject(new Error(`sprite load failed: ${src}`));
+    img.src = src;
+  });
+}
+
 export async function loadArt() {
   if (typeof document !== "undefined" && "fonts" in document) {
     await Promise.all([
@@ -79,21 +129,11 @@ export async function loadArt() {
       document.fonts.load("64px Nosifer"),
     ]).catch(() => undefined);
   }
-  await Promise.all(
-    Object.entries(PATHS).map(
-      ([key, src]) =>
-        new Promise<void>((resolve) => {
-          const img = new Image();
-          img.decoding = "async";
-          img.onload = () => {
-            cache.set(key, keyGreen(img));
-            resolve();
-          };
-          img.onerror = () => resolve();
-          img.src = src;
-        }),
-    ),
-  );
+  // Startup prefetch: warm every sprite key through the resource map in one
+  // deduped pass, then wait for the pass to settle (per-key failures resolve
+  // to undefined, matching the old swallow-errors behavior).
+  artSprites.prefetch(Object.keys(PATHS), (key) => loadImageSprite(PATHS[key]));
+  await artSprites.readyAll(Object.keys(PATHS));
   loaded = true;
 }
 
@@ -106,6 +146,7 @@ export function drawSprite(
 ) {
   const img = getSprite(id);
   if (!img) return false;
+  drawCount += 1;
   const aspect = img.width / Math.max(1, img.height);
   const h = size;
   const w = size * aspect;

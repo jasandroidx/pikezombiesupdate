@@ -1,4 +1,7 @@
 import { GameLocation, BloodDecal, Drop, FirePuddle, MapObstacle, ExplosiveBarrel, LoreNote, Barricade } from '../types/game';
+import { initParticleTextures, drawParticle, particleTexture, hasParticleTextures,
+  particleTextureCount, drawnParticleTextures, resetParticleTextureCount,
+  unknownParticleKinds, PARTICLE_TEXTURE_KINDS, PARTICLE_TEXTURE_SIZES } from './particleTextures';
 
 // ---- Batch 10 (Lane 2): explicit rendering-layer manager ----
 
@@ -595,22 +598,19 @@ export function renderEnvironment(
   });
 
   envLayers.queue('decals', (ctx) => {
+    // Batch 14 (Lane A): blood decals blit the pre-baked bloodSplat texture
+    // instead of per-frame ellipse/arc construction. Same position (center),
+    // rotation, size (~2.6x radius covers the old ellipse + satellites), alpha.
+    const tex = particleTexture('bloodSplat');
     for (const decal of bloodDecals) {
       if (!sees(viewport, decal.x, decal.y, decal.radius)) continue;
-
+      if (!(decal.alpha > 0) || !(decal.radius > 0)) continue;
+      const s = decal.radius * 2.6;
       ctx.save();
       ctx.translate(decal.x, decal.y);
       ctx.rotate(decal.rotation);
-      ctx.fillStyle = `rgba(139, 0, 0, ${decal.alpha})`;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, decal.radius, decal.radius * 0.65, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = `rgba(90, 0, 0, ${decal.alpha * 0.8})`;
-      const dist = decal.radius * 0.9;
-      ctx.beginPath();
-      ctx.arc(Math.cos(decal.rotation) * dist, Math.sin(decal.rotation) * dist, decal.radius * 0.2, 0, Math.PI * 2);
-      ctx.arc(Math.cos(decal.rotation + 2.2) * dist, Math.sin(decal.rotation + 2.2) * dist, decal.radius * 0.16, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.globalAlpha = decal.alpha > 1 ? 1 : decal.alpha;
+      if (tex) ctx.drawImage(tex, -s / 2, -s / 2, s, s);
       ctx.restore();
     }
   });
@@ -630,15 +630,10 @@ export function renderEnvironment(
       ctx.arc(puddle.x, puddle.y, currentRadius * 1.1, 0, Math.PI * 2);
       ctx.fill();
 
-      const grad = ctx.createRadialGradient(puddle.x, puddle.y, 0, puddle.x, puddle.y, currentRadius);
-      grad.addColorStop(0, 'rgba(255, 230, 120, 0.9)');
-      grad.addColorStop(0.3, 'rgba(255, 120, 20, 0.7)');
-      grad.addColorStop(0.7, 'rgba(220, 50, 10, 0.4)');
-      grad.addColorStop(1, 'rgba(180, 20, 0, 0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(puddle.x, puddle.y, currentRadius, 0, Math.PI * 2);
-      ctx.fill();
+      // Batch 14 (Lane A): flame gradient is a pre-baked texture blit now —
+      // no per-frame createRadialGradient. Same position/radius; the dark base
+      // disc above stays raw (one cheap fill).
+      drawParticle(ctx, 'flame', puddle.x, puddle.y, currentRadius * 2, 1);
     }
   });
 
@@ -1596,20 +1591,17 @@ export class CelebrationFx {
     const dt = Math.min(0.05, Math.max(0, (now - this.lastNow) / 1000));
     this.lastNow = now;
 
-    // Gold radial flash
+    // Gold radial flash — Batch 14 (Lane A): pre-baked 'flash' texture blit
+    // instead of a per-frame createRadialGradient. Same 260px radius; the
+    // texture bakes the old 0.55 core alpha, so alpha = flashA matches exactly.
     const flashA = Math.max(0, 1 - el / 450);
     if (flashA > 0) {
-      const fr = safeR(260);
-      const g = ctx.createRadialGradient(this.x, this.y, 0.001, this.x, this.y, fr);
-      g.addColorStop(0, `rgba(255, 205, 95, ${(0.55 * flashA).toFixed(3)})`);
-      g.addColorStop(1, 'rgba(255, 205, 95, 0)');
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, fr, 0, Math.PI * 2);
-      ctx.fill();
+      drawParticle(ctx, 'flash', this.x, this.y, 520, flashA);
     }
 
-    // Upward fountain (pooled particles, no per-frame allocation)
+    // Upward fountain (pooled particles, no per-frame allocation) — Batch 14
+    // (Lane A): gold glint texture blits instead of per-frame hsla arcs.
+    // Same positions, sizes (shrink with life), alphas.
     for (const p of this.parts) {
       if (!p.active) continue;
       p.life -= dt;
@@ -1618,10 +1610,7 @@ export class CelebrationFx {
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       const a = p.life / p.maxLife;
-      ctx.fillStyle = `hsla(${p.hue | 0}, 95%, ${55 + a * 20}%, ${(a * 0.95).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, safeR(p.size * a), 0, Math.PI * 2);
-      ctx.fill();
+      drawParticle(ctx, 'glint', p.x, p.y, Math.max(0.001, p.size * a), a * 0.95);
     }
 
     // Floating text
@@ -1986,6 +1975,17 @@ export const render7 = {
   spriteCount,
   drawnParticleSprites,
   resetParticleSpriteCount,
+  // Batch 14 (Lane A): procedural particle texture atlas
+  initParticleTextures,
+  hasParticleTextures,
+  drawParticle,
+  particleTexture,
+  particleTextureCount,
+  drawnParticleTextures,
+  resetParticleTextureCount,
+  unknownParticleKinds,
+  PARTICLE_TEXTURE_KINDS,
+  PARTICLE_TEXTURE_SIZES,
   dprCap,
   qualityFactor,
   isNarrowViewport,
@@ -2017,6 +2017,10 @@ function attachRender7Probes() {
   if (typeof ct.spriteCount !== 'function') ct.spriteCount = () => spriteCount();
   if (typeof ct.drawnParticleSprites !== 'function') ct.drawnParticleSprites = () => particleSpriteDraws;
   if (typeof ct.resetParticleSpriteCount !== 'function') ct.resetParticleSpriteCount = () => { particleSpriteDraws = 0; };
+  // Batch 14 (Lane A): particle texture atlas probe on the engine's handle.
+  if (typeof ct.particleTexturesReady !== 'function') ct.particleTexturesReady = () => hasParticleTextures();
+  if (typeof ct.drawnParticleTextures !== 'function') ct.drawnParticleTextures = () => drawnParticleTextures();
+  if (typeof ct.resetParticleTextureCount !== 'function') ct.resetParticleTextureCount = () => { resetParticleTextureCount(); };
   if (!ct.render7) ct.render7 = (window as unknown as Record<string, unknown>).__pzRender7;
 }
 
@@ -2025,6 +2029,8 @@ function attachRender7Probes() {
 if (typeof window !== 'undefined') {
   // Batch 8 (Lane C): bake particle sprites once at startup (zero-asset).
   ensureParticleSprites();
+  // Batch 14 (Lane A): bake the particle texture atlas once at startup.
+  initParticleTextures();
   (window as any).__pzRender7 = render7;
   (window as any).__pzVisual = {
     tileFor,
@@ -2065,6 +2071,17 @@ if (typeof window !== 'undefined') {
     spriteCount,
     drawnParticleSprites,
     resetParticleSpriteCount,
+    // Batch 14 (Lane A): procedural particle texture atlas
+    initParticleTextures,
+    hasParticleTextures,
+    drawParticle,
+    particleTexture,
+    particleTextureCount,
+    drawnParticleTextures,
+    resetParticleTextureCount,
+    unknownParticleKinds,
+    PARTICLE_TEXTURE_KINDS,
+    PARTICLE_TEXTURE_SIZES,
     dprCap,
     qualityFactor,
     isNarrowViewport,
