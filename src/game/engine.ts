@@ -22,10 +22,11 @@ import {
   NoisePulse,
 } from "../types/game";
 import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG } from "./boons";
-import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVE_WINDOWS, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt } from "./constants";
+import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVE_WINDOWS, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS } from "./constants";
 import { loadMeta, saveMeta, recordRun, topRuns } from "./meta";
+import * as metaNS from "./meta";
 import { soundEngine } from "../audio/soundEngine";
-import { renderEnvironment, drawBlobShadow, registerZombieHit, zombieFlashIntensity, applyZombieTint, clearZombieTint, drawZombieHitFlash } from "./mapRenderer";
+import { renderEnvironment, drawBlobShadow, registerZombieHit, zombieFlashIntensity, applyZombieTint, clearZombieTint, drawZombieHitFlash, render7, renderTelegraphs } from "./mapRenderer";
 import { DynamicLighting } from "./lighting";
 import { radioFor } from "./radio";
 import { drawSprite, drawWildLabel, loadArt, ZOMBIE_LABELS } from "./art";
@@ -71,6 +72,7 @@ export class GameEngine {
 		isSneaking: false,
 		angle: 0,
 		flashlightRange: 420,
+		lightRadius: 420, // Batch 7: darkness gameplay — base sight-light radius.
 		flashlightAngle: 0,
 		molotovs: 3,
 		maxMolotovs: 5,
@@ -203,6 +205,7 @@ export class GameEngine {
 	sprintBlend = 1;
 	recoilKick = 0;
 	lastDt = 1 / 60;
+	lastPx: number | null = null; lastPy: number | null = null; r7camInit = false; // Batch 7: camera rig state
 	footstepArmed = true;
 	dodgeTimer = 0;
 	dodgeCd = 0;
@@ -287,6 +290,18 @@ export class GameEngine {
 	bpBlastMul = 1;
 	breakpointsHit = new Set();
 	lockedBoons = new Set();
+	// Batch 7 (Lane 1): telegraphs, darkness, chain/orbiter weapons, behemoth phases, run mods.
+	telegraphs: { kind: string; x: number; y: number; r: number; t0: number; dur: number }[] = [];
+	dark = false;
+	lastChain = { jumps: 0, hits: 0 };
+	orbiterBlades: { x: number; y: number; a: number }[] = [];
+	orbiterAngle = 0;
+	runDamageMul = 1;
+	runHpMul = 1;
+	runSpeedMul = 1;
+	runXpMul = 1;
+	// Batch 7 (Lane 1): Behemoth phase config — local; the BOSSES table in constants.ts is untouched.
+	behemothPhases = { chargeEvery: 7, chargeWindup: 0.8, chargeLaneR: 90, chargeDashSpeed: 520, summonAt: 0.6, enrageAt: 0.3, enrageSpeedMul: 1.35, enrageDmgMul: 1.25 };
 	// Batch 4: nova burst, homing missiles, vacuum drops, time-curve director.
 	novaCd = 0;
 	novaFlash = 0;
@@ -653,7 +668,7 @@ export class GameEngine {
 			dropCache: () => { this.dropCacheAt(this.player.x + 40, this.player.y); return this.caches.length; },
 			openNearCache: () => { this.checkCachePickup(); return !!this.cacheOpen; },
 			weapLevels: () => this.weapons.filter((w) => w.unlocked).map((w) => w.upgradeLevel),
-			cacheJackpot: () => { const n = this.maxOutWeapons(); return { n, levels: this.weapons.filter((w) => w.unlocked).map((w) => w.upgradeLevel) }; },
+			cacheJackpot: () => { const n = this.maxOutWeapons(); return { n, levels: this.weapons.filter((w) => w.unlocked).map((w) => w.upgradeLevel), max: WEAPON_MAX_TABLE_LEVEL }; },
 			toneTest: () => { soundEngine.tone({ f: 440, dur: .05, vol: .01 }); return true; },
 			openChest: () => this.openChest(),
 			sweepGrit: () => this.sweepGritToBag(),
@@ -664,6 +679,32 @@ export class GameEngine {
 			lightingOverlay: () => !!(this.lighting && this.lighting.darknessCanvas),
 			hashCells: () => this.zhash.size,
 			spawn150: (t = `shambler`) => { for (let i = 0; i < 150; i++) { const z = this.pushZombie(t, this.player.x + 400 + (i % 15) * 60, this.player.y + 400 + ((i / 15) | 0) * 60); z.ai = `wander`; } },
+			// Batch 7 (Lane 1) probes: chain lightning, orbiters, behemoth phases,
+			// haint clones, telegraphs, darkness, run-stat mods.
+			equipB7: (id) => { const w = this.weapons.find((x) => x.id === id); if (w) w.unlocked = true; const i = this.weapons.findIndex((x) => x.id === id); return i >= 0 ? this.selectWeapon(i) : false; },
+			b7Weapons: () => this.weapons.map((w) => w.id),
+			chainInfo: () => ({ ...this.lastChain }),
+			b7cfg: () => ({ chain: this.chainCfg(), orbiter: this.orbiterCfg() }),
+			pinAll: () => { for (const z of this.zombies) { z.health = z.maxHealth = 1e6; } return this.zombies.length; },
+			orbiterInfo: () => ({ count: this.orbiterBlades.length, radius: Math.round(this.orbiterCfg().orbiterRadius), blades: this.orbiterBlades.map((b) => ({ x: Math.round(b.x), y: Math.round(b.y) })) }),
+			orbiterTick: (n = 1) => { this.rebuildZombieHash(); for (let i = 0; i < n; i++) { this.simTime += 1 / 60; this.updateOrbiters(1 / 60); } return this.orbiterBlades.length; },
+			setOrbiterAngle: (a) => { this.orbiterAngle = a; return this.orbiterAngle; },
+			behemothPhase: () => { const z = this.zombies.find((z) => z.type === `behemoth`); return z ? (z.bossPhase || `fight`) : `none`; },
+			behemothInfo: () => { const z = this.zombies.find((z) => z.type === `behemoth`); return z ? { phase: z.bossPhase || `fight`, enraged: !!z.enraged, speed: +z.speed.toFixed(2), summoned: !!z.summoned } : null; },
+			bossCharge: () => { const z = this.zombies.find((z) => z.type === `behemoth`); if (z) { z.chargeCd = 0; z.chargeWindupT = 0; } return !!z; },
+			hurtZombie: (i, n) => { const z = this.zombies[i]; if (z) z.health -= n; return z ? Math.round(z.health) : -1; },
+			haintClones: () => this.zombies.filter((z) => z.isClone).length,
+			cloneInfo: () => { const z = this.zombies.find((z) => z.isClone); return z ? { type: z.type, hp: Math.round(z.health), dmg: z.damage } : null; },
+			haintTick: () => { const z = this.zombies.find((z) => z.type === `haint` && !z.isClone); if (z) z.cloneCd = 0; return !!z; },
+			telegraphs: () => this.telegraphs.length,
+			stepB7: (n = 1) => { this.rebuildZombieHash(); for (let i = 0; i < n; i++) { this.simTime += 1 / 60; this.updateTelegraphs(1 / 60); this.updateOrbiters(1 / 60); } return this.telegraphs.length; },
+			setDark: (v) => { this.dark = !!v; return this.dark; },
+			isDark: () => this.dark,
+			canSee: (i) => { const z = this.zombies[i]; return z ? this.zombieSees(z, Math.hypot(z.x - this.player.x, z.y - this.player.y)) : false; },
+			telegraphInfo: () => this.telegraphs.map((t) => ({ kind: t.kind, t0: +t.t0.toFixed(3), dur: t.dur })),
+			isLitAt: (x, y) => this.isLit(x, y),
+			runMods: () => ({ dmg: this.runDamageMul || 1, hp: this.runHpMul || 1, spd: this.runSpeedMul || 1, xp: this.runXpMul || 1 }),
+			reapplyRunMods: () => { this.applyRunStatMods(); return { mods: { dmg: this.runDamageMul, hp: this.runHpMul, spd: this.runSpeedMul, xp: this.runXpMul }, hp: Math.round(this.player.maxHealth), spd: +this.player.speed.toFixed(4) }; },
 		};
 		let e = window.__controlsTest;
 		e.teleport = (e, t) => {
@@ -984,7 +1025,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.codexSeen = new Set(), this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.bloodSplats = [], this.slashBursts = [], this.hitFlashes = [], this.muzzlePunch = 0, this.gunKick = 0, this.gunKickT = 0, this.camPunchX = 0, this.camPunchY = 0, this.camPunchT = 0, this.whiffSlowT = 0, this.lastWhiff = null, this.lastKillWord = null, this.killWordCount = 0, this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.codexSeen = new Set(), this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.bloodSplats = [], this.slashBursts = [], this.hitFlashes = [], this.muzzlePunch = 0, this.gunKick = 0, this.gunKickT = 0, this.camPunchX = 0, this.camPunchY = 0, this.camPunchT = 0, this.whiffSlowT = 0, this.lastWhiff = null, this.lastKillWord = null, this.killWordCount = 0, this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.r7camInit = false, this.lastPx = null, this.lastPy = null, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.resetB7State(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.ensureB7Weapons(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -1776,6 +1817,8 @@ export class GameEngine {
 		this.dashRegenT = 0;
 		this.spawnShrines();
 		this.rollShop(true);
+		// Batch 7: run-stat mods from the meta lane (guarded — defaults hold if absent).
+		this.applyRunStatMods();
 	}
 	bumpLifetime(stat, n = 1) {
 		this.meta.lifetime[stat] += n;
@@ -1792,7 +1835,8 @@ export class GameEngine {
 		}
 	}
 	playerDamageMul(z, weaponType = ``) {
-		let m = this.questDmgMul * this.shopDmgMul;
+		// Batch 7: run-stat mods multiply base damage (defaults to 1 when the meta lane is absent).
+		let m = this.questDmgMul * this.shopDmgMul * (this.runDamageMul || 1);
 		if (weaponType) m *= this.familyAffinity(weaponType);
 			if (z.type === `behemoth` || z.type === `miner_brute` || z.elite) {
 				let attuned = 0;
@@ -1991,6 +2035,9 @@ export class GameEngine {
 		}
 		if (this.isPaused) return;
 		let t = Math.min((e - this.lastTimestamp) / 1e3, .1);
+		// Batch 7: celebration stack — poll draft/shrine/bomb transitions, scale sim dt during the slow-mo window.
+		render7.celebration.poll({ draftOpen: !!this.draft, shrinesAttuned: this.shrines.reduce((n, s) => n + (s.attuned ? 1 : 0), 0), bombCharges: this.bombCharges }, this.player.x, this.player.y);
+		t *= render7.celebration.slowmoFactor(performance.now());
 		this.lastTimestamp = e, this.update(t), this.render(), this.animationFrameId = requestAnimationFrame(this.loop);
 	};
 	update(e) {
@@ -2007,7 +2054,7 @@ export class GameEngine {
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && (n.onFree?.(), n.onFree = null, this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
 		this._simFrames = (this._simFrames || 0) + 1,
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateCacheTimer(), this.updateFuse(e), this.updateBeastAudio(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateTelegraphs(e), this.updateOrbiters(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateCacheTimer(), this.updateFuse(e), this.updateBeastAudio(e);
 		// Batch 5: on-shoot micro-layer decays — muzzle punch 50ms, gun kick 40ms yoyo, camera punch 60ms.
 		this.muzzlePunch = Math.max(0, this.muzzlePunch - e);
 		if (this.gunKickT > 0) { this.gunKickT = Math.max(0, this.gunKickT - e); this.gunKick = 5 * Math.sin((1 - this.gunKickT / .04) * Math.PI); } else this.gunKick = 0;
@@ -2501,6 +2548,17 @@ export class GameEngine {
 				maxLife: .25,
 				type: "spark"
 			}));
+			if (e.currentMag === 0) this.reloadCurrentWeapon();
+			return;
+		}
+		// Batch 7 (Lane 1): special weapon behaviors.
+		if (e.id === `chainlightning`) {
+			this.fireChainLightning(e, dmgMul);
+			if (e.currentMag === 0) this.reloadCurrentWeapon();
+			return;
+		}
+		if (e.id === `orbiter`) {
+			this.fireOrbiterPulse(e, dmgMul);
 			if (e.currentMag === 0) this.reloadCurrentWeapon();
 			return;
 		}
@@ -3054,6 +3112,8 @@ export class GameEngine {
 		// engine still adds +wave*250 HP and keeps the legacy wave-5 spawn rule.
 		const beh = e === `behemoth` ? bossFor(`behemoth`)?.bossOverrides : null;
 		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `bomber` ? (r = 45, i = 2.7, a = 12, o = 15, s = `#b45309`, l = 120, u = 18) : e === `riot` ? (r = 520, i = 0.85, a = 30, o = 24, s = `#3f3f46`, c = true, l = 300, u = 60) : e === `riot_shield` ? (r = 420, i = 0.95, a = 26, o = 23, s = `#52525b`, c = false, l = 350, u = 70) : e === `behemoth` && beh && (r = beh.health + this.wave * 250, i = beh.speed, a = beh.damage, o = beh.radius, s = beh.color, l = beh.scoreValue, u = beh.scrapValue);
+		// Batch 7: Haint illusionist — pale drifter that multiplies itself.
+		if (e === `haint`) { r = 90; i = 2.6; a = 12; o = 16; s = `#7c8db0`; l = 120; u = 22; }
 		const em = this.eventMods();
 		// Batch 6: smooth time-based HP scaling replaces the old per-wave HP step.
 		// scalingAt(simTime) in constants.ts: hp = 1+gt/120. The speed/damage
@@ -3165,6 +3225,8 @@ export class GameEngine {
 					}
 				} else if (r.dashCd <= 0 && Math.hypot(this.player.x - r.x, this.player.y - r.y) < 280) {
 					r.dashTele = .35; r.dashCd = 3.5;
+					// Batch 7: telegraphed lunge — the renderer drains state.telegraphs.
+					this.pushTelegraph(`leap`, r.x, r.y, 120, .9);
 				}
 			}
 			if (r.affix === `leaping`) {
@@ -3179,6 +3241,8 @@ export class GameEngine {
 					}
 				} else if (r.leapCd <= 0 && Math.hypot(this.player.x - r.x, this.player.y - r.y) < 320) {
 					r.leapTele = .45; r.leapCd = 4;
+					// Batch 7: telegraphed leap.
+					this.pushTelegraph(`leap`, r.x, r.y, 140, .9);
 					this.spawnFloater(r.x, r.y - r.radius - 20, `!`, `#ffffff`);
 				}
 			}
@@ -3198,6 +3262,9 @@ export class GameEngine {
 				continue;
 			}
 			let i = this.player.x - r.x, a = this.player.y - r.y, o = Math.hypot(i, a);
+			// Batch 7 (Lane 1): boss phases + haint illusionist tick.
+			r.type === `behemoth` && this.tickBehemoth(r, o, e);
+			r.type === `haint` && this.tickHaint(r, e);
 			// Batch 6 (Lane A): bomber fuse runs before state logic — a lit bomber can't re-chase.
 			if (r.type === `bomber` && !this.tickFuse(r, o, e, n)) continue;
 			// Batch 6 (Lane A): structure-chewing utility decision (throttled inside).
@@ -3236,7 +3303,7 @@ export class GameEngine {
 			}
 			r.ai === `wander` && Math.random() < e * .1 && this.spawnFloater(r.x, r.y - 18, `...`, `#5b6470`);
 			let u = r.speed;
-			r.type === `behemoth` && r.health < r.maxHealth * .4 && (u *= 1.4), r.ai === `wander` && (u *= .35), r.ai === `investigate` && (u *= .7), r.type === `bloater_spitter` && (r.ai === `chase` || r.ai === `attack`) && o <= 420 && o >= 260 && (u *= .5);
+			r.type === `behemoth` && r.health < r.maxHealth * .4 && (u *= 1.4), r.type === `behemoth` && r.enraged && (u *= this.behemothPhases.enrageSpeedMul), r.bossPhase === `charge` && (r.chargeWindupT > 0) && (u = 0), r.ai === `wander` && (u *= .35), r.ai === `investigate` && (u *= .7), r.type === `bloater_spitter` && (r.ai === `chase` || r.ai === `attack`) && o <= 420 && o >= 260 && (u *= .5);
 			if ((r.ai === `chase` || r.ai === `attack`) && o < r.radius + this.player.radius + 26) u *= .42;
 			if (r.stunUntil && this.simTime < r.stunUntil) u = 0;
 			else if (this.worldSlow > 0) u *= .4;
@@ -3366,7 +3433,7 @@ export class GameEngine {
 				r.x = sepX;
 				r.y = sepY;
 			}
-			o <= r.radius + this.player.radius && t - r.lastAttackTime >= r.attackCooldown && (r.lastAttackTime = t, this.invuln <= 0 && (this.lastKiller = r.type, this.damagePlayer(r.damage, r)));
+			o <= r.radius + this.player.radius && t - r.lastAttackTime >= r.attackCooldown && (r.lastAttackTime = t, this.invuln <= 0 && (this.lastKiller = r.type, r.damage > 0 && this.damagePlayer(this.zombieMeleeDmg(r), r)));
 		}
 	}
 	boneBurst(z) {
@@ -3885,6 +3952,346 @@ export class GameEngine {
 		this.spawnFloater?.(x, y - 20, `TEST IMPACT`, `#ffd700`);
 		soundEngine.playKillPitched(10);
 	}
+	// Batch 7 (Lane 1): weapon defs live here because the constants.ts entries are
+	// owned by another lane — entry fields win, local defaults fill the gaps.
+	chainCfgDefaults() {
+		return { damage: 55, fireIntervalMs: 900, chainJumps: 4, chainFalloff: 0.7, chainRadius: 260, acquireRadius: 260 };
+	}
+	// Batch 7 (Lane 1): chain config. Base numbers come from the data lane's
+	// SPECIAL_WEAPON_DEFS when present (Patoka Arc: 45dmg / 1500ms / 4 jumps /
+	// 0.75 falloff / 260u jump radius); the WEAPON_LEVELS row (via
+	// upgradeWeaponOnce) drives damage, fire rate, and first-target acquisition
+	// range. NOTE: the level row's cnt stays 1 for chainlightning — jumps come
+	// from the def ("Four jumps deep"), not the row.
+	chainCfg() {
+		const d = this.chainCfgDefaults();
+		const def = SPECIAL_WEAPON_DEFS?.[`chainlightning`];
+		const w = this.weapons.find((x) => x.id === `chainlightning`);
+		const lv = statsForLevel(`chainlightning`, w?.upgradeLevel ?? 1);
+		const intervalMs = Math.round((lv?.cd ?? ((def?.fireIntervalMs ?? d.fireIntervalMs) / 1000)) * 1000);
+		return {
+			damage: w?.damage ?? lv?.dmg ?? def?.damage ?? d.damage,
+			fireIntervalMs: intervalMs,
+			chainJumps: (w as any)?.chainJumps ?? def?.chainJumps ?? d.chainJumps,
+			chainFalloff: (w as any)?.chainFalloff ?? def?.chainFalloff ?? d.chainFalloff,
+			chainRadius: Math.max(0.001, (w as any)?.chainRadius ?? def?.chainRadius ?? d.chainRadius),
+			acquireRadius: Math.max(0.001, w?.range ?? lv?.rad ?? def?.chainRadius ?? d.acquireRadius),
+		};
+	}
+	orbiterCfgDefaults() {
+		return { orbiterCount: 3, orbiterRadius: 95, orbiterDps: 42, orbiterSpeed: 2.8, fireIntervalMs: 0 };
+	}
+	// Batch 7 (Lane 1): orbiter config. The data lane's WEAPON_LEVELS row maps
+	// onto the generic weapon fields (dmg->dps, cnt->blade count, rad->radius,
+	// spd->speed, cd->contact interval) via upgradeWeaponOnce, so the row is
+	// the live source; SPECIAL_WEAPON_DEFS is the fallback.
+	orbiterCfg() {
+		const d = this.orbiterCfgDefaults();
+		const def = SPECIAL_WEAPON_DEFS?.[`orbiter`];
+		const w = this.weapons.find((x) => x.id === `orbiter`);
+		const lv = statsForLevel(`orbiter`, w?.upgradeLevel ?? 1);
+		return {
+			orbiterCount: Math.max(1, Math.round(w?.pellets ?? lv?.cnt ?? def?.orbiterCount ?? d.orbiterCount)),
+			orbiterRadius: Math.max(0.001, w?.range ?? lv?.rad ?? def?.orbiterRadius ?? d.orbiterRadius),
+			orbiterDps: Math.max(0, w?.damage ?? lv?.dmg ?? def?.orbiterDps ?? d.orbiterDps),
+			orbiterSpeed: w?.bulletSpeed ?? lv?.spd ?? def?.orbiterSpeed ?? d.orbiterSpeed,
+			fireIntervalMs: Math.round(((lv?.cd ?? ((def?.fireIntervalMs ?? d.fireIntervalMs) / 1000))) * 1000),
+		};
+	}
+	// Batch 7 (Lane 1): "Patoka Arc" chain lightning — nearest zombie in range,
+	// then arcs to the nearest unhit zombie within chainRadius, damage x falloff per jump.
+	fireChainLightning(w, dmgMul) {
+		const cfg = this.chainCfg();
+		this.rebuildZombieHash();
+		const R = Math.max(0.001, cfg.acquireRadius);
+		const q = this.queryZombies(this.player.x, this.player.y, R + (this.zhashMaxR || 0), []);
+		let first = null, bd = R + 1;
+		for (const k of q) {
+			const z = this.zombies[k];
+			if (!z || z.health <= 0) continue;
+			const d = Math.hypot(z.x - this.player.x, z.y - this.player.y);
+			if (d < bd) { bd = d; first = z; }
+		}
+		this.lastChain = { jumps: 0, hits: 0 };
+		if (!first) return;
+		const hit = new Set();
+		let dmg = cfg.damage * dmgMul;
+		let fx = this.player.x, fy = this.player.y;
+		let cur = first, jumps = 0;
+		for (;;) {
+			hit.add(cur);
+			const dealt = this.applyAffixDefense(cur, dmg);
+			cur.health -= dealt;
+			cur.hitFlash = Math.max(cur.hitFlash, .18);
+			this.stats.damageDealt += dealt;
+			this.createBloodParticles(cur.x, cur.y, Math.atan2(cur.y - fy, cur.x - fx));
+			this.arcSegment(fx, fy, cur.x, cur.y);
+			if (cur.health <= 0) this.killZombie(cur, this.zombies.indexOf(cur));
+			if (jumps >= cfg.chainJumps) break;
+			const RJ = Math.max(0.001, cfg.chainRadius);
+			const q2 = this.queryZombies(cur.x, cur.y, RJ + (this.zhashMaxR || 0), []);
+			let nxt = null, nd = RJ + 1;
+			for (const k of q2) {
+				const z = this.zombies[k];
+				if (!z || z.health <= 0 || hit.has(z)) continue;
+				const d = Math.hypot(z.x - cur.x, z.y - cur.y);
+				if (d < nd) { nd = d; nxt = z; }
+			}
+			if (!nxt) break;
+			jumps++;
+			dmg *= cfg.chainFalloff;
+			fx = cur.x; fy = cur.y;
+			cur = nxt;
+		}
+		this.lastChain = { jumps, hits: hit.size };
+		soundEngine.tone({ f: 1800, f2: 200, type: `sawtooth`, dur: .18, vol: .12 });
+	}
+	// Batch 7: jagged polyline through the existing lightning + particle systems.
+	arcSegment(x1, y1, x2, y2) {
+		const segs = 3;
+		let px = x1, py = y1;
+		for (let s = 1; s <= segs; s++) {
+			const t = s / segs;
+			const nx = x1 + (x2 - x1) * t + (s < segs ? (Math.random() - .5) * 26 : 0);
+			const ny = y1 + (y2 - y1) * t + (s < segs ? (Math.random() - .5) * 26 : 0);
+			this.lightning.push({ x1: px, y1: py, x2: nx, y2: ny, life: 0.18 });
+			px = nx; py = ny;
+		}
+		for (let i = 0; i < 4; i++) this.particles.push(Object.assign(this.allocParticle(), {
+			x: x2, y: y2,
+			vx: (Math.random() - .5) * 4, vy: (Math.random() - .5) * 4,
+			size: 2.5, color: `#93c5fd`, alpha: 1, life: .25, maxLife: .3, type: `spark`
+		}));
+	}
+	// Batch 7: "Still-Yard Blades" firing pulse — the blades themselves do the work passively.
+	fireOrbiterPulse(w, dmgMul) {
+		const cfg = this.orbiterCfg();
+		this.rebuildZombieHash();
+		const R = Math.max(0.001, cfg.orbiterRadius * 1.15);
+		const q = this.queryZombies(this.player.x, this.player.y, R + (this.zhashMaxR || 0), []);
+		const dmg = (cfg.orbiterDps * 0.5 + (w.damage || 0)) * dmgMul;
+		for (const k of q) {
+			const z = this.zombies[k];
+			if (!z || z.health <= 0) continue;
+			if (Math.hypot(z.x - this.player.x, z.y - this.player.y) > R + z.radius) continue;
+			const dealt = this.applyAffixDefense(z, dmg);
+			z.health -= dealt;
+			z.hitFlash = Math.max(z.hitFlash, .15);
+			this.stats.damageDealt += dealt;
+			this.createBloodParticles(z.x, z.y, Math.atan2(z.y - this.player.y, z.x - this.player.x));
+			if (z.health <= 0) this.killZombie(z, this.zombies.indexOf(z));
+		}
+		this.shockwaves.push({ x: this.player.x, y: this.player.y, r: 10, maxR: R, life: .25, maxLife: .25, color: `#7dd3fc` });
+	}
+	// Batch 7: orbiter blades persist while the weapon is equipped; per-zombie per-blade
+	// cooldowns keep contact DPS honest.
+	updateOrbiters(dt) {
+		const w = this.weapons[this.currentWeaponIndex];
+		if (!w || w.id !== `orbiter`) {
+			if (this.orbiterBlades.length) this.orbiterBlades = [];
+			return;
+		}
+		const cfg = this.orbiterCfg();
+		this.orbiterAngle = (this.orbiterAngle || 0) + dt * cfg.orbiterSpeed;
+		const R = Math.max(0.001, cfg.orbiterRadius);
+		const blades = [];
+		for (let i = 0; i < cfg.orbiterCount; i++) {
+			const a = this.orbiterAngle + (Math.PI * 2 * i) / Math.max(1, cfg.orbiterCount);
+			blades.push({ x: this.player.x + Math.cos(a) * R, y: this.player.y + Math.sin(a) * R, a });
+		}
+		this.orbiterBlades = blades;
+		const cdS = cfg.fireIntervalMs > 0 ? cfg.fireIntervalMs / 1000 : 0.35;
+		const tickDmg = cfg.orbiterDps * cdS;
+		for (let bi = 0; bi < blades.length; bi++) {
+			const b = blades[bi];
+			const q = this.queryZombies(b.x, b.y, 44 + (this.zhashMaxR || 0), []);
+			for (const k of q) {
+				const z = this.zombies[k];
+				if (!z || z.health <= 0) continue;
+				if (Math.hypot(z.x - b.x, z.y - b.y) > z.radius + 14) continue;
+				z.orbiterCd = z.orbiterCd || {};
+				if ((z.orbiterCd[bi] ?? -99) > this.simTime) continue;
+				z.orbiterCd[bi] = this.simTime + cdS;
+				const dealt = this.applyAffixDefense(z, tickDmg * this.playerDamageMul(z));
+				z.health -= dealt;
+				z.hitFlash = Math.max(z.hitFlash, .08);
+				this.stats.damageDealt += dealt;
+			}
+		}
+	}
+	// Batch 7: telegraph emission — the renderer (another lane) drains state.telegraphs.
+	pushTelegraph(kind, x, y, r, dur) {
+		this.telegraphs.push({ kind, x: Math.round(x), y: Math.round(y), r: Math.max(0.001, r), t0: this.simTime, dur: Math.max(0.05, dur) });
+		if (this.telegraphs.length > 24) this.telegraphs.shift();
+	}
+	updateTelegraphs(e) {
+		const now = this.simTime;
+		for (let i = this.telegraphs.length - 1; i >= 0; i--) {
+			if (now - this.telegraphs[i].t0 >= this.telegraphs[i].dur) this.telegraphs.splice(i, 1);
+		}
+	}
+	// Batch 7: darkness as gameplay — lit if inside the player's light radius or a light source.
+	isLit(x, y) {
+		const lr = Math.max(0.001, this.player.lightRadius || 420);
+		if (Math.hypot(x - this.player.x, y - this.player.y) <= lr) return true;
+		for (const f of this.flares) if (Math.hypot(x - f.x, y - f.y) <= 260) return true;
+		const lan = this.currentLocation.lantern;
+		if (this.lanternLit && lan && Math.hypot(x - lan.x, y - lan.y) <= 420) return true;
+		return false;
+	}
+	// Batch 7: melee damage with enrage bonus; clones (damage 0) never touch the player.
+	zombieMeleeDmg(r) {
+		const m = r.type === `behemoth` && r.enraged ? this.behemothPhases.enrageDmgMul : 1;
+		return Math.round(r.damage * m);
+	}
+	// Batch 7: phased Behemoth — charge (telegraphed dash) / summon (crawlers, once) /
+	// enrage (<30% HP: +35% speed, +25% damage, red tint). Phases are HP/threshold driven.
+	tickBehemoth(r, o, dt) {
+		const cfg = this.behemothPhases;
+		if (r.bossPhase === undefined) { r.bossPhase = `fight`; r.chargeCd = 3; }
+		const frac = r.maxHealth > 0 ? r.health / r.maxHealth : 1;
+		if (r.enraged || frac < cfg.enrageAt) {
+			if (!r.enraged) {
+				r.enraged = true;
+				this.spawnFloater(r.x, r.y - r.radius - 24, `ENRAGED`, `#ef4444`);
+				soundEngine.tone({ f: 140, f2: 60, type: `sawtooth`, dur: .6, vol: .3 });
+			}
+			r.bossPhase = `enrage`;
+			return;
+		}
+		if (!r.summoned && frac < cfg.summonAt) {
+			r.summoned = true;
+			r.bossPhase = `summon`;
+			for (let k = 0; k < 4; k++) {
+				const a = (k / 4) * Math.PI * 2 + Math.random() * .6;
+				const c = this.pushZombie(`crawler`, r.x + Math.cos(a) * (r.radius + 40), r.y + Math.sin(a) * (r.radius + 40));
+				c.ai = `chase`;
+			}
+			this.spawnFloater(r.x, r.y - r.radius - 24, `THE GROUND STIRS`, `#a78bfa`);
+			soundEngine.tone({ f: 90, f2: 220, type: `sawtooth`, dur: .5, vol: .25 });
+			r.bossPhase = `fight`;
+			return;
+		}
+		r.chargeCd -= dt;
+		if ((r.chargeWindupT || 0) > 0) {
+			r.chargeWindupT -= dt;
+			r.bossPhase = `charge`;
+			r.hitFlash = Math.max(r.hitFlash, .05);
+			if (r.chargeWindupT <= 0) {
+				const a = Math.atan2(this.player.y - r.y, this.player.x - r.x);
+				r.chargeVx = Math.cos(a) * cfg.chargeDashSpeed;
+				r.chargeVy = Math.sin(a) * cfg.chargeDashSpeed;
+				r.chargeDashT = 0.55;
+				r.bossPhase = `fight`;
+				r.chargeCd = cfg.chargeEvery * (0.8 + Math.random() * 0.4);
+				this.screenShake = Math.max(this.screenShake, 8 * this.tune(`shake`));
+				soundEngine.tone({ f: 200, f2: 900, type: `sawtooth`, dur: .3, vol: .2 });
+			}
+			return;
+		}
+		if ((r.chargeDashT || 0) > 0) {
+			r.chargeDashT -= dt;
+			const nx = r.x + r.chargeVx * dt, ny = r.y + r.chargeVy * dt;
+			if (!this.checkObstacleCollision(nx, ny, r.radius * .7)) { r.x = nx; r.y = ny; }
+			r.bossPhase = `fight`;
+			return;
+		}
+		if (r.chargeCd <= 0 && o > 120 && o < 800) {
+			r.chargeWindupT = cfg.chargeWindup;
+			r.bossPhase = `charge`;
+			this.pushTelegraph(`charge`, r.x, r.y, cfg.chargeLaneR, cfg.chargeWindup);
+			this.spawnFloater(r.x, r.y - r.radius - 24, `!`, `#fbbf24`);
+			return;
+		}
+		r.bossPhase = `fight`;
+	}
+	// Batch 7: Haint illusionist — every cloneCooldown seconds, if the player is near,
+	// up to cloneCount identical 1-HP clones that deal no damage (they eat auto-fire).
+	tickHaint(r, dt) {
+		if (r.isClone) return;
+		r.cloneCd = (r.cloneCd ?? 1.5) - dt;
+		if (r.cloneCd > 0) return;
+		const o = Math.hypot(this.player.x - r.x, this.player.y - r.y);
+		if (o > 700) { r.cloneCd = 1; return; }
+		const want = 3;
+		let have = 0;
+		for (const z of this.zombies) if (z.isClone && z.cloneOf === r.id) have++;
+		const n = Math.max(0, Math.min(want, want - have));
+		for (let k = 0; k < n; k++) {
+			const a = Math.random() * Math.PI * 2;
+			const c = this.pushZombie(`haint`, r.x + Math.cos(a) * 44, r.y + Math.sin(a) * 44);
+			c.isClone = true;
+			c.cloneOf = r.id;
+			c.maxHealth = 1;
+			c.health = 1;
+			c.damage = 0;
+			c.ai = `chase`;
+		}
+		if (n > 0) this.spawnFloater(r.x, r.y - 40, `HAINT MULTIPLIES`, `#a78bfa`);
+		r.cloneCd = 6;
+	}
+	// Batch 7: per-run state reset (run-stat muls are set by applyRunStatMods in initRunMeta).
+	resetB7State() {
+		this.telegraphs = [];
+		this.dark = this.currentLocation.weather === `night_clear`;
+		this.lastChain = { jumps: 0, hits: 0 };
+		this.orbiterBlades = [];
+		this.orbiterAngle = 0;
+		// NOTE: run-stat multipliers are NOT reset here — applyRunStatMods()
+		// divides out the previous run's multipliers before applying the new
+		// ones, keeping repeated starts idempotent.
+	}
+	// Batch 7: run-stat mods from the meta lane; guarded so the run works without it.
+	applyRunStatMods() {
+		let mods = { damageMul: 1, hpMul: 1, speedMul: 1, xpMul: 1 };
+		try {
+			const f = (metaNS as any).getRunStatMods;
+			if (typeof f === `function`) {
+				const m = f();
+				if (m && typeof m === `object`) mods = Object.assign(mods, m);
+			}
+		} catch (err) { /* defaults hold */ }
+		// Idempotent across repeated starts: first divide out the previous
+		// run's multipliers (the player object persists between runs), then
+		// apply the current ones.
+		if ((this.runHpMul || 1) !== 1) this.player.maxHealth = Math.max(1, Math.round(this.player.maxHealth / (this.runHpMul || 1)));
+		if ((this.runSpeedMul || 1) !== 1) this.player.speed = this.player.speed / (this.runSpeedMul || 1);
+		this.runDamageMul = mods.damageMul || 1;
+		this.runHpMul = mods.hpMul || 1;
+		this.runSpeedMul = mods.speedMul || 1;
+		this.runXpMul = mods.xpMul || 1;
+		this.player.maxHealth = Math.round(this.player.maxHealth * this.runHpMul);
+		this.player.health = this.player.maxHealth;
+		this.player.speed *= this.runSpeedMul;
+	}
+	// Batch 7: engine-owned weapon entries (constants.ts entries are another lane's).
+	ensureB7Weapons() {
+		const mk = (id, name, category, description, extra) => Object.assign({
+			id, name, category, description,
+			damage: 55, fireRate: 1.2, pellets: 1, spread: 0.02, range: 300,
+			bulletSpeed: 14, magazineSize: 30, currentMag: 30,
+			reserveAmmo: 90, maxReserveAmmo: 120, reloadTime: 1400, pierce: 1,
+			soundType: `carbine`, unlocked: false, cost: 0, upgradeLevel: 1,
+		}, extra);
+		if (!this.weapons.some((w) => w.id === `chainlightning`)) {
+			const c = this.chainCfg(); // def-aware; no weapon row exists yet at this point
+			const def = SPECIAL_WEAPON_DEFS?.[`chainlightning`];
+			this.weapons.push(mk(`chainlightning`, def?.name ?? `Patoka Arc`, `Wonder`, def?.description ?? `Lightning rod wired to a Patoka still. The arc hunts on its own.`, {
+				damage: c.damage, fireRate: +(1000 / Math.max(1, c.fireIntervalMs)).toFixed(2), range: c.acquireRadius,
+				magazineSize: 24, currentMag: 24, reserveAmmo: 72, maxReserveAmmo: 96,
+				chainJumps: c.chainJumps, chainFalloff: c.chainFalloff, chainRadius: c.chainRadius,
+			}));
+		}
+		if (!this.weapons.some((w) => w.id === `orbiter`)) {
+			const c = this.orbiterCfg();
+			const def = SPECIAL_WEAPON_DEFS?.[`orbiter`];
+			this.weapons.push(mk(`orbiter`, def?.name ?? `Still-Yard Blades`, `Wonder`, def?.description ?? `Saw blades from the Winslow still-yard. They circle while carried.`, {
+				damage: c.orbiterDps, fireRate: 1, range: c.orbiterRadius,
+				bulletSpeed: c.orbiterSpeed, pellets: c.orbiterCount,
+				magazineSize: 40, currentMag: 40, reserveAmmo: 120, maxReserveAmmo: 160,
+			}));
+		}
+	}
 	bossEntrance(z) {
 		// Batch 5: banner copy comes from the BOSSES table; trauma/radio/motif stay engine-side.
 		const bdef = bossFor(`behemoth`)?.bossOverrides;
@@ -4261,6 +4668,8 @@ export class GameEngine {
 	zombieSees(z, dist) {
 		const touch = z.radius + this.player.radius + 34;
 		if (dist <= touch) return true;
+		// Batch 7: in the dark, nothing acquires the player past the light radius.
+		if (this.dark && dist > Math.max(0.001, this.player.lightRadius || 420)) return false;
 		const sight = z.type === `sprinter` ? 300 : z.type === `behemoth` ? 380 : z.type === `crawler` ? 150 : z.type === `bloater_spitter` ? 260 : 230;
 		const range = this.player.isSneaking ? sight * 0.62 : this.player.isSprinting ? sight * 2 : sight;
 		if (dist > range) return false;
@@ -4507,6 +4916,8 @@ export class GameEngine {
 			damage: 22,
 			remainingDistance: 450
 		});
+		// Batch 7: spit telegraph — the renderer drains state.telegraphs.
+		this.pushTelegraph(`ranged`, r.x, r.y, 90, .6);
 		soundEngine.playZombieHit(false);
 	}
 	// Batch 6 (Lane A): bomber formal spec — fuseRange starts the fuse, fuseTime burns
@@ -4831,7 +5242,8 @@ export class GameEngine {
 		this.offerDraft();
 	}
 	addXp(n) {
-		this.xp += n * this.eventMods().xpMult;
+		// Batch 7: run-stat XP multiplier (defaults to 1 when the meta lane is absent).
+		this.xp += n * this.eventMods().xpMult * (this.runXpMul || 1);
 		let gained = 0;
 		while (this.xp >= this.xpToNext()) {
 			this.xp -= this.xpToNext();
@@ -5057,19 +5469,21 @@ export class GameEngine {
 	}
 	render() {
 		let e = this.ctx, t = this.canvas.width, n = this.canvas.height;
-		const zoom = this.viewZoom() * (1 + this.zoomPunch); // VS-3: kill zoom punch
+		const zoom = render7.zoom.update(this.zombies, this.player.x, this.player.y, this.lastDt || 1 / 60, this.viewZoom(), this.motionScale()) * (1 + this.zoomPunch); // Batch 7: dynamic zoom by horde density; VS-3: kill zoom punch
 		const viewW = t / zoom, viewH = n / zoom;
 		const mapW = this.currentLocation.mapWidth, mapH = this.currentLocation.mapHeight;
-		let targetX = this.player.x, targetY = this.player.y;
-		if (viewW >= mapW) targetX = mapW / 2;
-		else targetX = Math.max(viewW / 2, Math.min(mapW - viewW / 2, this.player.x));
-		if (viewH >= mapH) targetY = mapH / 2;
-		else targetY = Math.max(viewH / 2, Math.min(mapH - viewH / 2, this.player.y));
-		const follow = 1 - Math.exp(-10 * (this.lastDt || 1 / 60));
-		this.camX += (targetX - this.camX) * follow;
-		this.camY += (targetY - this.camY) * follow;
-		if (Math.abs(this.camX - targetX) < .35) this.camX = targetX;
-		if (Math.abs(this.camY - targetY) < .35) this.camY = targetY;
+		// Batch 7: camera rig — 24px deadzone, velocity/aim lookahead, 0.10 lerp; map-bounds clamp preserved.
+		const rdt = Math.max(1 / 240, this.lastDt || 1 / 60);
+		let pvx = (this.player.x - (this.lastPx ?? this.player.x)) / rdt, pvy = (this.player.y - (this.lastPy ?? this.player.y)) / rdt;
+		const pspd = Math.hypot(pvx, pvy);
+		if (pspd > 1200) { pvx *= 1200 / pspd; pvy *= 1200 / pspd; }
+		this.lastPx = this.player.x; this.lastPy = this.player.y;
+		if (!this.r7camInit) { render7.camera.snap(this.camX, this.camY); this.r7camInit = true; }
+		render7.camera.update(this.player.x, this.player.y, pvx, pvy, Math.cos(this.player.angle), Math.sin(this.player.angle));
+		if (viewW >= mapW) this.camX = mapW / 2;
+		else this.camX = Math.max(viewW / 2, Math.min(mapW - viewW / 2, render7.camera.x));
+		if (viewH >= mapH) this.camY = mapH / 2;
+		else this.camY = Math.max(viewH / 2, Math.min(mapH - viewH / 2, render7.camera.y));
 		e.save(), e.clearRect(0, 0, t, n);
 		e.fillStyle = `#070806`;
 		e.fillRect(0, 0, t, n);
@@ -5100,6 +5514,12 @@ export class GameEngine {
 		}
 		this.renderHoles(e), this.renderLantern(e), this.renderBell(e), this.renderParticles(e);
 		this.renderShockwaves(e); // VS-3: kill shockwaves
+		// Batch 7: enemy telegraphs (engine stores sim-seconds; renderer takes ms) + celebration particles.
+		if (this.telegraphs.length) {
+			const nowMs = this.simTime * 1000;
+			renderTelegraphs(e, this.telegraphs.map((tg) => ({ kind: tg.kind, x: tg.x, y: tg.y, r: tg.r, t0: tg.t0 * 1000, dur: tg.dur * 1000 })), nowMs, this.player);
+		}
+		render7.celebration.renderWorld(e, performance.now());
 		this.renderSlashBursts(e); // Batch 5: oriented slash streaks
 		this.paintFloaters(e, zoom);
 		e.restore();
@@ -5154,6 +5574,9 @@ export class GameEngine {
 		// Batch 6 (Lane B): per-map + per-event ambient; event overrides map.
 		this.lighting.setAmbient(this.currentLocation.id, bloodMoon ? `blood_moon` : this.activeEvents.some((a) => a.id === `golden_swarm`) ? `golden_swarm` : undefined);
 		this.lighting.renderLighting(e, t, n, f, this.muzzleFlashTimer, this.currentLocation.ambientLight, p, m, bloodMoon);
+		// Batch 7: darkness radial overlay tied to player light radius; celebration gold flash + banner pop.
+		this.lighting.renderDarkness(e, t, n, pxy.x, pxy.y, this.player.lightRadius ?? 220, !!this.dark, performance.now());
+		render7.celebration.renderScreen(e, t, n, performance.now());
 		if (this.bloodRush > 0 || this.invuln > 1.2 && this.lastStandUsed) {
 			e.save();
 			e.fillStyle = this.bloodRush > 0 ? "rgba(140, 18, 24, 0.12)" : "rgba(194, 59, 34, 0.14)";
@@ -5283,6 +5706,19 @@ export class GameEngine {
 				e.rotate(p.a);
 				e.fillStyle = "#f6c453";
 				e.fillRect(-7, -2, 14, 4);
+				e.restore();
+			}
+		}
+		// Batch 7 (Lane 1): Still-Yard Blades render while the weapon is equipped.
+		if (this.orbiterBlades && this.orbiterBlades.length) {
+			for (const b of this.orbiterBlades) {
+				e.save();
+				e.translate(b.x, b.y);
+				e.rotate(b.a);
+				e.fillStyle = "#7dd3fc";
+				e.fillRect(-9, -3, 18, 6);
+				e.fillStyle = "#e0f2fe";
+				e.fillRect(-9, -1, 18, 2);
 				e.restore();
 			}
 		}
@@ -5513,12 +5949,19 @@ export class GameEngine {
 			// Batch 6 (Lane B): per-instance hue jitter + damage-flash bloom.
 			if (t.hseed === undefined) { let hs = 0; for (const c of t.id) hs = (hs * 31 + c.charCodeAt(0)) | 0; t.hseed = hs; }
 			applyZombieTint(e, t.hseed);
-			drawSprite(e, t.type === "riot_shield" ? "riot" : t.type, tall, t.hitFlash, false);
+			drawSprite(e, t.type === "riot_shield" ? "riot" : t.type === "haint" ? "shambler" : t.type, tall, t.hitFlash, false);
 			clearZombieTint(e);
 			if (t.isBurning && t.isBurning > 0) {
 				e.fillStyle = "rgba(249, 115, 22, 0.35)";
 				e.beginPath();
-				e.arc(0, 0, t.radius * 1.25, 0, Math.PI * 2);
+				e.arc(0, 0, Math.max(1, t.radius * 1.25), 0, Math.PI * 2);
+				e.fill();
+			}
+			// Batch 7 (Lane 1): enraged Behemoth reads red.
+			if (t.enraged) {
+				e.fillStyle = "rgba(239, 68, 68, 0.35)";
+				e.beginPath();
+				e.arc(0, 0, Math.max(1, t.radius * 1.3), 0, Math.PI * 2);
 				e.fill();
 			}
 			e.restore();

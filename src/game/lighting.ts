@@ -228,8 +228,41 @@ export class DynamicLighting {
     this.renderFog(targetCtx, width, height);
   }
 
-  private renderFog(ctx: CanvasRenderingContext2D, width: number, height: number) {
-    for (const p of this.fogParticles) {
+  /**
+   * Batch 7: darkness-mode overlay. When dark, everything outside
+   * player.lightRadius is swallowed by a radial gradient; wider lightRadius
+   * widens the safe circle. The edge flickers subtly. px,py are screen-space.
+   * Engine-wire: call after renderLighting with (this.player.lightRadius, this.dark).
+   * No-op (returns false) when dark is falsy.
+   */
+  public renderDarkness(
+    targetCtx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    px: number,
+    py: number,
+    lightRadius: number,
+    dark: boolean,
+    nowMs = Date.now(),
+  ): boolean {
+    if (!dark) return false;
+    const flicker = 1 + Math.sin(nowMs * 0.011) * 0.02 + Math.sin(nowMs * 0.0043) * 0.012;
+    const r = Math.max(0.001, (lightRadius > 0 ? lightRadius : 220) * flicker);
+    const g = targetCtx.createRadialGradient(
+      px, py, Math.max(0.001, r * 0.5),
+      px, py, Math.max(0.001, r * 1.25),
+    );
+    g.addColorStop(0, 'rgba(4, 6, 4, 0)');
+    g.addColorStop(0.55, 'rgba(4, 6, 4, 0.45)');
+    g.addColorStop(1, 'rgba(3, 5, 3, 0.94)');
+    targetCtx.save();
+    targetCtx.fillStyle = g;
+    targetCtx.fillRect(0, 0, width, height);
+    targetCtx.restore();
+    return true;
+  }
+
+  private renderFog(ctx: CanvasRenderingContext2D, width: number, height: number) {    for (const p of this.fogParticles) {
       p.x += p.vx;
       p.y += p.vy;
       if (p.x > width + p.radius) p.x = -p.radius;

@@ -8,11 +8,21 @@
 // chain kind must never sound like the crossbow's thrust kind.
 export type ShotKind = 'blunt' | 'axe' | 'thrust' | 'heavy-blade' | 'firearm' | 'chain';
 
+// Batch 7: 4-bus SFX routing — effort (player exertion/dash/bash),
+// weapon (gunshots, reloads), impact (hits, kills, explosions),
+// beast (growls, howls, boss).
+export type SfxBusName = 'effort' | 'weapon' | 'impact' | 'beast';
+
 class SoundEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private sfxGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
+  // Batch 7: 4-bus SFX routing. Every SFX routes through exactly one bus
+  // (unity gain, so no level change); the buses feed sfxGain -> masterGain ->
+  // compressor -> destination. musicGain stays separate from the 4 buses.
+  private buses: Record<SfxBusName, GainNode> | null = null;
+  private compressor: DynamicsCompressorNode | null = null;
   private isMuted: boolean = false;
   private musicPlaying: boolean = false;
   private musicInterval: number | null = null;
@@ -99,6 +109,8 @@ class SoundEngine {
     }),
     seqAdvance: () => this.seqTick(),
     seqNotes: () => [...this.seqLast],
+    // Batch 7: 4-bus + compressor topology probe.
+    audioGraph: () => this.audioGraph(),
   };
 
   constructor() {
@@ -112,7 +124,17 @@ class SoundEngine {
 
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = this.masterLevel;
-      this.masterGain.connect(this.ctx.destination);
+
+      // Batch 7: compressor master — masterGain feeds the compressor, the
+      // compressor feeds the destination. Threshold -13dB, ratio 7:1,
+      // 3ms attack, 140ms release.
+      this.compressor = this.ctx.createDynamicsCompressor();
+      this.compressor.threshold.value = -13;
+      this.compressor.ratio.value = 7;
+      this.compressor.attack.value = 0.003;
+      this.compressor.release.value = 0.14;
+      this.masterGain.connect(this.compressor);
+      this.compressor.connect(this.ctx.destination);
 
       this.sfxGain = this.ctx.createGain();
       this.sfxGain.gain.value = 0.9;
@@ -120,9 +142,38 @@ class SoundEngine {
 
       this.musicGain = this.ctx.createGain();
       this.musicGain.gain.value = 0.35;
+      // Music stays separate from the 4 SFX buses, but still feeds the
+      // compressor (via masterGain) — mute zeroes masterGain and silences
+      // both paths without touching individual volumes.
       this.musicGain.connect(this.masterGain);
 
+      // Batch 7: 4-bus SFX routing — one bus per category, unity gain.
+      this.buses = {
+        effort: this.ctx.createGain(),
+        weapon: this.ctx.createGain(),
+        impact: this.ctx.createGain(),
+        beast: this.ctx.createGain(),
+      };
+      for (const b of Object.values(this.buses)) {
+        b.connect(this.sfxGain);
+      }
+
       this.generateNoiseBuffer();
+    }
+
+    // Batch 7: expose audio probes on window.__controlsTest
+    // (same assignment pattern as engine.ts probe registration).
+    const w = window as unknown as { __controlsTest?: Record<string, unknown> };
+    if (w.__controlsTest && !w.__controlsTest.audioGraph) {
+      w.__controlsTest.audioGraph = () => this.audioGraph();
+      // Batch 7: mute/volume probes — verify the clean-mute contract
+      // (mute zeroes master only; sfx/music volumes are preserved).
+      w.__controlsTest.audioMute = (on: boolean) => this.setMuted(on);
+      w.__controlsTest.audioMuted = () => this.getMuted();
+      w.__controlsTest.audioGains = () => this.__test.gains();
+      // Batch 7: last-shot probe — verify playShotFor routed through the
+      // weapon bus with the right kind/layers.
+      w.__controlsTest.audioLastShot = () => this.__test.lastShot();
     }
 
     if (this.ctx.state === 'suspended') {
@@ -135,6 +186,22 @@ class SoundEngine {
     if (this.ctx?.state === 'suspended') {
       void this.ctx.resume();
     }
+  }
+
+  // Batch 7: bus accessor. Buses are always created alongside sfxGain in
+  // init(), so every call site guarded by a sfxGain null-check is safe.
+  private bus(name: SfxBusName): GainNode {
+    return this.buses![name];
+  }
+
+  // Batch 7: audio topology probe. Buses are fixed category names;
+  // compressor/musicSeparate reflect the built graph.
+  public audioGraph() {
+    return {
+      buses: ['effort', 'weapon', 'impact', 'beast'] as SfxBusName[],
+      compressor: this.compressor !== null,
+      musicSeparate: true, // musicGain feeds master directly, never an SFX bus
+    };
   }
 
   // Batch 6 [S5][S9]: deterministic noise — one ~0.4s buffer from an LCG
@@ -203,7 +270,7 @@ class SoundEngine {
       g.connect(lp);
       tail = lp;
     }
-    tail.connect(this.sfxGain);
+    tail.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + (o.dur || 0.15) + 0.05);
   }
@@ -241,7 +308,7 @@ class SoundEngine {
     og.gain.setValueAtTime(0.28, t);
     og.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
     osc.connect(og);
-    og.connect(this.sfxGain);
+    og.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.12);
     // Crack: short noise burst.
@@ -256,7 +323,7 @@ class SoundEngine {
     noise.buffer = this.noiseBuffer;
     noise.connect(nf);
     nf.connect(ng);
-    ng.connect(this.sfxGain);
+    ng.connect(this.bus('impact'));
     noise.start(t);
     noise.stop(t + 0.07);
     // Grit: faint high click.
@@ -267,7 +334,7 @@ class SoundEngine {
     cg.gain.setValueAtTime(0.05, t);
     cg.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
     click.connect(cg);
-    cg.connect(this.sfxGain);
+    cg.connect(this.bus('impact'));
     click.start(t);
     click.stop(t + 0.04);
   }
@@ -286,7 +353,7 @@ class SoundEngine {
     g.gain.setValueAtTime(0.5, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
     osc.connect(g);
-    g.connect(this.sfxGain);
+    g.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.3);
   }
@@ -312,7 +379,7 @@ class SoundEngine {
     g.gain.exponentialRampToValueAtTime(0.3, t + 0.01);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
     osc.connect(g);
-    g.connect(this.sfxGain);
+    g.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.2);
   }
@@ -336,7 +403,7 @@ class SoundEngine {
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
     osc.connect(f);
     f.connect(g);
-    g.connect(this.sfxGain);
+    g.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.3);
   }
@@ -412,7 +479,7 @@ class SoundEngine {
     oscGain.gain.setValueAtTime(1.0, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
     osc.connect(oscGain);
-    oscGain.connect(this.sfxGain);
+    oscGain.connect(this.bus('weapon'));
     osc.start(t);
     osc.stop(t + 0.35);
 
@@ -428,14 +495,14 @@ class SoundEngine {
     noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
     noise.connect(filter);
     filter.connect(noiseGain);
-    noiseGain.connect(this.sfxGain);
+    noiseGain.connect(this.bus('weapon'));
     noise.start(t);
     noise.stop(t + 0.45);
 
     // Mechanical pump sound after 0.25s
     setTimeout(() => {
-      this.playClick(0.3, 800);
-      setTimeout(() => this.playClick(0.25, 1200), 80);
+      this.playClick(0.3, 800, 'weapon');
+      setTimeout(() => this.playClick(0.25, 1200, 'weapon'), 80);
     }, 220);
   }
 
@@ -450,7 +517,7 @@ class SoundEngine {
     oscGain.gain.setValueAtTime(0.8, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
     osc.connect(oscGain);
-    oscGain.connect(this.sfxGain);
+    oscGain.connect(this.bus('weapon'));
     osc.start(t);
     osc.stop(t + 0.28);
 
@@ -465,7 +532,7 @@ class SoundEngine {
     noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
     noise.connect(filter);
     filter.connect(noiseGain);
-    noiseGain.connect(this.sfxGain);
+    noiseGain.connect(this.bus('weapon'));
     noise.start(t);
     noise.stop(t + 0.35);
   }
@@ -481,7 +548,7 @@ class SoundEngine {
     oscGain.gain.setValueAtTime(0.9, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
     osc.connect(oscGain);
-    oscGain.connect(this.sfxGain);
+    oscGain.connect(this.bus('weapon'));
     osc.start(t);
     osc.stop(t + 0.28);
 
@@ -495,7 +562,7 @@ class SoundEngine {
     noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
     noise.connect(filter);
     filter.connect(noiseGain);
-    noiseGain.connect(this.sfxGain);
+    noiseGain.connect(this.bus('weapon'));
     noise.start(t);
     noise.stop(t + 0.25);
   }
@@ -511,7 +578,7 @@ class SoundEngine {
     oscGain.gain.setValueAtTime(0.65, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
     osc.connect(oscGain);
-    oscGain.connect(this.sfxGain);
+    oscGain.connect(this.bus('weapon'));
     osc.start(t);
     osc.stop(t + 0.12);
 
@@ -525,7 +592,7 @@ class SoundEngine {
     noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
     noise.connect(filter);
     filter.connect(noiseGain);
-    noiseGain.connect(this.sfxGain);
+    noiseGain.connect(this.bus('weapon'));
     noise.start(t);
     noise.stop(t + 0.14);
   }
@@ -541,7 +608,7 @@ class SoundEngine {
     oscGain.gain.setValueAtTime(0.7, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
     osc.connect(oscGain);
-    oscGain.connect(this.sfxGain);
+    oscGain.connect(this.bus('weapon'));
     osc.start(t);
     osc.stop(t + 0.2);
   }
@@ -557,7 +624,7 @@ class SoundEngine {
     oscGain.gain.setValueAtTime(0.5, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
     osc.connect(oscGain);
-    oscGain.connect(this.sfxGain);
+    oscGain.connect(this.bus('weapon'));
     osc.start(t);
     osc.stop(t + 0.2);
   }
@@ -615,7 +682,7 @@ class SoundEngine {
     og.gain.setValueAtTime(0.42 * power, t);
     og.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
     osc.connect(og);
-    og.connect(this.sfxGain);
+    og.connect(this.bus('weapon'));
     osc.start(t);
     osc.stop(t + 0.24);
     // Chain rattle: three bandpassed noise ticks.
@@ -632,7 +699,7 @@ class SoundEngine {
       ng.gain.exponentialRampToValueAtTime(0.001, st + 0.05);
       n.connect(bp);
       bp.connect(ng);
-      ng.connect(this.sfxGain);
+      ng.connect(this.bus('weapon'));
       n.start(st);
       n.stop(st + 0.06);
     }
@@ -648,7 +715,7 @@ class SoundEngine {
     pg.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
     p.connect(plp);
     plp.connect(pg);
-    pg.connect(this.sfxGain);
+    pg.connect(this.bus('weapon'));
     p.start(t);
     p.stop(t + 0.22);
   }
@@ -671,7 +738,7 @@ class SoundEngine {
     ng.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
     n.connect(bp);
     bp.connect(ng);
-    ng.connect(this.sfxGain);
+    ng.connect(this.bus('weapon'));
     n.start(t);
     n.stop(t + 0.28);
   }
@@ -688,7 +755,7 @@ class SoundEngine {
     og.gain.setValueAtTime(0.6 * power, t);
     og.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
     o.connect(og);
-    og.connect(this.sfxGain);
+    og.connect(this.bus('weapon'));
     o.start(t);
     o.stop(t + 0.22);
     // Wood knock: lowpassed noise burst.
@@ -702,7 +769,7 @@ class SoundEngine {
     ng.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
     n.connect(lp);
     lp.connect(ng);
-    ng.connect(this.sfxGain);
+    ng.connect(this.bus('weapon'));
     n.start(t);
     n.stop(t + 0.1);
   }
@@ -722,7 +789,7 @@ class SoundEngine {
     ng.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
     n.connect(bp);
     bp.connect(ng);
-    ng.connect(this.sfxGain);
+    ng.connect(this.bus('weapon'));
     n.start(t);
     n.stop(t + 0.1);
     // Meat thump.
@@ -734,7 +801,7 @@ class SoundEngine {
     og.gain.setValueAtTime(0.4 * power, t);
     og.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
     o.connect(og);
-    og.connect(this.sfxGain);
+    og.connect(this.bus('weapon'));
     o.start(t);
     o.stop(t + 0.16);
     // Steel ping.
@@ -745,7 +812,7 @@ class SoundEngine {
     pg.gain.setValueAtTime(0.12 * power, t);
     pg.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
     p.connect(pg);
-    pg.connect(this.sfxGain);
+    pg.connect(this.bus('weapon'));
     p.start(t);
     p.stop(t + 0.18);
   }
@@ -765,7 +832,7 @@ class SoundEngine {
     ng.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
     n.connect(hp);
     hp.connect(ng);
-    ng.connect(this.sfxGain);
+    ng.connect(this.bus('weapon'));
     n.start(t);
     n.stop(t + 0.26);
     // Deep metallic ring: detuned pair.
@@ -777,7 +844,7 @@ class SoundEngine {
       og.gain.setValueAtTime(0.14 * power, t + 0.1);
       og.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
       o.connect(og);
-      og.connect(this.sfxGain!);
+      og.connect(this.bus('weapon'));
       o.start(t + 0.1);
       o.stop(t + 0.72);
     });
@@ -799,7 +866,7 @@ class SoundEngine {
       oscGain.gain.setValueAtTime(0.4, t + i * 0.03);
       oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15 + i * 0.03);
       osc.connect(oscGain);
-      oscGain.connect(this.sfxGain);
+      oscGain.connect(this.bus('weapon'));
       osc.start(t + i * 0.03);
       osc.stop(t + 0.2 + i * 0.03);
     }
@@ -815,7 +882,7 @@ class SoundEngine {
     noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
     noise.connect(filter);
     filter.connect(noiseGain);
-    noiseGain.connect(this.sfxGain);
+    noiseGain.connect(this.bus('weapon'));
     noise.start(t);
     noise.stop(t + 0.8);
   }
@@ -836,7 +903,7 @@ class SoundEngine {
     oscGain.gain.setValueAtTime(isHeadshot ? 0.6 : 0.35, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + (isHeadshot ? 0.18 : 0.1));
     osc.connect(oscGain);
-    oscGain.connect(this.sfxGain);
+    oscGain.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.2);
 
@@ -849,7 +916,7 @@ class SoundEngine {
       bellGain.gain.setValueAtTime(0.4, t);
       bellGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
       bell.connect(bellGain);
-      bellGain.connect(this.sfxGain);
+      bellGain.connect(this.bus('impact'));
       bell.start(t);
       bell.stop(t + 0.25);
     }
@@ -877,7 +944,7 @@ class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(this.sfxGain);
+      gain.connect(this.bus('beast'));
       osc.start(t);
       osc.stop(t + 0.4);
     } else if (type === 'bloater_spitter') {
@@ -891,7 +958,7 @@ class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(this.sfxGain);
+      gain.connect(this.bus('beast'));
       osc.start(t);
       osc.stop(t + 0.4);
     } else if (type === 'behemoth') {
@@ -905,7 +972,7 @@ class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(this.sfxGain);
+      gain.connect(this.bus('beast'));
       osc.start(t);
       osc.stop(t + 0.9);
     } else {
@@ -919,7 +986,7 @@ class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(this.sfxGain);
+      gain.connect(this.bus('beast'));
       osc.start(t);
       osc.stop(t + 0.5);
     }
@@ -948,7 +1015,7 @@ class SoundEngine {
     gain.gain.setValueAtTime(0.3, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.15);
   }
@@ -971,7 +1038,7 @@ class SoundEngine {
       gain.gain.setValueAtTime(0.25, t + idx * 0.06);
       gain.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.06 + 0.4);
       osc.connect(gain);
-      gain.connect(this.sfxGain);
+      gain.connect(this.bus('impact'));
       osc.start(t + idx * 0.06);
       osc.stop(t + idx * 0.06 + 0.45);
     });
@@ -993,13 +1060,13 @@ class SoundEngine {
     gain.gain.setValueAtTime(0.3, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.5);
 
     // Subtle paper shuffle
-    this.playClick(0.35, 1200);
-    setTimeout(() => this.playClick(0.25, 850), 60);
+    this.playClick(0.35, 1200, 'impact');
+    setTimeout(() => this.playClick(0.25, 850, 'impact'), 60);
   }
 
   public playBarrelExplosion() {
@@ -1018,7 +1085,7 @@ class SoundEngine {
     oscGain.gain.setValueAtTime(0.9, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
     osc.connect(oscGain);
-    oscGain.connect(this.sfxGain);
+    oscGain.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.6);
 
@@ -1034,7 +1101,7 @@ class SoundEngine {
     noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
     noise.connect(filter);
     filter.connect(noiseGain);
-    noiseGain.connect(this.sfxGain);
+    noiseGain.connect(this.bus('impact'));
     noise.start(t);
     noise.stop(t + 0.9);
   }
@@ -1055,7 +1122,7 @@ class SoundEngine {
     oscGain.gain.setValueAtTime(1.0, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
     osc.connect(oscGain);
-    oscGain.connect(this.sfxGain);
+    oscGain.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 1.4);
 
@@ -1071,7 +1138,7 @@ class SoundEngine {
     noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 1.6);
     noise.connect(filter);
     filter.connect(noiseGain);
-    noiseGain.connect(this.sfxGain);
+    noiseGain.connect(this.bus('impact'));
     noise.start(t);
     noise.stop(t + 1.6);
 
@@ -1109,7 +1176,7 @@ class SoundEngine {
     lp.connect(fb);
     fb.connect(delay);
     delay.connect(wet);
-    wet.connect(this.sfxGain);
+    wet.connect(this.bus('impact'));
   }
 
   // Batch 4: screen-clear bomb treatment — ground-zero thump + shockwave noise
@@ -1131,7 +1198,7 @@ class SoundEngine {
     og.gain.setValueAtTime(1.0, t);
     og.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
     osc.connect(og);
-    og.connect(this.sfxGain);
+    og.connect(this.bus('impact'));
     if (this.echoIn) {
       const tap = this.ctx.createGain();
       tap.gain.value = 0.6;
@@ -1153,7 +1220,7 @@ class SoundEngine {
     ng.gain.exponentialRampToValueAtTime(0.001, t + 1.5);
     noise.connect(nf);
     nf.connect(ng);
-    ng.connect(this.sfxGain);
+    ng.connect(this.bus('impact'));
     if (this.echoIn) {
       const tap = this.ctx.createGain();
       tap.gain.value = 0.7;
@@ -1183,7 +1250,7 @@ class SoundEngine {
       g.gain.exponentialRampToValueAtTime(0.26, st + 0.02);
       g.gain.exponentialRampToValueAtTime(0.0001, st + 0.5);
       osc.connect(g);
-      g.connect(this.sfxGain!);
+      g.connect(this.bus('impact'));
       osc.start(st);
       osc.stop(st + 0.55);
     });
@@ -1203,7 +1270,7 @@ class SoundEngine {
     gain.gain.setValueAtTime(0.6, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('effort'));
     osc.start(t);
     osc.stop(t + 0.25);
   }
@@ -1222,7 +1289,7 @@ class SoundEngine {
     gain.gain.setValueAtTime(0.28, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('effort'));
     osc.start(t);
     osc.stop(t + 0.18);
   }
@@ -1241,7 +1308,7 @@ class SoundEngine {
     gain.gain.setValueAtTime(0.35, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('effort'));
     osc.start(t);
     osc.stop(t + 0.14);
   }
@@ -1263,7 +1330,7 @@ class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
     osc1.connect(gain);
     osc2.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('beast'));
     osc1.start(t);
     osc2.start(t);
     osc1.stop(t + 1.2);
@@ -1289,7 +1356,7 @@ class SoundEngine {
       gain.gain.setValueAtTime(vol, t + delay);
       gain.gain.exponentialRampToValueAtTime(0.001, t + delay + 2.2);
       osc.connect(gain);
-      gain.connect(this.sfxGain);
+      gain.connect(this.bus('impact'));
       osc.start(t + delay);
       osc.stop(t + delay + 2.3);
     }
@@ -1309,7 +1376,7 @@ class SoundEngine {
     gain.gain.setValueAtTime(0.35, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.35);
   }
@@ -1330,7 +1397,7 @@ class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
     noise.connect(filter);
     filter.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('impact'));
     noise.start(t);
     noise.stop(t + 0.4);
   }
@@ -1349,7 +1416,7 @@ class SoundEngine {
     gain.gain.setValueAtTime(0.45, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.18);
   }
@@ -1358,7 +1425,9 @@ class SoundEngine {
     this.playSnuff();
   }
 
-  private playClick(volume: number, freq: number) {
+  // Batch 7: playClick routes through a named SFX bus — weapon by default
+  // (gun-mechanical clicks); callers with other contexts pass their bus.
+  private playClick(volume: number, freq: number, bus: SfxBusName = 'weapon') {
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
     const osc = this.sfxOsc();
@@ -1368,7 +1437,7 @@ class SoundEngine {
     gain.gain.setValueAtTime(volume, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus(bus));
     osc.start(t);
     osc.stop(t + 0.05);
   }
@@ -1392,7 +1461,7 @@ class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.2, now + 0.01);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.bus('impact'));
     osc.start(now);
     osc.stop(now + 0.09);
   }
@@ -1413,7 +1482,7 @@ class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
       osc.connect(gain);
-      gain.connect(this.sfxGain!);
+      gain.connect(this.bus('impact'));
       osc.start(t);
       osc.stop(t + 0.24);
     });
@@ -1671,7 +1740,7 @@ class SoundEngine {
     g.gain.exponentialRampToValueAtTime(0.13, t + 0.015);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
     osc.connect(g);
-    g.connect(this.sfxGain);
+    g.connect(this.bus('effort'));
     osc.start(t);
     osc.stop(t + 0.13);
   }
@@ -1738,7 +1807,7 @@ class SoundEngine {
     o1.connect(lp);
     o2.connect(lp);
     lp.connect(g);
-    g.connect(this.sfxGain);
+    g.connect(this.bus('beast'));
     lfo.connect(lfoDepth);
     lfoDepth.connect(g.gain);
     o1.start();

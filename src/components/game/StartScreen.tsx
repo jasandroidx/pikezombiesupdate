@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { GAME_LOCATIONS, OUTBREAK_ORDER } from "@/game/constants";
 import { buyRank, loadSave, rankCost } from "@/game/save";
-import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield, Wind, CalendarDays, Settings, ScrollText } from "lucide-react";
+import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield, Wind, CalendarDays, Settings, ScrollText, Landmark } from "lucide-react";
 import { ControlsModal } from "./ControlsModal";
+import { StatShopModal } from "./StatShopModal";
 import { dailyDateStr, dailyPlayed, getDailySeed, loadMeta, markDailyPlayed } from "@/game/meta";
 import { QUESTS } from "@/game/constants";
 
@@ -27,6 +28,7 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute, onOpenSettings
   const [mutators, setMutators] = useState<string[]>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
+  const [showRecord, setShowRecord] = useState(false); // Batch 7: County Record Office stat shop
   const [save, setSave] = useState(() => loadSave());
   const [playedToday, setPlayedToday] = useState(() => dailyPlayed());
 
@@ -74,6 +76,9 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute, onOpenSettings
               <Settings className="h-4 w-4 text-fg" />
             </button>
           )}
+          <button type="button" title="County Record Office — permanent stat upgrades" aria-label="County Record Office" className="rounded border border-border bg-surface p-2" onClick={() => setShowRecord((v) => !v)}>
+            <Landmark className="h-4 w-4 text-accent" />
+          </button>
           <button type="button" className="rounded border border-border bg-surface p-2" onClick={() => setShowJournal((v) => !v)}>
             <BookOpen className="h-4 w-4 text-accent" />
           </button>
@@ -279,6 +284,8 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute, onOpenSettings
       </div>
 
       {showHelp && <ControlsModal onClose={() => setShowHelp(false)} />}
+
+      {showRecord && <StatShopModal open={showRecord} onClose={() => setShowRecord(false)} />}
 
       {showJournal && (
         <div className="relative z-20 mx-auto mt-4 max-w-xl rounded border border-border bg-surface p-4">

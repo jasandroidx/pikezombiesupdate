@@ -3,6 +3,7 @@
 // changes can migrate instead of corrupting.
 
 import { hashStringToSeed } from "./constants";
+import { loadSave, writeSave } from "./save";
 
 export interface LifetimeStats {
   kills: number;
@@ -141,4 +142,120 @@ export function markDailyPlayed(dateStr: string = dailyDateStr()): MetaSave {
   meta.daily[dateStr] = true;
   saveMeta(meta);
   return meta;
+}
+
+// ---------------------------------------------------------------------------
+// Batch 7 — Lane B (data/meta): County Record Office permanent stat shop.
+//
+// 4 tracks x 4 tiers, bought with stubs (save.ts permanent currency — meta.ts
+// tracks lifetime stats/quests but no currency of its own, so the shop spends
+// the game's existing permanent coin). Tiers must be bought in order.
+//
+//   damage: Hartwell Grit   +4% damage/tier
+//   hp:     Highwall Hide   +10% max HP/tier
+//   speed:  Trace Stride    +3% move speed/tier
+//   xp:     Enos Ledger     +5% XP gain/tier
+//
+// ENGINE INTEGRATION POINT (coordinator): at player init, read getRunStatMods()
+// and multiply it into the player's base stats:
+//   damage *= mods.damageMul; maxHp *= mods.hpMul; speed *= mods.speedMul;
+// XP gain applies to whatever awards XP (grit-to-XP / xpMult in the sim).
+// ---------------------------------------------------------------------------
+
+export type StatShopTrackId = "damage" | "hp" | "speed" | "xp";
+
+export interface StatShopTrack {
+  id: StatShopTrackId;
+  /** County-flavored display name. */
+  name: string;
+  /** What each tier does, in plain words. */
+  perTier: string;
+  flavor: string;
+  /** Stub cost of tier 1..4 in order. */
+  costs: [number, number, number, number];
+}
+
+export const STAT_SHOP: StatShopTrack[] = [
+  {
+    id: "damage",
+    name: "Hartwell Grit",
+    perTier: "+4% damage",
+    flavor: "Coal-camp toughness, mined at the old Wulfman slope. You hit meaner because you've dug deeper.",
+    costs: [100, 250, 500, 1000],
+  },
+  {
+    id: "hp",
+    name: "Highwall Hide",
+    perTier: "+10% max HP",
+    flavor: "Sandstone dust and scar tissue. The Stendal highwall breathes on you and you stand anyway.",
+    costs: [100, 250, 500, 1000],
+  },
+  {
+    id: "speed",
+    name: "Trace Stride",
+    perTier: "+3% move speed",
+    flavor: "You walked the Buffalo Trace end to end and it walked back through your legs.",
+    costs: [100, 250, 500, 1000],
+  },
+  {
+    id: "xp",
+    name: "Enos Ledger",
+    perTier: "+5% XP gain",
+    flavor: "Every pocket counted at the Old Ben company store. Nobody's leavings go uncounted on your watch.",
+    costs: [100, 250, 500, 1000],
+  },
+];
+
+export const STAT_SHOP_MAX_TIER = 4;
+
+/** Current state for the shop UI: defs + purchased tiers + stub balance. */
+export function getStatShop(): {
+  tracks: StatShopTrack[];
+  tiers: Record<string, number>;
+  stubs: number;
+} {
+  const save = loadSave();
+  return { tracks: STAT_SHOP, tiers: { ...(save.shopTiers ?? {}) }, stubs: save.stubs };
+}
+
+/**
+ * Buy the next tier of a track. Validates track id, tier order (sequential),
+ * max tier, and stub balance. Persists via save.ts. Does NOT throw.
+ */
+export function buyStat(trackId: string): { ok: boolean; reason?: string } {
+  const track = STAT_SHOP.find((t) => t.id === trackId);
+  if (!track) return { ok: false, reason: "unknown track" };
+  const save = loadSave();
+  const tiers = { ...(save.shopTiers ?? {}) };
+  const cur = tiers[trackId] ?? 0;
+  if (cur >= STAT_SHOP_MAX_TIER) return { ok: false, reason: "maxed" };
+  const cost = track.costs[cur];
+  if (save.stubs < cost) return { ok: false, reason: "insufficient stubs" };
+  writeSave({ stubs: save.stubs - cost, shopTiers: { ...tiers, [trackId]: cur + 1 } });
+  return { ok: true };
+}
+
+export interface RunStatMods {
+  damageMul: number;
+  hpMul: number;
+  speedMul: number;
+  xpMul: number;
+}
+
+/**
+ * Permanent run modifiers from County Record Office purchases.
+ * The engine calls this at player init and multiplies them into base stats.
+ */
+export function getRunStatMods(): RunStatMods {
+  const t = loadSave().shopTiers ?? {};
+  const dmg = t.damage ?? 0;
+  const hp = t.hp ?? 0;
+  const spd = t.speed ?? 0;
+  const xp = t.xp ?? 0;
+  return {
+    damageMul: 1 + 0.04 * dmg,
+    hpMul: 1 + 0.1 * hp,
+    speedMul: 1 + 0.03 * spd,
+    xpMul: 1 + 0.05 * xp,
+  };
 }

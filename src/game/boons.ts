@@ -1,4 +1,4 @@
-export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt" | "fork" | "ricochet" | "seeker" | "aura" | "wompus" | "nova" | "missiles";
+export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt" | "fork" | "ricochet" | "seeker" | "aura" | "wompus" | "nova" | "missiles" | "chainlightning" | "orbiter";
 
 export type BoonRarity = "common" | "uncommon" | "rare";
 
@@ -37,6 +37,10 @@ export const BOON_CATALOG: BoonOffer[] = [
   { id: "wompus", name: "Wompus Howler", blurb: "The Winslow Wompus cat yowls through a bored-out carbine. Not offered. Earned.", rarity: "rare", hidden: true },
   { id: "nova", name: "Still-Yard Burst", blurb: "Every few seconds the still-yard answers: a radial burst of burning rounds.", rarity: "rare" },
   { id: "missiles", name: "Canary Rockets", blurb: "Slow, heavy rockets that hunt the dead and bloom on impact. Long reload.", rarity: "rare" },
+  // Batch 7 (Lane B): special-weapon unlock boons. Taking one grants the
+  // matching SPECIAL_WEAPON_DEFS row in constants.ts (engine lane wires it).
+  { id: "chainlightning", name: "Patoka Arc", blurb: "Storm bottled from a leyden rig. Lightning leaps between the dead, 4 jumps deep.", rarity: "rare" },
+  { id: "orbiter", name: "Still-Yard Blades", blurb: "Saw teeth on a chain, circling your boots till the chain runs out. They never stop walking.", rarity: "rare" },
 ];
 
 // Batch 3: ability forks with lockout — some picks close off alternatives.

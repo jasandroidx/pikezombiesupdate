@@ -39,17 +39,21 @@ ok("iron affinity +12% with revolver+lever", fam.after.rev === 1.12 && fam.after
 console.log("== 2. evolution table (6 Pike County recipes) ==");
 const evo = await page.evaluate(() => {
   const c = window.__controlsTest;
-  c.giveBoon("storm");
+  // Batch 6: evolutions require a max-level weapon — unlock everything, max it,
+  // then evolve in the real order (boons given incrementally).
+  c.unlockW("carbine"); c.unlockW("lever_rifle"); c.unlockW("crossbow"); c.unlockW("chainsaw");
+  c.cacheJackpot();
+  c.giveBoon("storm"); c.giveBoon("lead", 3);
   const e1 = { name: c.forceEvo(), w: c.weap("revolver") };
-  c.giveBoon("bone", 2);
+  c.giveBoon("bone", 2); c.giveBoon("shells", 3);
   const e2 = { name: c.forceEvo(), w: c.weap("shotgun") };
-  c.unlockW("carbine"); c.giveBoon("trigger", 2);
+  c.giveBoon("trigger", 2); c.giveBoon("stride", 3);
   const e3 = { name: c.forceEvo(), w: c.weap("carbine") };
-  c.unlockW("lever_rifle"); c.giveBoon("salt", 2);
+  c.giveBoon("salt", 2); c.giveBoon("beam", 3);
   const e4 = { name: c.forceEvo(), w: c.weap("lever_rifle") };
-  c.unlockW("crossbow"); c.giveBoon("hide", 2);
+  c.giveBoon("hide", 2); c.giveBoon("pipe", 3);
   const e5 = { name: c.forceEvo(), w: c.weap("crossbow") };
-  c.unlockW("chainsaw"); c.giveBoon("jug", 2);
+  c.giveBoon("jug", 2); c.giveBoon("leavings", 3);
   const e6 = { name: c.forceEvo(), w: c.weap("chainsaw") };
   const sgFam = c.famMul("shotgun");
   return { e1, e2, e3, e4, e5, e6, sgFam };
@@ -57,7 +61,7 @@ const evo = await page.evaluate(() => {
 ok("revolver + storm -> .357 Deadeye preserved", evo.e1.name === ".357 Deadeye", JSON.stringify(evo.e1));
 ok("Deadeye: +70% dmg, pierce 3", evo.e1.w.dmg > 100 && evo.e1.w.pierce === 3, JSON.stringify(evo.e1.w));
 ok("shotgun + bone -> Widow's Bell", evo.e2.name === "Widow's Bell", JSON.stringify(evo.e2));
-ok("Widow's Bell: +2 pellets", evo.e2.w.pellets === 10, JSON.stringify(evo.e2.w));
+ok("Widow's Bell: +2 pellets on maxed table", evo.e2.w.pellets === 14, JSON.stringify(evo.e2.w));
 ok("carbine + trigger -> Enos Corner Repeater", evo.e3.name === "Enos Corner Repeater", JSON.stringify(evo.e3));
 ok("lever_rifle + salt -> White Oak Longrifle", evo.e4.name === "White Oak Longrifle", JSON.stringify(evo.e4));
 ok("Longrifle: pierce 5", evo.e4.w.pierce === 5, JSON.stringify(evo.e4.w));

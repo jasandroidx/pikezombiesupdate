@@ -413,6 +413,7 @@ export function renderEnvironment(
   extractActive = false,
   zoom = 1,
 ) {
+  attachRender7Probes();
   ctx.fillStyle = location.ground || '#1c1f19';
   ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
 
@@ -492,7 +493,8 @@ export function renderEnvironment(
   const pickup = Math.max(1, 1.15 / Math.max(0.2, zoom));
 
   for (const drop of drops) {
-    if (!sees(viewport, drop.x, drop.y, 28 * pickup)) continue;
+    // Batch 7: 96px-margin culling for pickups (counted; ground decals exempt).
+    if (!visibleInViewport(drop.x, drop.y, 20, viewport, 96)) { culledEntities++; continue; }
     // Batch 6: blob shadow stays on the ground while the pickup bobs.
     drawBlobShadow(ctx, drop.x, drop.y + 5, 11 * pickup, 0.38);
     ctx.save();
@@ -504,7 +506,8 @@ export function renderEnvironment(
   }
 
   for (const note of loreNotes) {
-    if (note.collected || !sees(viewport, note.x, note.y, 36 * pickup)) continue;
+    if (note.collected) continue;
+    if (!visibleInViewport(note.x, note.y, 24, viewport, 96)) { culledEntities++; continue; }
     ctx.save();
     ctx.translate(note.x, note.y);
     ctx.scale(pickup, pickup);
@@ -1235,9 +1238,406 @@ function renderExtract(ctx: CanvasRenderingContext2D, extract: { x: number; y: n
   ctx.restore();
 }
 
+// ---- Batch 7 (Lane 4 / RENDER): camera, celebration, telegraphs, culling ----
+// Engine-wire contract (engine lane / integrator): each frame, in world space,
+//   renderTelegraphs(ctx, this.telegraphs, nowMs, this.player)
+//   render7.celebration.poll({ draftOpen: !!this.draft, shrinesAttuned: n, bombCharges: this.bombCharges }, px, py)
+//   render7.celebration.renderWorld(ctx, nowMs)   // world pass
+//   render7.celebration.renderScreen(ctx, w, h, nowMs) // screen pass; slow-mo via slowmoFactor(nowMs)
+// Zoom: base = this.viewZoom(); z = render7.zoom.update(this.zombies, px, py, dt, base, this.motionScale())
+// Camera: render7.camera.update(px, py, vx, vy, aimX, aimY); use render7.camera.x/y (trauma shake stays engine-side, applied after)
+// Culling: cullEntities(list, viewport, radius) for zombies/pickups/particles (NOT ground decals)
+// Darkness: this.lighting.renderDarkness(ctx, w, h, pxy.x, pxy.y, this.player.lightRadius ?? 220, !!this.dark, nowMs)
+
+/** Clamp helper: the intermittent negative-arc-radius page error dies here. */
+function safeR(r: number): number {
+  return r >= 0.001 ? r : 0.001;
+}
+
+// ---- 1. Dynamic zoom: pull back as horde density rises ----
+export const ZOOM_DENSITY_RADIUS = 600;
+export const ZOOM_DENSITY_DIV = 40;
+export const ZOOM_PULL_K = 0.03;
+
+/** Pure target: zoom = clamp(base - density*k, minZoom, base). motionScale 0.2 = reduce-motion. */
+export function zoomTargetForDensity(density: number, baseZoom: number, motionScale = 1): number {
+  const d = Math.min(4, Math.max(0, density || 0));
+  const minZoom = Math.max(0.3, baseZoom - 0.12);
+  const t = baseZoom - d * ZOOM_PULL_K * motionScale;
+  return t < minZoom ? minZoom : t > baseZoom ? baseZoom : t;
+}
+
+export class DynamicZoomRig {
+  public current = 0;
+  public target = 0;
+  public density = 0;
+  /**
+   * zombies: Array<{x,y}> (read-only). Density = zombies within 600u of player / 40.
+   * motionScale: 1 normally, 0.2 when a11y reduce-motion is on (scales the pullback).
+   */
+  update(
+    zombies: Array<{ x: number; y: number }> | undefined | null,
+    px: number, py: number, dt: number, baseZoom: number, motionScale = 1,
+  ): number {
+    let near = 0;
+    if (Array.isArray(zombies)) {
+      for (let i = 0; i < zombies.length; i++) {
+        const z = zombies[i];
+        if (!z) continue;
+        const dx = z.x - px, dy = z.y - py;
+        if (dx * dx + dy * dy <= ZOOM_DENSITY_RADIUS * ZOOM_DENSITY_RADIUS) near++;
+      }
+    }
+    this.density = near / ZOOM_DENSITY_DIV;
+    this.target = zoomTargetForDensity(this.density, baseZoom, motionScale);
+    if (this.current <= 0) this.current = baseZoom;
+    const k = 1 - Math.exp(-3 * Math.max(0, dt)); // smoothed lerp toward target
+    this.current += (this.target - this.current) * k;
+    return this.current;
+  }
+  state() { return { current: this.current, target: this.target, density: this.density }; }
+}
+
+// ---- 2. Smooth camera follow + deadzone + lookahead ----
+export class CameraRig {
+  public x = 0;
+  public y = 0;
+  constructor(x = 0, y = 0) { this.x = x; this.y = y; }
+  snap(x: number, y: number) { this.x = x; this.y = y; }
+  /**
+   * vx,vy = player velocity (u/s); aimX,aimY = normalized aim dir.
+   * Deadzone 24px on the player delta (no jitter when stationary); when moving,
+   * target = player + vel*0.35 + aim*40, lerped at 0.10. Trauma shake is
+   * engine-side and stays applied after this.
+   */
+  update(px: number, py: number, vx: number, vy: number, aimX: number, aimY: number): void {
+    const dx = px - this.x, dy = py - this.y;
+    if (dx * dx + dy * dy < 576) return; // 24px deadzone
+    const tx = px + vx * 0.35 + aimX * 40;
+    const ty = py + vy * 0.35 + aimY * 40;
+    this.x += (tx - this.x) * 0.10;
+    this.y += (ty - this.y) * 0.10;
+  }
+}
+
+// ---- 3. Celebration stack ----
+export type CelebrationKind = 'levelup' | 'shrine' | 'bomb';
+export const CELEBRATION_TEXT: Record<CelebrationKind, string> = {
+  levelup: 'LEVEL UP!',
+  shrine: 'ATTUNED',
+  bomb: `STORM'S COMING`,
+};
+
+/** Back.easeOut for the 200ms banner scale-pop. */
+export function backEaseOut(t: number): number {
+  const c1 = 1.70158, c3 = c1 + 1;
+  const u = t - 1;
+  return 1 + c3 * u * u * u + c1 * u * u;
+}
+
+interface CelebParticle { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; size: number; hue: number; active: boolean; }
+
+export class CelebrationFx {
+  public kind: CelebrationKind | null = null;
+  public t0 = 0;
+  public x = 0;
+  public y = 0;
+  private slowmoUntil = 0;
+  private lastNow = 0;
+  private lastDraftOpen = false;
+  private lastShrines = 0;
+  private lastBombs = -1;
+  private parts: CelebParticle[] = []; // preallocated 40-particle fountain pool
+
+  constructor() {
+    for (let i = 0; i < 40; i++) {
+      this.parts.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, size: 2, hue: 45, active: false });
+    }
+  }
+
+  trigger(kind: CelebrationKind, x: number, y: number, now = Date.now()) {
+    this.kind = kind;
+    this.t0 = now;
+    this.lastNow = now;
+    this.x = x; this.y = y;
+    this.slowmoUntil = now + 300; // 0.4x slow-mo for 300ms
+    for (const p of this.parts) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.1;
+      const sp = 120 + Math.random() * 260;
+      p.x = x + (Math.random() - 0.5) * 24;
+      p.y = y;
+      p.vx = Math.cos(a) * sp;
+      p.vy = Math.sin(a) * sp;
+      p.maxLife = 0.7 + Math.random() * 0.6;
+      p.life = p.maxLife;
+      p.size = 2 + Math.random() * 3.5;
+      p.hue = 38 + Math.random() * 14;
+      p.active = true;
+    }
+  }
+
+  /**
+   * Engine calls each frame with read-only flags; transitions fire celebrations.
+   * draftOpen: level-up draft opened · shrinesAttuned: count rose · bombCharges: count fell.
+   */
+  poll(flags: { draftOpen: boolean; shrinesAttuned: number; bombCharges: number }, x: number, y: number, now = Date.now()) {
+    if (flags.draftOpen && !this.lastDraftOpen) this.trigger('levelup', x, y, now);
+    if ((flags.shrinesAttuned | 0) > this.lastShrines) this.trigger('shrine', x, y, now);
+    if (this.lastBombs >= 0 && (flags.bombCharges | 0) < this.lastBombs) this.trigger('bomb', x, y, now);
+    this.lastDraftOpen = !!flags.draftOpen;
+    this.lastShrines = flags.shrinesAttuned | 0;
+    this.lastBombs = flags.bombCharges | 0;
+  }
+
+  active(now = Date.now()) { return this.kind !== null && now - this.t0 < 1200; }
+  activeKind() { return this.kind; }
+  celebrationText() { return this.kind ? CELEBRATION_TEXT[this.kind] : ''; }
+  particleCount() { let n = 0; for (const p of this.parts) if (p.active) n++; return n; }
+  /** 0.4 while inside the 300ms window, else 1 — engine multiplies its dt by this. */
+  slowmoFactor(now = Date.now()) { return now < this.slowmoUntil ? 0.4 : 1; }
+  /** Banner scale-pop: 200ms Back.easeOut. */
+  bannerScale(now = Date.now()) {
+    if (!this.kind) return 0;
+    const t = (now - this.t0) / 200;
+    if (t <= 0) return 0;
+    return backEaseOut(Math.min(1, t));
+  }
+
+  /** World-space pass: gold radial flash + 40-particle upward fountain + floating text. */
+  renderWorld(ctx: CanvasRenderingContext2D, now = Date.now()) {
+    if (!this.kind) return;
+    const el = now - this.t0;
+    if (el < 0 || el > 1200) return;
+    const dt = Math.min(0.05, Math.max(0, (now - this.lastNow) / 1000));
+    this.lastNow = now;
+
+    // Gold radial flash
+    const flashA = Math.max(0, 1 - el / 450);
+    if (flashA > 0) {
+      const fr = safeR(260);
+      const g = ctx.createRadialGradient(this.x, this.y, 0.001, this.x, this.y, fr);
+      g.addColorStop(0, `rgba(255, 205, 95, ${(0.55 * flashA).toFixed(3)})`);
+      g.addColorStop(1, 'rgba(255, 205, 95, 0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, fr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Upward fountain (pooled particles, no per-frame allocation)
+    for (const p of this.parts) {
+      if (!p.active) continue;
+      p.life -= dt;
+      if (p.life <= 0) { p.active = false; continue; }
+      p.vy += 520 * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      const a = p.life / p.maxLife;
+      ctx.fillStyle = `hsla(${p.hue | 0}, 95%, ${55 + a * 20}%, ${(a * 0.95).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, safeR(p.size * a), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Floating text
+    const rise = el * 0.06;
+    const textA = el < 600 ? 1 : Math.max(0, 1 - (el - 600) / 400);
+    if (textA > 0) {
+      ctx.save();
+      ctx.globalAlpha = textA;
+      ctx.font = 'bold 30px "IBM Plex Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = '#1a0d02';
+      ctx.strokeText(CELEBRATION_TEXT[this.kind], this.x, this.y - 70 - rise);
+      ctx.fillStyle = '#ffd166';
+      ctx.fillText(CELEBRATION_TEXT[this.kind], this.x, this.y - 70 - rise);
+      ctx.restore();
+    }
+  }
+
+  /** Screen-space pass: banner scale-pop (200ms Back.easeOut). */
+  renderScreen(ctx: CanvasRenderingContext2D, w: number, h: number, now = Date.now()) {
+    if (!this.kind) return;
+    const el = now - this.t0;
+    if (el < 0 || el > 1200) return;
+    const s = this.bannerScale(now);
+    if (s <= 0) return;
+    const a = el < 800 ? 1 : Math.max(0, 1 - (el - 800) / 400);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(w / 2, h * 0.3);
+    ctx.scale(s, s);
+    const label = CELEBRATION_TEXT[this.kind];
+    ctx.font = 'bold 54px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(10, 8, 4, 0.72)';
+    ctx.fillRect(-tw / 2 - 26, -44, tw + 52, 88);
+    ctx.strokeStyle = '#d4a017';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-tw / 2 - 26, -44, tw + 52, 88);
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = '#1a0d02';
+    ctx.strokeText(label, 0, 0);
+    ctx.fillStyle = '#ffd166';
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+  }
+}
+
+// ---- 4. Telegraph drawing: expanding/pulsing rings, drained each frame ----
+export interface Telegraph { kind: 'leap' | 'ranged' | 'charge'; x: number; y: number; r: number; t0: number; dur: number; }
+
+let telegraphArcs = 0;
+/** Probe: canvas arc calls made by renderTelegraphs since the last reset. */
+export function drawnTelegraphs() { return telegraphArcs; }
+export function resetTelegraphCount() { telegraphArcs = 0; }
+
+/**
+ * Draw telegraphs (world space — call inside the engine's world transform).
+ * list is read-only (engine owns lifecycle); nowMs/t0/dur share one ms clock.
+ * Never throws on malformed entries. Returns telegraphs drawn.
+ */
+export function renderTelegraphs(
+  ctx: CanvasRenderingContext2D,
+  list: Telegraph[] | undefined | null,
+  nowMs: number,
+  player: { x: number; y: number } | undefined | null,
+): number {
+  if (!Array.isArray(list) || list.length === 0) return 0;
+  let drawn = 0;
+  for (let i = 0; i < list.length; i++) {
+    const t = list[i] as Partial<Telegraph>;
+    if (!t || typeof t.x !== 'number' || typeof t.y !== 'number' || !isFinite(t.x) || !isFinite(t.y)) continue;
+    const dur = typeof t.dur === 'number' && t.dur > 0 && isFinite(t.dur) ? t.dur : 600;
+    const t0 = typeof t.t0 === 'number' && isFinite(t.t0) ? t.t0 : nowMs;
+    const fade = (t0 + dur - nowMs) / dur;
+    if (!(fade > 0) || fade > 1.25) continue; // expired, malformed, or from the future
+    const alpha = Math.min(1, fade);
+    const r = safeR(typeof t.r === 'number' && t.r > 0 && isFinite(t.r) ? t.r : 24);
+    const prog = 1 - alpha; // 0 at spawn → 1 at strike
+    if (t.kind === 'charge') {
+      if (!player || !isFinite(player.x) || !isFinite(player.y)) continue;
+      const dx = player.x - t.x, dy = player.y - t.y;
+      const len = Math.hypot(dx, dy);
+      if (!(len > 1)) continue;
+      const wHalf = r * 0.7;
+      ctx.save();
+      ctx.translate(t.x, t.y);
+      ctx.rotate(Math.atan2(dy, dx));
+      const g = ctx.createLinearGradient(0, 0, len, 0);
+      g.addColorStop(0, `rgba(220, 40, 30, ${(0.5 * alpha).toFixed(3)})`);
+      g.addColorStop(1, `rgba(220, 40, 30, ${(0.08 * alpha).toFixed(3)})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, -wHalf, len, wHalf * 2);
+      ctx.strokeStyle = `rgba(255, 90, 60, ${(0.85 * alpha).toFixed(3)})`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, -wHalf, len, wHalf * 2);
+      // chevrons marching toward the player
+      ctx.strokeStyle = `rgba(255, 200, 150, ${(0.7 * alpha).toFixed(3)})`;
+      ctx.lineWidth = 3;
+      const step = 46;
+      const off = (nowMs * 0.12) % step;
+      ctx.beginPath();
+      for (let cx = step - off; cx < len; cx += step) {
+        ctx.moveTo(cx - 12, -wHalf * 0.7);
+        ctx.lineTo(cx, 0);
+        ctx.lineTo(cx - 12, wHalf * 0.7);
+      }
+      ctx.stroke();
+      ctx.restore();
+      drawn++;
+    } else if (t.kind === 'leap' || t.kind === 'ranged') {
+      const col = t.kind === 'leap' ? '250, 200, 60' : '230, 50, 40';
+      ctx.save();
+      // expanding outer ring — closes in as the strike nears
+      ctx.strokeStyle = `rgba(${col}, ${(0.85 * alpha).toFixed(3)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, safeR(r * (0.25 + 0.75 * prog)), 0, Math.PI * 2);
+      ctx.stroke();
+      telegraphArcs++;
+      // pulsing inner ring at full radius
+      ctx.strokeStyle = `rgba(${col}, ${(0.45 * alpha).toFixed(3)})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, safeR(r * (0.92 + 0.08 * Math.sin(nowMs * 0.02))), 0, Math.PI * 2);
+      ctx.stroke();
+      telegraphArcs++;
+      ctx.restore();
+      drawn++;
+    }
+    // unknown kinds are ignored — never crash
+  }
+  return drawn;
+}
+
+// ---- 5. Off-screen render culling (viewport + 96px margin) ----
+// Applies to zombies / pickups / particles. Ground decals keep their existing
+// behavior — the new 96px rule is intentionally NOT applied to them.
+export interface CViewport { x: number; y: number; width: number; height: number; }
+
+let culledEntities = 0;
+/** Probe: entities culled by the 96px-margin rule since the last reset. */
+export function culledCount() { return culledEntities; }
+export function resetCulledCount() { culledEntities = 0; }
+
+export function visibleInViewport(x: number, y: number, r: number, vp: CViewport, margin = 96): boolean {
+  return x + r + margin >= vp.x && x - r - margin <= vp.x + vp.width
+    && y + r + margin >= vp.y && y - r - margin <= vp.y + vp.height;
+}
+
+/** Partition a list into the visible subset; bumps the culled counter. Engine should reuse the returned array. */
+export function cullEntities<T extends { x: number; y: number }>(list: T[], vp: CViewport, radius: number, margin = 96): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    if (visibleInViewport(e.x, e.y, radius, vp, margin)) out.push(e);
+    else culledEntities++;
+  }
+  return out;
+}
+
+// ---- Batch 7 probe wiring ----
+export const render7 = {
+  zoom: new DynamicZoomRig(),
+  camera: new CameraRig(),
+  celebration: new CelebrationFx(),
+  renderTelegraphs,
+  drawnTelegraphs,
+  resetTelegraphCount,
+  visibleInViewport,
+  cullEntities,
+  culledCount,
+  resetCulledCount,
+  zoomTargetForDensity,
+  backEaseOut,
+  DynamicZoomRig,
+  CameraRig,
+  CelebrationFx,
+  CELEBRATION_TEXT,
+  ZOOM_DENSITY_RADIUS,
+  ZOOM_DENSITY_DIV,
+  ZOOM_PULL_K,
+};
+
+/** Attach render-lane counters onto the engine's __controlsTest handle (engine owns that object; we only add). */
+function attachRender7Probes() {
+  const w = window as unknown as Record<string, unknown>;
+  const ct = w.__controlsTest as Record<string, unknown> | undefined;
+  if (!ct) return;
+  if (typeof ct.drawnTelegraphs !== 'function') ct.drawnTelegraphs = () => telegraphArcs;
+  if (typeof ct.culledCount !== 'function') ct.culledCount = () => culledEntities;
+  if (!ct.render7) ct.render7 = (window as unknown as Record<string, unknown>).__pzRender7;
+}
+
 // Batch 6: test/render probe surface. Engine integration (renderZombies,
 // renderPlayer, setAmbient on map switch) is the coordinator's lane.
 if (typeof window !== 'undefined') {
+  (window as any).__pzRender7 = render7;
   (window as any).__pzVisual = {
     tileFor,
     plateFor,
@@ -1252,6 +1652,21 @@ if (typeof window !== 'undefined') {
     clearZombieTint,
     drawZombieHitFlash,
     HIT_FLASH_MS,
+    // Batch 7 (Lane 4 / RENDER)
+    render7,
+    renderTelegraphs,
+    drawnTelegraphs,
+    resetTelegraphCount,
+    visibleInViewport,
+    cullEntities,
+    culledCount,
+    resetCulledCount,
+    zoomTargetForDensity,
+    backEaseOut,
+    DynamicZoomRig,
+    CameraRig,
+    CelebrationFx,
+    CELEBRATION_TEXT,
   };
 }
 

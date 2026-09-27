@@ -961,6 +961,11 @@ export const WEAPON_LEVELS: Record<string, WeaponLevelRow> = {
   crossbow:    { dmg: [180, 215, 255, 300, 360], cnt: [1, 1, 1, 1, 2], rad: [850, 870, 890, 910, 940], spd: [18, 18.5, 19, 19.5, 20], cd: [1.11, 1.05, 1.0, 0.95, 0.9] },
   chainsaw:    { dmg: [35, 40, 46, 53, 62],    cnt: [1, 1, 1, 1, 1],   rad: [95, 100, 105, 110, 120],  spd: [12, 12, 12, 12, 12],     cd: [0.083, 0.08, 0.077, 0.074, 0.07] },
   wompus_howler: { dmg: [120, 140, 165, 195, 230], cnt: [3, 3, 4, 4, 5], rad: [700, 720, 740, 760, 780], spd: [20, 20.5, 21, 21.5, 22], cd: [0.167, 0.158, 0.15, 0.142, 0.133] },
+  // Batch 7 (Lane B): special-weapon rows. dmg = base strike damage
+  // (orbiter's dps-per-blade lives here too, matching orbiterDps at level 1);
+  // cnt = chain jumps (chainlightning) / blade count (orbiter).
+  chainlightning: { dmg: [45, 56, 70, 88, 110], cnt: [1, 1, 1, 1, 1], rad: [550, 575, 600, 625, 650], spd: [0, 0, 0, 0, 0], cd: [1.5, 1.4, 1.3, 1.2, 1.1] },
+  orbiter:       { dmg: [14, 18, 23, 29, 36],   cnt: [3, 3, 4, 4, 5],   rad: [110, 115, 120, 125, 130], spd: [2.6, 2.8, 3.0, 3.2, 3.4], cd: [1.0, 1.0, 0.95, 0.9, 0.85] },
 };
 
 export const WEAPON_MAX_TABLE_LEVEL = 5;
@@ -1027,6 +1032,74 @@ export const SECRET_WEAPON: Weapon = {
   unlocked: true,
   cost: 0,
   upgradeLevel: 1,
+};
+
+// ---------------------------------------------------------------------------
+// Batch 7 — Lane B (data/meta): special weapon defs (chain lightning, orbiter).
+//
+// These are engine-driven weapon SYSTEMS, not Weapon rows — they don't fit
+// the Weapon interface (no magazine, no pellets), so they live in their own
+// table with the exact fields the engine lane implements:
+//
+//   chainlightning: {id, name, damage, fireIntervalMs, projectileCount,
+//     chainJumps, chainFalloff, chainRadius}
+//   orbiter:        {id, name, damage, fireIntervalMs, orbiterCount,
+//     orbiterRadius, orbiterDps, orbiterSpeed}
+//
+// WEAPON_LEVELS rows give the 5-level scaling the neon-swarm pattern expects
+// (statsForLevel(id, level) works for both; cnt = jumps/blade count).
+//
+// ENGINE INTEGRATION POINT (coordinator):
+//   - Player init should read SPECIAL_WEAPON_DEFS["chainlightning"] /
+//     ["orbiter"] when the matching boon is taken (see boons.ts), apply the
+//     5-level row via statsForLevel, and attach the behavior module.
+//   - draftUnlock("chainlightning") / ("orbiter") boons (boons.ts) are the
+//     level-up offers; taking one grants the matching def row.
+// ---------------------------------------------------------------------------
+
+export interface SpecialWeaponDef {
+  id: string;
+  name: string;
+  description: string;
+  /** Level-1 base damage. Per-level scaling lives in WEAPON_LEVELS. */
+  damage: number;
+  fireIntervalMs: number;
+  // chain-lightning params (chainlightning only)
+  projectileCount?: number;
+  chainJumps?: number;
+  /** Damage multiplier per jump (0.75 = each arc hits for 75% of the last). */
+  chainFalloff?: number;
+  chainRadius?: number;
+  // orbiter params (orbiter only)
+  orbiterCount?: number;
+  orbiterRadius?: number;
+  orbiterDps?: number;
+  orbiterSpeed?: number;
+}
+
+export const SPECIAL_WEAPON_DEFS: Record<string, SpecialWeaponDef> = {
+  chainlightning: {
+    id: "chainlightning",
+    name: "Patoka Arc",
+    description: "A Still-Yard leyden rig that bottles storm-jar lightning and lets it loose between the dead. Four jumps deep, and it don't miss twice.",
+    damage: 45,
+    fireIntervalMs: 1500,
+    projectileCount: 1,
+    chainJumps: 4,
+    chainFalloff: 0.75,
+    chainRadius: 260,
+  },
+  orbiter: {
+    id: "orbiter",
+    name: "Still-Yard Blades",
+    description: "Saw teeth hung on a chain, circling your boots till the chain runs out. The auger from Silas's mill, still hungry.",
+    damage: 0,
+    fireIntervalMs: 1000,
+    orbiterCount: 3,
+    orbiterRadius: 110,
+    orbiterDps: 14,
+    orbiterSpeed: 2.6,
+  },
 };
 
 // ---------------------------------------------------------------------------

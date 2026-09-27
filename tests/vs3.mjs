@@ -115,7 +115,7 @@ const cache = await page.evaluate(() => {
 ok("cache drops and opens on proximity", cache.n0 >= 1 && cache.opened === true, JSON.stringify({ n0: cache.n0, opened: cache.opened }));
 ok("pair of sevens: 4 weapon upgrades", cache.up === 4, JSON.stringify(cache));
 ok("cache resolve returns cache result", cache.r.r === "cache", JSON.stringify(cache.r));
-ok("jackpot maxes all owned weapons", cache.j.levels.every((l) => l === 8), JSON.stringify(cache.j));
+ok("jackpot maxes all owned weapons", cache.j.levels.length > 0 && cache.j.levels.every((l) => l === cache.j.max), JSON.stringify(cache.j));
 ok("gamble forced win/loss", cache.g1 === true && cache.g0 === false, JSON.stringify({ g1: cache.g1, g0: cache.g0 }));
 
 console.log("== page errors ==");

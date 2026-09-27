@@ -19,6 +19,8 @@ export interface GameSave {
   stubs: number;
   ranks: CountyRanks;
   lastPaid: string;
+  // Batch 7: County Record Office permanent stat shop — track id -> purchased tier count.
+  shopTiers: Record<string, number>;
 }
 
 const defaults: GameSave = {
@@ -32,13 +34,14 @@ const defaults: GameSave = {
   lastRadio: "",
   stubs: 0,
   ranks: { boots: 0, hide: 0, magnet: 0 },
+  shopTiers: {},
   lastPaid: "",
 };
 
 const RANK_COST = [6, 12, 20];
 
 function migrate(raw: Partial<GameSave> & { version?: number }): GameSave {
-  const s: GameSave = { ...defaults, ...raw, version: raw.version ?? 1, ranks: { ...defaults.ranks, ...(raw.ranks ?? {}) } };
+  const s: GameSave = { ...defaults, ...raw, version: raw.version ?? 1, ranks: { ...defaults.ranks, ...(raw.ranks ?? {}) }, shopTiers: { ...(raw.shopTiers ?? {}) } };
   if (!s.unlockedWeapons?.length) s.unlockedWeapons = defaults.unlockedWeapons;
   if (typeof s.stubs !== "number") s.stubs = 0;
   s.version = SAVE_VERSION;
@@ -51,7 +54,7 @@ export function loadSave(): GameSave {
     if (!raw) {
       const legacy = parseInt(localStorage.getItem("pike_county_high_score") || "0", 10);
       if (legacy > 0) return migrate({ highScore: legacy, version: 1 });
-      return { ...defaults };
+      return { ...defaults, shopTiers: {} };
     }
     return migrate(JSON.parse(raw) as Partial<GameSave>);
   } catch {
