@@ -1,14 +1,15 @@
-import { Play, Wrench, Home, Volume2, VolumeX } from "lucide-react";
+import { Play, Wrench, Home, Volume2, VolumeX, Keyboard } from "lucide-react";
 
 interface PauseMenuProps {
   onResume: () => void;
   onWorkbench: () => void;
+  onControls: () => void;
   onHome: () => void;
   isMuted: boolean;
   onToggleMute: () => void;
 }
 
-export function PauseMenu({ onResume, onWorkbench, onHome, isMuted, onToggleMute }: PauseMenuProps) {
+export function PauseMenu({ onResume, onWorkbench, onControls, onHome, isMuted, onToggleMute }: PauseMenuProps) {
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
       <div className="w-full max-w-sm rounded border border-border bg-surface p-5 shadow-2xl">
@@ -34,6 +35,14 @@ export function PauseMenu({ onResume, onWorkbench, onHome, isMuted, onToggleMute
           </button>
           <button
             type="button"
+            onClick={onControls}
+            className="flex items-center justify-center gap-2 rounded border border-border bg-bg px-4 py-3 font-heading uppercase tracking-widest text-fg"
+          >
+            <Keyboard className="h-5 w-5 text-accent" />
+            Controls
+          </button>
+          <button
+            type="button"
             onClick={onToggleMute}
             className="flex items-center justify-center gap-2 rounded border border-border bg-bg px-4 py-3 font-heading uppercase tracking-widest text-fg"
           >
@@ -49,7 +58,7 @@ export function PauseMenu({ onResume, onWorkbench, onHome, isMuted, onToggleMute
             County map
           </button>
         </div>
-        <p className="mt-3 font-mono text-[10px] uppercase tracking-widest text-muted">Esc resumes · G throws a road flare</p>
+        <p className="mt-3 font-mono text-[10px] uppercase tracking-widest text-muted">Esc resumes · H controls · G throws a road flare</p>
       </div>
     </div>
   );
