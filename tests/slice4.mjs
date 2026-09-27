@@ -65,12 +65,18 @@ ok("upgrade to mk3", (await T("upgradePost()")) === true && (await T("postRank()
 ok("mk3 is max", (await T("upgradePost()")) === false);
 
 await T("setWave(6)");
-for (let i = 0; i < 8; i++) await T(`spawnType("shambler")`);
-const { minHp, hpMult } = await page.evaluate(() => {
-  const sys = window.__controlsTest.sys();
-  const hps = sys.zombies().slice(-8).map((z) => z.h);
-  return { minHp: Math.min(...hps), hpMult: sys.mods.enemyHpMult };
-});
+// spawn+read in a single tick so no frame can damage the zombie before we read it;
+// take the min over several spawns to dodge elite rolls (elites only raise HP)
+const hpReads = [];
+for (let i = 0; i < 8; i++) {
+  hpReads.push(await page.evaluate(() => {
+    const c = window.__controlsTest;
+    c.spawnType("shambler");
+    return { hp: c.lastZombie().hp, mult: c.sys().mods.enemyHpMult };
+  }));
+}
+const minHp = Math.min(...hpReads.map((r) => r.hp));
+const hpMult = hpReads[0].mult;
 const expected = Math.round(Math.round(58 * 1.28) * hpMult);
 ok("wave 6 shambler has scaled HP", minHp === expected, `min=${minHp} expected=${expected} mult=${hpMult}`);
 
