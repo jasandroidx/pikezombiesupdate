@@ -198,6 +198,62 @@ export const INITIAL_WEAPONS: Weapon[] = [
     // Batch 8 (Lane D): affinity tags.
     tags: ["scatter", "precise"],
   },
+  // Batch 12 (Lane 1): the Dugger Torch — a coal-town flamethrower. Short
+  // cone that deals direct damage and stacks burn on everything it touches.
+  // dmg = direct damage per trigger, cnt = burn stacks applied, rad = cone
+  // length, spd = cone half-angle (degrees), cd = refire.
+  {
+    id: "flamethrower" as Weapon["id"],
+    name: "Dugger Torch",
+    category: "Special",
+    description: "A coal-oil weed burner out of Dugger, souped up on a Petersburg workbench. Short, angry cone — the dead come out of it still burning.",
+    damage: 18,
+    fireRate: 4,
+    pellets: 1,
+    spread: 0.5,
+    range: 260,
+    bulletSpeed: 28,
+    magazineSize: 100,
+    currentMag: 100,
+    reserveAmmo: 160,
+    maxReserveAmmo: 240,
+    reloadTime: 1200,
+    pierce: 99,
+    soundType: "molotov", // Batch 12: WeaponType union is closed (types/game.ts) — molotov is the closest fire kind
+    unlocked: false,
+    cost: 650,
+    upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags.
+    tags: ["scatter", "heavy"],
+  },
+  // Batch 12 (Lane 1): the Merom Railgun — a rewound rail off the Merom
+  // power station. Winds up ~0.6s, then punches a piercing beam through
+  // everything in a line. dmg = beam damage, rad = beam length,
+  // spd = charge seconds, cd = refire.
+  {
+    id: "railgun" as Weapon["id"],
+    name: "Merom Railgun",
+    category: "Heavy",
+    description: "A transformer rail off the Merom station, rewound by a lineman who owed the county. Charges up with a rising whine, then deletes a whole file of the dead in one line.",
+    damage: 420,
+    fireRate: 0.7,
+    pellets: 1,
+    spread: 0.0,
+    range: 900,
+    bulletSpeed: 0.6,
+    magazineSize: 5,
+    currentMag: 5,
+    reserveAmmo: 20,
+    maxReserveAmmo: 30,
+    reloadTime: 2600,
+    pierce: 99,
+    soundType: "carbine", // Batch 12: union is closed — carbine resolves to firearm
+    unlocked: false,
+    cost: 750,
+    upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags.
+    tags: ["precise", "heavy"],
+  },
 ];
 
 export const AVAILABLE_PERKS: Perk[] = [
@@ -905,6 +961,35 @@ export const EVOLUTIONS: EvolutionRecipe[] = [
     dmgBonus: 0.10, // Maelstrom: +10% damage
     cdBonus: 0.05,  // Maelstrom: 5% faster cooldown — the rig recharges hot
   },
+  // Batch 12 (Lane 2): two more rows — arc_lance and orbiter were the only
+  // weapons with no evolution. Read generically by checkEvolutions() /
+  // evolutionReady(), so the rows just work.
+  {
+    baseWeapon: "arc_lance",
+    requiredBoon: "copperhead",
+    requiredBoonName: "Copperhead Rounds",
+    requiredStacks: 2,
+    requiredPicks: { boonId: "storm", count: 3 }, // bottled lightning for the power-line rig
+    evolvedName: "White River Thunderhead",
+    evolvedDescription: "Evolved: the Arc Lance's White River power-line core rewound with copperhead tips. It sweeps the densest knot of the horde and leaves the whole knot bleeding.",
+    evolvedRadio: "The river bridge just coughed lightning. That's the Thunderhead — it bites after it strikes.",
+    dmgMul: 1.6, fireMul: 1.25, rangeMul: 1.2,
+    dmgBonus: 0.10, // Thunderhead: +10% damage
+    cdBonus: 0.05,  // Thunderhead: 5% faster cooldown — the rig cycles hot
+  },
+  {
+    baseWeapon: "orbiter",
+    requiredBoon: "whetstone",
+    requiredBoonName: "Whetstone",
+    requiredStacks: 2,
+    requiredPicks: { boonId: "ring", count: 3 }, // more teeth on the chain
+    evolvedName: "Silas's Grindwheel",
+    evolvedDescription: "Evolved: Silas's mill chain honed on a Stendal whetstone till it shaves. The Grindwheel circles wider, bites deeper, and it never dulls.",
+    evolvedRadio: "Hear that sing? That's Silas's Grindwheel. It don't dull, and it don't forgive.",
+    dmgMul: 1.7, fireMul: 1.2, rangeMul: 1.2,
+    dmgBonus: 0.10, // Grindwheel: +10% damage
+    cdBonus: 0.05,  // Grindwheel: 5% faster cooldown — the chain runs true
+  },
 ];
 
 // VS-2: weapon-family support affinities. Two or more unlocked weapons in a
@@ -1011,6 +1096,9 @@ export interface RunEventDef {
   modifiers: { gritMult?: number; enemySpeedMult?: number; enemyHpMult?: number; xpMult?: number };
   banner: string;
   radio: string;
+  // Batch 12 (Lane 1): when set, the event does NOT fire at wave start —
+  // the engine fires it `midWaveSec` seconds into its trigger wave instead.
+  midWaveSec?: number;
 }
 
 export const RUN_EVENTS: RunEventDef[] = [
@@ -1030,7 +1118,43 @@ export const RUN_EVENTS: RunEventDef[] = [
     banner: "BLOOD MOON",
     radio: "Moon's gone red over the Trace. They're faster and meaner — but every kill feeds you double.",
   },
+  // Batch 12 (Lane 1): the Powerup Shower — mid-wave (20s in), a supply run
+  // dumps 8-12 random powerups across the arena over ~6 seconds.
+  {
+    id: "powerup_shower",
+    trigger: { type: "wave", wave: 4 },
+    durationSec: 60,
+    modifiers: {},
+    banner: "POWERUP SHOWER",
+    radio: "Heads up, county — a supply run's dumping crates all over the hollow. What's on the ground is yours.",
+    midWaveSec: 20,
+  },
+  // Batch 12 (Lane 1): the Elite Hunt — a pack of 3-5 affixed elites moves
+  // in together at wave start. Drop every last one inside the wave and the
+  // county owes you: a grit shower plus a free shop reroll.
+  {
+    id: "elite_hunt",
+    trigger: { type: "wave", wave: 8 },
+    durationSec: 90,
+    modifiers: {},
+    banner: "ELITE HUNT",
+    radio: "WJPS, we've got marked ones moving in a pack. Drop every last one before the wave breaks and the county owes you a favor.",
+  },
 ];
+
+// Batch 12 (Lane 1): Powerup Shower + Elite Hunt tuning. Pure data so tests
+// can reason about cadence and counts without a game instance.
+export const SHOWER_COUNT_MIN = 8;
+export const SHOWER_COUNT_MAX = 12;
+export const SHOWER_DURATION_SEC = 6;
+export const SHOWER_MID_WAVE_SEC = 20;
+export const HUNT_PACK_MIN = 3;
+export const HUNT_PACK_MAX = 5;
+export const HUNT_BONUS_GRIT_ORBS = 10;
+// Flamethrower burn stacks — applied on top of the flat 35 dps zombie burn.
+export const BURN_STACK_DPS = 12;
+export const BURN_MAX_STACKS = 8;
+export const BURN_REFRESH_MS = 2500;
 
 export const GRIT_GROUND_CAP = 50;
 export const BOMB_RADIUS = 260;
@@ -1087,6 +1211,8 @@ export const SHOP_POOL: ShopOfferDef[] = [
   { id: "shop_unlock_crossbow", name: "Crossbow", desc: "Unlock the crossbow", baseCost: 140, kind: "unlock", weaponId: "crossbow", repeatable: false },
   { id: "shop_unlock_mortar", name: "Stendal Pit Mortar", desc: "Unlock the mortar", baseCost: 200, kind: "unlock", weaponId: "mortar", repeatable: false }, // Batch 10 (Lane 1)
   { id: "shop_unlock_arclance", name: "Arc Lance", desc: "Unlock the White River Arc Lance", baseCost: 600, kind: "unlock", weaponId: "arc_lance", repeatable: false }, // Batch 11 (Lane 1)
+  { id: "shop_unlock_flamethrower", name: "Dugger Torch", desc: "Unlock the Dugger Torch flamethrower", baseCost: 650, kind: "unlock", weaponId: "flamethrower", repeatable: false }, // Batch 12 (Lane 1)
+  { id: "shop_unlock_railgun", name: "Merom Railgun", desc: "Unlock the Merom Railgun", baseCost: 750, kind: "unlock", weaponId: "railgun", repeatable: false }, // Batch 12 (Lane 1)
 ];
 
 export const SHOP_OFFER_COUNT = 4;
@@ -1208,6 +1334,13 @@ export const WEAPON_LEVELS: Record<string, WeaponLevelRow> = {
   // Batch 11 (Lane 1): arc lance — dmg = damage per heat tick, cnt = ticks
   // per trigger pull, rad = lock-on range, spd = beam half-width, cd = refire.
   arc_lance:     { dmg: [34, 42, 52, 64, 80],   cnt: [3, 3, 4, 4, 5],       rad: [560, 590, 620, 650, 680], spd: [90, 95, 100, 105, 110], cd: [1.3, 1.2, 1.1, 1.0, 0.9] },
+  // Batch 12 (Lane 1): flamethrower — dmg = direct damage per trigger,
+  // cnt = burn stacks applied, rad = cone length, spd = cone half-angle
+  // (degrees), cd = refire.
+  flamethrower:  { dmg: [18, 22, 27, 33, 40],   cnt: [1, 1, 2, 2, 3],       rad: [260, 270, 280, 290, 300], spd: [28, 30, 32, 34, 36],   cd: [0.25, 0.23, 0.21, 0.19, 0.17] },
+  // Batch 12 (Lane 1): railgun — dmg = beam damage, cnt = beams per shot,
+  // rad = beam length, spd = charge seconds, cd = refire.
+  railgun:       { dmg: [420, 500, 600, 720, 860], cnt: [1, 1, 1, 1, 1],    rad: [900, 920, 940, 960, 980], spd: [0.6, 0.58, 0.55, 0.52, 0.5], cd: [1.43, 1.35, 1.27, 1.19, 1.1] },
 };
 
 export const WEAPON_MAX_TABLE_LEVEL = 5;

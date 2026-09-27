@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GameEngine } from "@/game/engine";
-import { AVAILABLE_PERKS, GAME_LOCATIONS, INITIAL_WEAPONS, OUTBREAK_FINAL_WAVES, OUTBREAK_ORDER, OUTBREAK_WAVES_PER_MAP, locationIndexById } from "@/game/constants";
+import { AVAILABLE_PERKS, GAME_LOCATIONS, INITIAL_WEAPONS, OUTBREAK_FINAL_WAVES, OUTBREAK_ORDER, OUTBREAK_WAVES_PER_MAP, RUN_EVENTS, locationIndexById } from "@/game/constants";
 import { soundEngine } from "@/audio/soundEngine";
 import { loadArt } from "@/game/art";
 import { dprCap } from "@/game/mapRenderer";
@@ -23,6 +23,9 @@ import { SlotMachine, SlotsBreakButton, gambleProbeAvailable, slotCostProbe } fr
 import { TuningPanel, applyStoredTuning } from "@/components/game/TuningPanel";
 import { AccessibilityPanel, applyStoredA11y } from "@/components/game/AccessibilityPanel";
 import { CodexPanel } from "@/components/game/CodexPanel";
+import { EventBanners } from "@/components/game/EventBanners";
+import { KNOWN_EVENT_META } from "@/components/game/eventMeta";
+import { MutatorChips } from "@/components/game/MutatorChips";
 import type { BoonOffer } from "@/game/boons";
 import type { ActivePowerup, EngineSnapshot, GameMode, LoreNote, Perk, PlayerStats, Weapon } from "@/types/game";
 
@@ -69,6 +72,16 @@ function GameApp() {
   const [boonStacks, setBoonStacks] = useState<Record<string, number>>({});
   const [rerolls, setRerolls] = useState(1);
   const [banishCharges, setBanishCharges] = useState(2);
+  // Batch 12 (Lane 3): run-event React banners + tracker. The engine fires
+  // events through the existing onRadio callback (fireEvent ->
+  // onRadio("WJPS Petersburg", ev.radio)); we match the radio body against
+  // RUN_EVENTS so new engine events banner without changes on this side.
+  const [eventBanner, setEventBanner] = useState<{ id: string; title: string; body: string; key: number } | null>(null);
+  const [eventTracker, setEventTracker] = useState<{ id: string; total: number; remaining: number } | null>(null);
+  // Batch 12 (Lane 3): mutators chosen on the title screen (same list the
+  // daily run threads through), rendered as in-run HUD chips.
+  const [runMutators, setRunMutators] = useState<string[]>([]);
+  const trackedEventRef = useRef<string | null>(null);
 
   const [selectedLocationIdx, setSelectedLocationIdx] = useState(0);
   const [weapons, setWeapons] = useState<Weapon[]>(INITIAL_WEAPONS);
@@ -207,6 +220,28 @@ function GameApp() {
     engine.gritBonus = magnet;
   };
 
+  // Batch 12 (Lane 3): shared banner entry point. Called from the onRadio
+  // event path below and from the __pzLane3 test hook. Resolves RUN_EVENTS
+  // first, falling back to KNOWN_EVENT_META so the banners work even if
+  // the engine lane has not landed its RUN_EVENTS entries yet. The new
+  // event stingers ride along here; the engine's playWaveHorn still fires
+  // from engine.ts fireEvent for the old events.
+  const fireEventBanner = useCallback((id: string) => {
+    const run = RUN_EVENTS.find((e) => e.id === id);
+    const title = run ? run.banner : KNOWN_EVENT_META[id]?.title;
+    const body = run ? run.radio : KNOWN_EVENT_META[id]?.body;
+    if (!title || !body) return;
+    trackedEventRef.current = id;
+    setEventBanner({ id, title, body, key: Date.now() });
+    setEventTracker(null);
+    try {
+      if (id === "powerup_shower") soundEngine.playPowerupShower();
+      else if (id === "elite_hunt") soundEngine.playEliteHunt();
+    } catch {
+      // Audio must never break the banner path.
+    }
+  }, []);
+
   const handleStartGame = (locationIndex: number, difficultyMultiplier: number, nextMode: GameMode = "survival", mutators: string[] = [], seed?: number) => {
     soundEngine.init();
     modeRef.current = nextMode;
@@ -218,6 +253,12 @@ function GameApp() {
     setMode(nextMode);
     setWon(false);
     setRadio(null);
+    // Batch 12 (Lane 3): stash the title screen's mutator picks for the
+    // in-run HUD chips; clear any stale event banner/tracker state.
+    setRunMutators(mutators);
+    setEventBanner(null);
+    setEventTracker(null);
+    trackedEventRef.current = null;
     setFoundNotes([]);
     carryRef.current = null;
     const idx = nextMode === "outbreak" ? locationIndexById(OUTBREAK_ORDER[0]) : locationIndex;
@@ -309,6 +350,32 @@ function GameApp() {
           } catch {
             signature = null;
           }
+          // Batch 12 (Lane 3): poll the engine lane's event-tracker probe
+          // for the bannered event, on the same tick the HUD already reads
+          // engine state. Probe absent (engine lane still working) or
+          // errored -> null -> the tracker chip hides gracefully. The
+          // contract: window.__controlsTest.eventState(id) returns
+          // { total, remaining } while the event is active.
+          let tracker: { id: string; total: number; remaining: number } | null = null;
+          try {
+            const tid = trackedEventRef.current;
+            const probe = window.__controlsTest?.eventState;
+            if (tid && typeof probe === "function") {
+              const t = probe(tid);
+              if (t && typeof t === "object" && Number.isFinite(t.total) && Number.isFinite(t.remaining)) {
+                const total = Math.max(0, Math.floor(t.total));
+                const remaining = Math.max(0, Math.floor(t.remaining));
+                if (total > 0 && remaining > 0) {
+                  tracker = { id: tid, total, remaining };
+                } else {
+                  trackedEventRef.current = null; // event over -> stop polling
+                }
+              }
+            }
+          } catch {
+            tracker = null;
+          }
+          setEventTracker(tracker);
           setHudStats({ ...stats, scoreMul, signature });
         },
         onLoreNoteFound: (note: LoreNote) => {
@@ -316,7 +383,15 @@ function GameApp() {
           setFoundNotes((n) => Array.from(new Set([...n, note.id])));
           engineRef.current?.setPaused(true);
         },
-        onRadio: (call: string, body: string) => setRadio({ call, body }),
+        onRadio: (call: string, body: string) => {
+          setRadio({ call, body });
+          // Batch 12 (Lane 3): run-event banners ride the engine's existing
+          // onRadio callback. Match the radio body against RUN_EVENTS (the
+          // engine's fireEvent sends ev.radio verbatim); non-event radio
+          // (Unknown, WJPS, extract) matches nothing and stays bannerless.
+          const def = RUN_EVENTS.find((e) => e.radio === body);
+          if (def) fireEventBanner(def.id);
+        },
         onCache: (symbols: string[] | null) => setCacheSymbols(symbols),
         onExtractReady: () => {
           setRadio({ call: "WJPS Petersburg", body: "Truck's lit. Get off this ground before the next horn." });
@@ -509,6 +584,25 @@ function GameApp() {
     return () => window.removeEventListener("keydown", handleKey);
   }, [screen, isWorkbenchOpen, activeLoreNote, draft, showControls, showA11y, showCodex, showTuning, handleTriggerSignature]);
 
+  // Batch 12 (Lane 3): the big event banner dismisses after 6s; the small
+  // tracker chip lives on via the probe poll above until the event ends.
+  useEffect(() => {
+    if (!eventBanner) return;
+    const t = setTimeout(() => setEventBanner(null), 6000);
+    return () => clearTimeout(t);
+  }, [eventBanner]);
+
+  // Batch 12 (Lane 3): test hook so Playwright can force an event banner
+  // through the same fireEventBanner path the engine's onRadio callback
+  // uses, without depending on the engine lane's event timing. Exposes
+  // soundEngine too, so stingers can be called directly in tests.
+  useEffect(() => {
+    (window as unknown as { __pzLane3?: unknown }).__pzLane3 = { fireEventBanner, sound: soundEngine };
+    return () => {
+      delete (window as unknown as { __pzLane3?: unknown }).__pzLane3;
+    };
+  }, [fireEventBanner]);
+
   const handleUnlockWeapon = (index: number) => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -632,6 +726,12 @@ function GameApp() {
       {screen === "playing" && (
         <>
           <div className="vignette-overlay absolute inset-0" />
+          {/* Batch 12 (Lane 3): in-run mutator chips + run-event banners /
+              tracker. pointer-events-none so game input is untouched. */}
+          <div className="pointer-events-none absolute left-1/2 top-2 z-30 flex -translate-x-1/2 flex-col items-center gap-2">
+            <MutatorChips mutators={runMutators} testId="run-mutator-chips" />
+            <EventBanners banner={eventBanner} tracker={eventTracker} />
+          </div>
           <HUD
             health={hudStats.health}
             maxHealth={hudStats.maxHealth}

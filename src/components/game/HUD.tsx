@@ -271,7 +271,7 @@ export function HUD({
             </div>
             {activeEvents.length > 0 && (
               <div className="mt-1 animate-pulse font-mono text-[10px] uppercase tracking-widest text-primary">
-                {activeEvents.map((id) => (id === "blood_moon" ? "Blood moon" : id === "golden_swarm" ? "Golden swarm" : id)).join(" · ")}
+                {activeEvents.map((id) => (id === "blood_moon" ? "Blood moon" : id === "golden_swarm" ? "Golden swarm" : id === "powerup_shower" ? "Powerup shower" : id === "elite_hunt" ? "Elite hunt" : id)).join(" · ")}
               </div>
             )}
             {bellReady && (

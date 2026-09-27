@@ -8,6 +8,7 @@ import { CharacterSelect } from "./CharacterSelect";
 import { stageDef } from "@/game/roster";
 import { dailyDateStr, dailyPlayed, getDailySeed, loadMeta, markDailyPlayed, selectedCharacterId, selectedStageId, setSelectedCharacterId, setSelectedStageId } from "@/game/meta";
 import { QUESTS } from "@/game/constants";
+import { MutatorChips } from "./MutatorChips";
 
 interface StartScreenProps {
   onStartGame: (
@@ -266,6 +267,11 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute, onOpenSettings
               <CalendarDays className="h-5 w-5" />
               Daily run
             </button>
+            {/* Batch 12 (Lane 3): the daily run threads the same seed AND the
+                currently picked mutators through onStartGame -> bootEngine,
+                so show the active mutators on the daily button. Hidden when
+                none are picked. */}
+            <MutatorChips mutators={mutators} testId="daily-mutator-chips" className="mt-2" />
           </div>
 
           {save.outbreakBeaten && (

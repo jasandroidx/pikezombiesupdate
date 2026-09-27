@@ -1428,6 +1428,143 @@ class SoundEngine {
     osc2.stop(t + 1.2);
   }
 
+  // Batch 12 (Lane 3): run-event stingers + Batch 12 weapon fire sounds.
+  // Named methods so the engine lane can call them directly (tests call
+  // them without an engine). The React event-banner path in
+  // routes/index.tsx plays the two event stingers when their banners
+  // fire. All follow the standard mute/init/gate guard pattern; nothing
+  // here touches engine state.
+  public playPowerupShower() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.sfxGate('powershower')) return;
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    // Bright rising arp: C6 E6 G6 C7 E7, triangle, 70ms stagger.
+    const freqs = [1046.5, 1318.51, 1567.98, 2093.0, 2637.02];
+    freqs.forEach((f, i) => {
+      const osc = this.ctx!.createOscillator();
+      const g = this.ctx!.createGain();
+      const st = t + i * 0.07;
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(f, st);
+      g.gain.setValueAtTime(0.0001, st);
+      g.gain.exponentialRampToValueAtTime(0.22, st + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + 0.5);
+      osc.connect(g);
+      g.connect(this.bus('impact'));
+      osc.start(st);
+      osc.stop(st + 0.55);
+    });
+  }
+
+  public playEliteHunt() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.sfxGate('elitehunt')) return;
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    // Low war-drum pulse: three membrane thumps, 70Hz -> 38Hz pitch drop,
+    // 240ms apart, beast bus.
+    for (let i = 0; i < 3; i++) {
+      const st = t + i * 0.24;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(70, st);
+      osc.frequency.exponentialRampToValueAtTime(38, st + 0.18);
+      g.gain.setValueAtTime(0.5, st);
+      g.gain.exponentialRampToValueAtTime(0.001, st + 0.22);
+      osc.connect(g);
+      g.connect(this.bus('beast'));
+      osc.start(st);
+      osc.stop(st + 0.25);
+    }
+  }
+
+  public playFlamethrowerWhoosh() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.sfxGate('flamewhoosh')) return;
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    const t = this.ctx.currentTime;
+    // Flamethrower whoosh: looped deterministic noise through a bandpass
+    // sweeping 400 -> 2400Hz, swelling then dying over 0.55s, weapon bus.
+    const noise = this.sfxNoise();
+    noise.buffer = this.noiseBuffer;
+    noise.loop = true;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.setValueAtTime(1.1, t);
+    bp.frequency.setValueAtTime(400, t);
+    bp.frequency.exponentialRampToValueAtTime(2400, t + 0.45);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.4, t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.55);
+    noise.connect(bp);
+    bp.connect(g);
+    g.connect(this.bus('weapon'));
+    noise.start(t);
+    noise.stop(t + 0.6);
+  }
+
+  public playRailgunCharge() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.sfxGate('railcharge')) return;
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    // Railgun charge: saw whine rising 180Hz -> 2200Hz over 0.65s,
+    // weapon bus.
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(180, t);
+    osc.frequency.exponentialRampToValueAtTime(2200, t + 0.65);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.16, t + 0.1);
+    g.gain.setValueAtTime(0.16, t + 0.6);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+    osc.connect(g);
+    g.connect(this.bus('weapon'));
+    osc.start(t);
+    osc.stop(t + 0.75);
+  }
+
+  public playRailgunZap() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.sfxGate('railzap')) return;
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    const t = this.ctx.currentTime;
+    // Railgun discharge: piercing square crack + noise snap, impact bus.
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(2400, t);
+    osc.frequency.exponentialRampToValueAtTime(220, t + 0.16);
+    g.gain.setValueAtTime(0.35, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    osc.connect(g);
+    g.connect(this.bus('impact'));
+    osc.start(t);
+    osc.stop(t + 0.22);
+    const noise = this.sfxNoise();
+    noise.buffer = this.noiseBuffer;
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.setValueAtTime(3000, t);
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.3, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    noise.connect(hp);
+    hp.connect(ng);
+    ng.connect(this.bus('impact'));
+    noise.start(t);
+    noise.stop(t + 0.15);
+  }
+
   public playBell() {
     if (this.isMuted) return;
     this.init();

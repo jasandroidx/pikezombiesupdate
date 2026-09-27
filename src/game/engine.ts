@@ -21,8 +21,8 @@ import {
   CellarHole,
   NoisePulse,
 } from "../types/game";
-import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG, supportApplies, tracerPierceBonus, tracerSpeedMul, saltCircleDefenseMul, saltCircleApplies, cornLiquorFireRateMul, cornLiquorMoveMul, brineExplosionMul, brinePatch } from "./boons";
-import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVES, windowAt, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS, ILLUSIONIST, MORTAR_TUNING, SIGNATURE_TUNING, SLOT_MACHINE_NAME, SLOT_SPIN_BASE, SLOT_SPIN_STEP, rollSlotSymbol, classifySlotWin, slotPairSymbol } from "./constants";
+import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG, supportApplies, tracerPierceBonus, tracerSpeedMul, saltCircleDefenseMul, saltCircleApplies, cornLiquorFireRateMul, cornLiquorMoveMul, brineExplosionMul, brinePatch, copperheadMaxStacks, copperheadPoisonDps, copperheadDurationSec, copperheadApplies, whetstoneBashMul, whetstoneChainsawMul, whetstoneApplies, sifterRadiusMul, sifterValueMul, b12BoonSummary } from "./boons";
+import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVES, windowAt, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS, ILLUSIONIST, MORTAR_TUNING, SIGNATURE_TUNING, SLOT_MACHINE_NAME, SLOT_SPIN_BASE, SLOT_SPIN_STEP, rollSlotSymbol, classifySlotWin, slotPairSymbol, SHOWER_COUNT_MIN, SHOWER_COUNT_MAX, SHOWER_DURATION_SEC, SHOWER_MID_WAVE_SEC, HUNT_PACK_MIN, HUNT_PACK_MAX, HUNT_BONUS_GRIT_ORBS, BURN_STACK_DPS, BURN_MAX_STACKS, BURN_REFRESH_MS } from "./constants";
 import { loadMeta, saveMeta, recordRun, topRuns, characterDef, stageDef, selectedCharacterId, selectedStageId } from "./meta";
 import * as metaNS from "./meta";
 import { soundEngine } from "../audio/soundEngine";
@@ -105,6 +105,21 @@ export class GameEngine {
 	bombLastRegen = 0;
 	firedEvents: string[] = [];
 	activeEvents: { id: string; endsAt: number }[] = [];
+	// Batch 12 (Lane 1): powerup shower + elite hunt run events.
+	powerupShower: { left: number; total: number; t: number; interval: number } | null = null;
+	huntState: { wave: number; total: number; killed: number; done: boolean } | null = null;
+	huntTargets: Zombie[] = [];
+	huntBonusReroll = false;
+	waveStartSim = 0;
+	// Batch 12 (Lane 1): railgun charge state.
+	railCharging = false;
+	railChargeT = 0;
+	railChargeDmg = 0;
+	railChargeW: Weapon | null = null;
+	lastFlame: { hits: number; stacks: number } | null = null;
+	lastRail: { hits: number; len: number } | null = null;
+	// Batch 12 (Lane 1): Copperhead Rounds — per-zombie poison stacks.
+	poison: Map<Zombie, { stacks: number; t: number }> = new Map();
 	posts = 1;
 	pipes = 1;
 	postRank = 1;
@@ -849,6 +864,69 @@ export class GameEngine {
 			// Batch 11 (Lane 1) probes: Patoka Jackpot slot machine.
 			slotState: () => ({ cost: this.slotSpinCost(), spins: this.slotSpinsThisBreak, grit: Math.round(this.gritBag), state: this.waveState, machine: SLOT_MACHINE_NAME }),
 			setGrit: (n) => { this.gritBag = n; return Math.round(this.gritBag); },
+			setScrap: (n) => { this.scrap = n; return Math.round(this.scrap); }, // Batch 12 (Lane 1): hunt free-reroll probe.
+			// Batch 12 (Lane 1 + Lane 2): the three new synergy boons.
+			// b12BoonSummary is exposed verbatim per the content lane's contract.
+			b12BoonSummary: () => b12BoonSummary(this.boonStacks),
+			copperheadTest: () => {
+				this.boonStacks[`copperhead`] = 2;
+				const z = this.pushZombie(`shambler`, this.player.x + 60, this.player.y);
+				for (let k = 0; k < 6; k++) this.applyCopperhead(z, `carbine`);
+				const ps = this.poison.get(z);
+				// shotgun lacks rapid+precise tags → copperheadApplies gates it out.
+				const bad = this.pushZombie(`shambler`, this.player.x + 60, this.player.y + 40);
+				this.applyCopperhead(bad, `shotgun`);
+				const out = { stacks: ps ? ps.stacks : 0, maxStacks: copperheadMaxStacks(2), gated: !this.poison.has(bad), summary: b12BoonSummary(this.boonStacks).copperhead };
+				this.boonStacks[`copperhead`] = 0; this.poison.clear();
+				return out;
+			},
+			copperheadDot: () => {
+				this.boonStacks[`copperhead`] = 2;
+				const z = this.pushZombie(`shambler`, this.player.x + 200, this.player.y);
+				z.health = z.maxHealth = 1e4;
+				this.applyCopperhead(z, `carbine`);
+				const hp0 = z.health;
+				for (let k = 0; k < 60; k++) this.tickPoison(z, 1 / 60);
+				const out = { stacks: (this.poison.get(z) || { stacks: 0 }).stacks, dps: copperheadPoisonDps(2), dot: Math.round(hp0 - z.health) };
+				this.boonStacks[`copperhead`] = 0; this.poison.delete(z);
+				return out;
+			},
+			whetstoneTest: () => {
+				const z = this.pushZombie(`shambler`, this.player.x + 60, this.player.y);
+				this.boonStacks[`whetstone`] = 0;
+				const k0 = this.playerDamageMul(z, `chainsaw`), c0 = this.playerDamageMul(z, `carbine`);
+				this.boonStacks[`whetstone`] = 2;
+				const k2 = this.playerDamageMul(z, `chainsaw`), c2 = this.playerDamageMul(z, `carbine`);
+				this.boonStacks[`whetstone`] = 0;
+				return { chainsawRatio: +(k2 / k0).toFixed(3), carbineRatio: +(c2 / c0).toFixed(3), expected: whetstoneChainsawMul(2), bashMul: whetstoneBashMul(2) };
+			},
+			bashTest: () => {
+				const mk = () => { const z = this.pushZombie(`shambler`, this.player.x + 40, this.player.y); z.health = z.maxHealth = 500; return z; };
+				this.player.angle = 0;
+				this.boonStacks[`whetstone`] = 0;
+				const z0 = mk(); this.bashCd = 0; this.dodgeTimer = 0; const h0 = z0.health; this.tryBash(); const d0 = h0 - z0.health;
+				this.boonStacks[`whetstone`] = 2;
+				const z2 = mk(); this.bashCd = 0; this.dodgeTimer = 0; const h2 = z2.health; this.tryBash(); const d2 = h2 - z2.health;
+				this.boonStacks[`whetstone`] = 0;
+				return { d0: Math.round(d0), d2: Math.round(d2), ratio: +(d2 / Math.max(1e-6, d0)).toFixed(3), expected: whetstoneBashMul(2) };
+			},
+			sifterTest: () => {
+				// Statistical: each spawn rolls a 6% lucky x5 orb, so compare means.
+				const z = this.pushZombie(`shambler`, this.player.x + 100, this.player.y);
+				const mean = (rank) => {
+					this.boonStacks[`sifter`] = rank;
+					let sum = 0;
+					for (let k = 0; k < 24; k++) {
+						const g0 = this.grit.length; this.spawnGrit(z);
+						sum += this.grit.slice(g0).reduce((a, g) => a + g.value, 0);
+						this.grit.length = g0;
+					}
+					return sum / 24;
+				};
+				const v0 = mean(0), v2 = mean(2);
+				this.boonStacks[`sifter`] = 0;
+				return { v0: +v0.toFixed(2), v2: +v2.toFixed(2), ratio: +(v2 / Math.max(1e-6, v0)).toFixed(3), expected: sifterValueMul(2), radiusMul: sifterRadiusMul(2) };
+			},
 			slotSpin: () => this.spinSlots(),
 			// Coordinator integration aliases: the UI lane's SlotMachine/CacheSlots
 			// components call spinSlots/slotCost/fireJackpot/gambleCache by these names.
@@ -875,6 +953,159 @@ export class GameEngine {
 				const hpAfter = this.zombies.reduce((a, z) => a + z.health, 0);
 				const heatSegs = this.lightning.filter((l) => l.heat).length;
 				return { ok: true, beams, hpBefore: Math.round(hpBefore), hpAfter: Math.round(hpAfter), heatSegs, info: this.lastLance };
+			},
+			// Batch 12 (Lane 1): powerup shower + elite hunt + flamethrower + railgun.
+			b12Info: () => {
+				const evs = {};
+				for (const id of [`powerup_shower`, `elite_hunt`]) {
+					const ev = RUN_EVENTS.find((e) => e.id === id);
+					evs[id] = ev ? { wave: ev.trigger.type === `wave` ? ev.trigger.wave : -1, mid: ev.midWaveSec ?? null, banner: ev.banner, radio: !!ev.radio } : null;
+				}
+				const weapons = [`flamethrower`, `railgun`].map((id) => {
+					const w = this.weapons.find((x) => x.id === id);
+					return w ? { id: w.id, name: w.name, dmg: w.damage, fireRate: w.fireRate, row: statsForLevel(id, 1) !== null, shop: SHOP_POOL.some((o) => o.weaponId === id), ids: INITIAL_WEAPONS.some((x) => x.id === id) } : null;
+				});
+				return { evs, weapons, fired: [...this.firedEvents] };
+			},
+			forceShower: () => {
+				const before = this.drops.length;
+				this.fireEvent(RUN_EVENTS.find((e) => e.id === `powerup_shower`));
+				const sh = this.powerupShower;
+				for (let k = 0; k < 500 && this.powerupShower; k++) this.updatePowerupShower(1 / 60);
+				const added = this.drops.slice(before);
+				return { ok: !!sh, total: sh ? sh.total : 0, added: added.length, kinds: [...new Set(added.map((d) => d.type))].length, showerDone: !this.powerupShower };
+			},
+			showerFired: () => this.firedEvents.includes(`powerup_shower`),
+			showerMidWave: () => {
+				// Deterministic cadence check: shower must NOT fire before its
+				// mid-wave mark, and MUST fire once the mark passes.
+				this.firedEvents = this.firedEvents.filter((id) => id !== `powerup_shower`);
+				this.wave = 4; this.waveState = `active`;
+				this.waveStartSim = this.simTime - 10;
+				this.updatePowerupShower(0);
+				const early = this.firedEvents.includes(`powerup_shower`);
+				this.waveStartSim = this.simTime - 25;
+				this.updatePowerupShower(0);
+				const late = this.firedEvents.includes(`powerup_shower`);
+				return { early, late };
+			},
+			forceHunt: () => {
+				// Deterministic: the hunt is a wave-8 event; pin the wave.
+				this.wave = 8; this.waveState = `active`;
+				this.firedEvents = this.firedEvents.filter((id) => id !== `elite_hunt`);
+				this.fireEvent(RUN_EVENTS.find((e) => e.id === `elite_hunt`));
+				return {
+					total: this.huntState ? this.huntState.total : 0,
+					targets: this.huntTargets.length,
+					affixed: this.huntTargets.filter((z) => z.affix).length,
+					elites: this.huntTargets.filter((z) => z.elite).length,
+				};
+			},
+			huntState: () => this.huntState ? { ...this.huntState } : null,
+			// Batch 12 (Lane 1 + UI/audio lane): Elite Hunt tracker hook.
+			// eventState("elite_hunt") -> { total, remaining } while a hunt is
+			// live; null when no hunt is active (idle, finished, or wrong id).
+			eventState: (eventId) => {
+				if (eventId !== `elite_hunt` || !this.huntState || this.huntState.done) return null;
+				return { total: this.huntState.total, remaining: Math.max(0, this.huntState.total - this.huntState.killed) };
+			},
+			// Batch 12 (Lane 1 + Lane 2): boon-wiring probes.
+			// Atomic sifter radius check: everything runs synchronously in one
+			// probe so live-loop frames (or a dust-devil surge) can't move the
+			// orb between setup and measurement.
+			gritRadiusTest: () => {
+				this.vacuumSurge = 0;
+				const magnet = () => (Math.max(420, this.viewSize().w * 0.46) + this.getPerkLevel(`scavenger`) * 40 + this.gritBonus * 36) * (this.pickupRadiusMul || 1) * sifterRadiusMul(this.boon(`sifter`));
+				this.boonStacks[`sifter`] = 0;
+				const mag0 = magnet();
+				this.boonStacks[`sifter`] = 2;
+				const mag2 = magnet();
+				const mid = Math.floor((mag0 + mag2) / 2);
+				const place = () => { this.grit.length = 0; this.dropGritOrb(this.player.x + mid, this.player.y, 0, 0, 1); };
+				const dist = () => this.grit.length ? Math.hypot(this.player.x - this.grit[0].x, this.player.y - this.grit[0].y) : -1;
+				this.boonStacks[`sifter`] = 0;
+				place(); this.updateGrit(0.5);
+				const d0 = dist();
+				this.boonStacks[`sifter`] = 2;
+				place(); this.updateGrit(0.5);
+				const d2 = dist();
+				this.boonStacks[`sifter`] = 0;
+				this.grit.length = 0;
+				return { mag0, mag2, mid, d0: Math.round(d0), d2: Math.round(d2), radiusMul: sifterRadiusMul(2) };
+			},
+			// Deterministic spawnGrit check: a fixed RNG seed makes lucky-orb
+			// rolls identical across ranks, so the value ratio must equal
+			// sifterValueMul. Tries seeds until one rolls no 6%-lucky orbs.
+			sifterSpawnTest: () => {
+				const z = this.pushZombie(`shambler`, this.player.x + 100, this.player.y);
+				z.elite = false; // wave-8 elite rolls would add flat +12 bonus orbs.
+				const savedGrit = this.grit, savedBag = this.gritBag;
+				this.grit = []; this.gritBag = 0; // dodge the ground-cap merge path.
+				const vals = (rank, seed) => {
+					this.boonStacks[`sifter`] = rank;
+					const saved = Math.random;
+					let s = seed;
+					Math.random = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+					try {
+						this.spawnGrit(z);
+						const orbs = this.grit.splice(0);
+						return { v: orbs.reduce((a, g) => a + g.value, 0), lucky: orbs.some((g) => g.lucky) };
+					} finally { Math.random = saved; }
+				};
+				let out = { ratio: -1, expected: sifterValueMul(2), radiusMul: sifterRadiusMul(2), seed: -1 };
+				for (let seed = 1234567; seed < 1234767; seed++) {
+					const a = vals(0, seed), b = vals(2, seed);
+					if (!a.lucky && !b.lucky) {
+						out = { ratio: b.v / Math.max(1e-6, a.v), expected: sifterValueMul(2), radiusMul: sifterRadiusMul(2), seed };
+						break;
+					}
+				}
+				this.boonStacks[`sifter`] = 0;
+				this.grit = savedGrit; this.gritBag = savedBag;
+				return out;
+			},
+			killHunt: () => {
+				const targets = [...this.huntTargets];
+				for (const z of targets) {
+					const i = this.zombies.indexOf(z);
+					if (i >= 0) { z.health = 1; this.killZombie(z, i); }
+				}
+				return { done: !!(this.huntState && this.huntState.done), reroll: this.huntBonusReroll, grit: this.grit.length, targets: this.huntTargets.length };
+			},
+			freeReroll: () => {
+				const s0 = this.scrap, c0 = this.shopRerollCost;
+				const ok = this.rerollShop();
+				return { ok, scrap: this.scrap, s0, cost: this.shopRerollCost, c0, flag: this.huntBonusReroll };
+			},
+			flameFire: () => {
+				const w = this.weapons.find((x) => x.id === `flamethrower`);
+				if (!w) return { ok: false };
+				w.unlocked = true;
+				this.selectWeapon(this.weapons.indexOf(w));
+				this.player.angle = 0;
+				for (let i = 0; i < 6; i++) this.pushZombie(`shambler`, this.player.x + 110 + i * 28, this.player.y + (i % 2 ? 12 : -12));
+				const hpBefore = this.zombies.reduce((a, z) => a + z.health, 0);
+				this.fireCurrentWeapon();
+				const info = this.lastFlame;
+				const stacks = this.zombies.slice(-6).map((z) => z.burnTick || 0);
+				for (let k = 0; k < 120; k++) this.updateZombies(1 / 60, Date.now());
+				const hpAfter = this.zombies.reduce((a, z) => a + z.health, 0);
+				return { ok: true, hits: info ? info.hits : -1, stacks, hpBefore: Math.round(hpBefore), hpAfter: Math.round(hpAfter) };
+			},
+			railFire: () => {
+				const w = this.weapons.find((x) => x.id === `railgun`);
+				if (!w) return { ok: false };
+				w.unlocked = true;
+				this.selectWeapon(this.weapons.indexOf(w));
+				this.player.angle = 0;
+				const zs = [];
+				for (let i = 0; i < 5; i++) zs.push(this.pushZombie(`shambler`, this.player.x + 200 + i * 120, this.player.y));
+				const hpBefore = zs.reduce((a, z) => a + z.health, 0);
+				this.fireCurrentWeapon();
+				const charging = this.railCharging;
+				for (let k = 0; k < 80 && this.railCharging; k++) this.updateRailgun(1 / 60);
+				const hpAfter = zs.reduce((a, z) => a + Math.max(0, z.health), 0);
+				return { ok: true, charging, fired: !this.railCharging, hits: this.lastRail ? this.lastRail.hits : -1, hpBefore: Math.round(hpBefore), hpAfter: Math.round(hpAfter) };
 			},
 			// Batch 11 (Lane 1) probes: thorned + wailing affixes.
 			affixInfo: (i) => { const z = this.zombies[i]; return z ? { affix: z.affix, wailCd: z.wailCd === undefined ? null : +z.wailCd.toFixed(2), frenzy: (z.frenzyUntil || 0) > this.simTime } : null; },
@@ -1207,7 +1438,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.codexSeen = new Set(), this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.killSurge = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.slotSpinsThisBreak = 0, this.arcBeams = [], this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.bloodSplats = [], this.slashBursts = [], this.hitFlashes = [], this.muzzlePunch = 0, this.gunKick = 0, this.gunKickT = 0, this.camPunchX = 0, this.camPunchY = 0, this.camPunchT = 0, this.whiffSlowT = 0, this.lastWhiff = null, this.lastKillWord = null, this.killWordCount = 0, this.fuseTimer = 0, this.nextPowerupAt = 80, this.nextScoreMulAt = 25, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.r7camInit = false, this.lastPx = null, this.lastPy = null, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.applyStageTerrain(), this.resetB7State(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.applyRosterMods(), this.ensureB7Weapons(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.deathCineT = 0, this.deathFlash = 0, this.player.atkT = 0, this.player.bobPhase = Math.random() * Math.PI * 2, this._lastGameOver = null, this._lastPlayerPulse = { sx: 1, sy: 1 }, this._lastZombiePulse = { sx: 1, sy: 1 }, this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.codexSeen = new Set(), this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.killSurge = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.slotSpinsThisBreak = 0, this.arcBeams = [], this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.bloodSplats = [], this.slashBursts = [], this.hitFlashes = [], this.muzzlePunch = 0, this.gunKick = 0, this.gunKickT = 0, this.camPunchX = 0, this.camPunchY = 0, this.camPunchT = 0, this.whiffSlowT = 0, this.lastWhiff = null, this.lastKillWord = null, this.killWordCount = 0, this.fuseTimer = 0, this.nextPowerupAt = 80, this.nextScoreMulAt = 25, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.r7camInit = false, this.lastPx = null, this.lastPy = null, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.applyStageTerrain(), this.resetB7State(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.applyRosterMods(), this.ensureB7Weapons(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.deathCineT = 0, this.deathFlash = 0, this.player.atkT = 0, this.player.bobPhase = Math.random() * Math.PI * 2, this._lastGameOver = null, this._lastPlayerPulse = { sx: 1, sy: 1 }, this._lastZombiePulse = { sx: 1, sy: 1 }, this.powerupShower = null, this.huntState = null, this.huntTargets = [], this.huntBonusReroll = false, this.waveStartSim = 0, this.railCharging = false, this.railChargeT = 0, this.railChargeW = null, this.lastFlame = null, this.lastRail = null, this.poison.clear(), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -2091,6 +2322,8 @@ export class GameEngine {
 			// applies ONLY to weapons sharing at least one tag (precise). Universal
 			// boons stay universal; see supportApplies in boons.ts.
 			if (supportApplies(`lead`, weaponType)) m *= 1 + this.boon(`lead`) * .08;
+			// Batch 12 (Lane 1): whetstone — chainsaw support via the heavy tag.
+			if (weaponType === `chainsaw` && whetstoneApplies(this.boonStacks, weaponType)) m *= whetstoneChainsawMul(this.boon(`whetstone`));
 		}
 			if (z.type === `behemoth` || z.type === `miner_brute` || z.elite) {
 				let attuned = 0;
@@ -2184,9 +2417,15 @@ export class GameEngine {
 		if (!first) this.shopRerollCost = SHOP_REROLL_BASE;
 	}
 	rerollShop() {
-		if (this.waveState !== `break` || this.scrap < this.shopRerollCost) return false;
-		this.scrap -= this.shopRerollCost;
-		this.shopRerollCost *= 2;
+		if (this.waveState !== `break`) return false;
+		// Batch 12 (Lane 1): elite-hunt bonus — one free reroll, on the house.
+		const free = this.huntBonusReroll;
+		if (!free && this.scrap < this.shopRerollCost) return false;
+		if (!free) {
+			this.scrap -= this.shopRerollCost;
+			this.shopRerollCost *= 2;
+		}
+		this.huntBonusReroll = false;
 		const kept = this.shopOffers.filter((o) => o.locked);
 		const pool = SHOP_POOL.filter((d) => !kept.some((k) => k.offerId === d.id) && (d.repeatable || !this.shopBought.has(d.id)) && !(d.kind === `unlock` && d.weaponId && this.weapons.some((w) => w.id === d.weaponId && w.unlocked)));
 		const offers = kept.slice();
@@ -2321,7 +2560,7 @@ export class GameEngine {
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && (n.onFree?.(), n.onFree = null, this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
 		this._simFrames = (this._simFrames || 0) + 1,
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateTelegraphs(e), this.updateOrbiters(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateArcBeams(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateCorpseDecals(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateScoreMulDrops(), this.updateCacheTimer(), this.updateFuse(e), this.updateLobbedCharges(e), this.updateKillSurge(e), this.updateBeastAudio(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateTelegraphs(e), this.updateOrbiters(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateArcBeams(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateCorpseDecals(e), this.updateFeel(e), this.updatePowerupDrops(), this.updatePowerupShower(e), this.updateRailgun(e), this.updateScoreMulDrops(), this.updateCacheTimer(), this.updateFuse(e), this.updateLobbedCharges(e), this.updateKillSurge(e), this.updateBeastAudio(e);
 		// Batch 5: on-shoot micro-layer decays — muzzle punch 50ms, gun kick 40ms yoyo, camera punch 60ms.
 		this.muzzlePunch = Math.max(0, this.muzzlePunch - e);
 		if (this.gunKickT > 0) { this.gunKickT = Math.max(0, this.gunKickT - e); this.gunKick = 5 * Math.sin((1 - this.gunKickT / .04) * Math.PI); } else this.gunKick = 0;
@@ -2669,7 +2908,8 @@ export class GameEngine {
 			z.vx += nx * impulse;
 			z.vy += ny * impulse;
 			// Batch 5: riot shields blunt bashes too.
-			const bdmg = this.applyAffixDefense(z, (z.type === "behemoth" ? 12 : 24) * this.playerDamageMul(z));
+			// Batch 12 (Lane 1): whetstone — bash is a global passive, × bash mul.
+			const bdmg = this.applyAffixDefense(z, (z.type === "behemoth" ? 12 : 24) * this.playerDamageMul(z) * whetstoneBashMul(this.boon(`whetstone`)));
 			z.health -= bdmg;
 			// Batch 11 (Lane 1): thorned elites bite back when bashed.
 			this.thornedReflect(z, bdmg);
@@ -2869,6 +3109,20 @@ export class GameEngine {
 			if (e.currentMag === 0) this.reloadCurrentWeapon();
 			return;
 		}
+		// Batch 12 (Lane 1): Dugger Torch — short cone, direct damage plus
+		// burn stacks.
+		if (e.id === `flamethrower`) {
+			this.fireFlamethrower(e, dmgMul);
+			if (e.currentMag === 0) this.reloadCurrentWeapon();
+			return;
+		}
+		// Batch 12 (Lane 1): Merom Railgun — trigger starts the charge; the
+		// beam fires when the wind-up completes.
+		if (e.id === `railgun`) {
+			this.fireRailgun(e, dmgMul);
+			if (e.currentMag === 0) this.reloadCurrentWeapon();
+			return;
+		}
 		const reach = this.aimReach();
 		const longGun = e.id !== `shotgun` && e.id !== `chainsaw`;
 		const shotRange = longGun ? Math.max(e.range, reach * 0.9) : e.range;
@@ -3053,7 +3307,7 @@ export class GameEngine {
 							this.spawnFloater(r.x, r.y - r.radius, `CRIT`, `#fef08a`);
 							soundEngine.playZombieHit(true);
 						}
-						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4 * (this.runHeadshotMul || 1), this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r, n.weaponType), i = this.applyAffixDefense(r, i), r.health -= i, this.stats.damageDealt += i;
+						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4 * (this.runHeadshotMul || 1), this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r, n.weaponType), i = this.applyAffixDefense(r, i), r.health -= i, this.stats.damageDealt += i, this.applyCopperhead(r, n.weaponType);
 						if (!n.isSplinter && r.health > 0 && r.health <= r.maxHealth * .2 && r.type !== `behemoth` && r.type !== `miner_brute`) r.health = 0;
 						if (e) this.tickBounty(`head`);
 						if (r.health <= 0 && !n.isSplinter) r.shatter = true;
@@ -3220,10 +3474,15 @@ export class GameEngine {
 		this.callbacks.onRadio?.(`WJPS Petersburg`, ev.radio);
 		soundEngine.playWaveHorn();
 		this.screenShake = Math.max(this.screenShake, 6);
+		// Batch 12 (Lane 1): event-specific payloads.
+		if (ev.id === `powerup_shower`) this.beginPowerupShower();
+		else if (ev.id === `elite_hunt`) this.beginEliteHunt();
 	}
 	updateEvents() {
 		for (const ev of RUN_EVENTS) {
 			if (this.firedEvents.includes(ev.id)) continue;
+			// Batch 12 (Lane 1): mid-wave events fire on their own cadence.
+			if (ev.midWaveSec) continue;
 			const hit = ev.trigger.type === `wave` ? this.wave >= ev.trigger.wave : this.simTime >= ev.trigger.seconds;
 			if (hit) this.fireEvent(ev);
 		}
@@ -3231,6 +3490,219 @@ export class GameEngine {
 		for (let i = this.activeEvents.length - 1; i >= 0; i--) {
 			if (now >= this.activeEvents[i].endsAt) this.activeEvents.splice(i, 1);
 		}
+	}
+	// Batch 12 (Lane 1): Powerup Shower — mid-wave, rains 8-12 random
+	// powerups across the arena over ~6 seconds.
+	beginPowerupShower() {
+		const n = SHOWER_COUNT_MIN + Math.floor(this.rng() * (SHOWER_COUNT_MAX - SHOWER_COUNT_MIN + 1));
+		this.powerupShower = { left: n, total: n, t: 0, interval: SHOWER_DURATION_SEC / n };
+	}
+	updatePowerupShower(dt) {
+		// Mid-wave cadence: the shower fires SHOWER_MID_WAVE_SEC seconds into
+		// its trigger wave instead of at wave start.
+		for (const ev of RUN_EVENTS) {
+			if (ev.id !== `powerup_shower` || this.firedEvents.includes(ev.id)) continue;
+			if (ev.trigger.type !== `wave` || this.wave < ev.trigger.wave || this.waveState !== `active`) continue;
+			if (this.simTime - this.waveStartSim >= (ev.midWaveSec ?? SHOWER_MID_WAVE_SEC)) this.fireEvent(ev);
+		}
+		const sh = this.powerupShower;
+		if (!sh) return;
+		sh.t += dt;
+		const w = this.currentLocation.mapWidth, h = this.currentLocation.mapHeight;
+		while (sh.left > 0 && sh.t >= sh.interval) {
+			sh.t -= sh.interval; sh.left--;
+			const pool = this.powerupPool;
+			const type = pool[Math.floor(this.rng() * pool.length)];
+			const a = this.rng() * Math.PI * 2, d = 160 + this.rng() * 380;
+			const x = Math.max(40, Math.min(w - 40, this.player.x + Math.cos(a) * d));
+			const y = Math.max(40, Math.min(h - 40, this.player.y + Math.sin(a) * d));
+			this.drops.push({ id: Math.random().toString(), type, x, y, amount: type === `moonshine_med` ? 40 : 1, duration: 3e4 });
+			soundEngine.tone({ f: 660, f2: 990, type: `sine`, dur: .25, vol: .15 });
+		}
+		if (sh.left <= 0) this.powerupShower = null;
+	}
+	// Batch 12 (Lane 1): Elite Hunt — a pack of 3-5 elites (each with an
+	// affix) moves in at once. Track the pack per wave; killing every marked
+	// elite inside the wave pays a grit shower plus a free shop reroll.
+	beginEliteHunt() {
+		const n = HUNT_PACK_MIN + Math.floor(this.rng() * (HUNT_PACK_MAX - HUNT_PACK_MIN + 1));
+		this.huntTargets = [];
+		const pool = this.wave >= 8 ? [`behemoth`, `miner_brute`, `bloater_spitter`] : this.wave >= 5 ? [`miner_brute`, `bloater_spitter`, `riot`, `sprinter`] : [`sprinter`, `riot`, `bloater_spitter`];
+		for (let i = 0; i < n; i++) {
+			const type = pool[Math.floor(this.rng() * pool.length)];
+			const edge = this.farEdgeSpawn(480);
+			const z = this.pushZombie(type, edge.x, edge.y);
+			if (!z.elite) {
+				z.elite = true;
+				z.maxHealth = Math.round(z.maxHealth * 2.2);
+				z.health = z.maxHealth;
+				z.speed = z.speed * 1.15;
+				z.scoreValue = z.scoreValue * 3;
+				z.scrapValue = Math.round(z.scrapValue * 2);
+			}
+			z.ai = `chase`;
+			z.tx = this.player.x;
+			z.ty = this.player.y;
+			this.assignAffix(z);
+			this.huntTargets.push(z);
+			this.spawnFloater(z.x, z.y - z.radius - 14, `MARKED ${type.replace(`_`, ` `).toUpperCase()}`, `#c77dff`);
+		}
+		this.huntState = { wave: this.wave, total: n, killed: 0, done: false };
+	}
+	grantHuntBonus() {
+		// Grit shower around the player.
+		for (let i = 0; i < HUNT_BONUS_GRIT_ORBS; i++) {
+			const an = this.rng() * Math.PI * 2;
+			this.dropGritOrb(this.player.x, this.player.y, Math.cos(an) * 140, Math.sin(an) * 140, 3);
+		}
+		this.huntBonusReroll = true;
+		this.spawnFloater(this.player.x, this.player.y - 72, `HUNT COMPLETE — FREE REROLL`, `#ffd700`);
+		this.callbacks.onRadio?.(`WJPS Petersburg`, `Clean sweep on those marked ones. The county's grateful — next shop reroll's on the house.`);
+		soundEngine.playPowerup();
+	}
+	// Batch 12 (Lane 1): flamethrower config from the weapon row —
+	// dmg = direct damage, cnt = burn stacks applied, rad = cone length,
+	// spd = cone half-angle (degrees), cd = refire.
+	flameCfg(w) {
+		const lv = statsForLevel(`flamethrower`, w?.upgradeLevel ?? 1);
+		return {
+			dmg: w?.damage ?? lv?.dmg ?? 18,
+			stacks: Math.max(1, Math.round(w?.pellets ?? lv?.cnt ?? 1)),
+			range: Math.max(1, w?.range ?? lv?.rad ?? 260),
+			halfRad: ((w?.bulletSpeed ?? lv?.spd ?? 28) * Math.PI) / 180,
+		};
+	}
+	fireFlamethrower(w, dmgMul) {
+		const cfg = this.flameCfg(w);
+		const ax = Math.cos(this.player.angle), ay = Math.sin(this.player.angle);
+		let hits = 0;
+		for (const z of this.zombies) {
+			if (z.health <= 0) continue;
+			const dx = z.x - this.player.x, dy = z.y - this.player.y;
+			const d = Math.hypot(dx, dy);
+			if (d > cfg.range + z.radius) continue;
+			const along = dx * ax + dy * ay;
+			if (along < 0) continue;
+			if (Math.abs(dx * -ay + dy * ax) > Math.tan(cfg.halfRad) * along + z.radius) continue;
+			const dealt = this.applyAffixDefense(z, cfg.dmg * dmgMul);
+			z.health -= dealt;
+			z.hitFlash = Math.max(z.hitFlash, .15);
+			z.burnTick = Math.min(BURN_MAX_STACKS, (z.burnTick || 0) + cfg.stacks);
+			z.isBurning = BURN_REFRESH_MS;
+			this.thornedReflect(z, cfg.dmg * dmgMul);
+			this.stats.damageDealt += dealt;
+			this.createBloodParticles(z.x, z.y, this.player.angle);
+			hits++;
+			if (z.health <= 0) this.killZombie(z, this.zombies.indexOf(z));
+		}
+		// Flame wash: short-lived orange tongues down the cone.
+		for (let i = 0; i < 10; i++) {
+			const ja = (Math.random() - .5) * cfg.halfRad * 2;
+			const sp = 4 + Math.random() * 9;
+			this.particles.push(Object.assign(this.allocParticle(), {
+				x: this.player.x + Math.cos(this.player.angle) * 26,
+				y: this.player.y + Math.sin(this.player.angle) * 26,
+				vx: Math.cos(this.player.angle + ja) * sp,
+				vy: Math.sin(this.player.angle + ja) * sp,
+				size: 5 + Math.random() * 6,
+				color: Math.random() < .5 ? `#fb923c` : `#f97316`,
+				alpha: .85,
+				life: .22 + Math.random() * .14,
+				maxLife: .36,
+				type: `flame`
+			}));
+		}
+		this.addLight(this.player.x + ax * 120, this.player.y + ay * 120, 300, .85, .35);
+		this.stats.shotsFired++;
+		this.lastFlame = { hits, stacks: cfg.stacks };
+		soundEngine.tone({ f: 220, f2: 90, type: `sawtooth`, dur: .18, vol: .16 });
+		this.alertZombies(this.player.x, this.player.y, 260);
+	}
+	// Batch 12 (Lane 1): railgun config — dmg = beam damage, rad = beam
+	// length, spd = charge seconds, cd = refire.
+	railCfg(w) {
+		const lv = statsForLevel(`railgun`, w?.upgradeLevel ?? 1);
+		return {
+			dmg: w?.damage ?? lv?.dmg ?? 420,
+			len: Math.max(1, w?.range ?? lv?.rad ?? 900),
+			chargeSec: Math.max(.2, w?.bulletSpeed ?? lv?.spd ?? .6),
+		};
+	}
+	fireRailgun(w, dmgMul) {
+		// Pulling the trigger while a charge is already winding wastes the
+		// round fireCurrentWeapon just decremented — refund it.
+		if (this.railCharging) { w.currentMag++; this.stats.shotsFired--; return; }
+		const cfg = this.railCfg(w);
+		this.railCharging = true;
+		this.railChargeT = cfg.chargeSec;
+		this.railChargeDmg = w.damage * dmgMul;
+		this.railChargeW = w;
+		this.spawnFloater(this.player.x, this.player.y - 56, `RAILGUN CHARGING`, `#7dd3fc`);
+		soundEngine.tone({ f: 120, f2: 900, type: `sawtooth`, dur: cfg.chargeSec, vol: .2 });
+	}
+	updateRailgun(dt) {
+		if (!this.railCharging || this.draft) return;
+		this.railChargeT -= dt;
+		if (this.railChargeT <= 0) {
+			this.railCharging = false;
+			this.fireRailShot();
+		}
+	}
+	fireRailShot() {
+		const w = this.railChargeW;
+		const len = w ? this.railCfg(w).len : 900;
+		const dmg = this.railChargeDmg;
+		const ax = Math.cos(this.player.angle), ay = Math.sin(this.player.angle);
+		const halfW = 26;
+		let hits = 0;
+		// Snapshot: killZombie splices this.zombies; iterating the live array
+		// would skip the zombie after every beam kill.
+		for (const z of [...this.zombies]) {
+			if (z.health <= 0) continue;
+			const dx = z.x - this.player.x, dy = z.y - this.player.y;
+			const t = dx * ax + dy * ay;
+			if (t < 0 || t > len + z.radius) continue;
+			if (Math.abs(dx * -ay + dy * ax) > halfW + z.radius) continue;
+			const dealt = this.applyAffixDefense(z, dmg);
+			z.health -= dealt;
+			z.hitFlash = .3;
+			this.stats.damageDealt += dealt;
+			this.createBloodParticles(z.x, z.y, Math.atan2(dy, dx));
+			this.thornedReflect(z, dmg);
+			hits++;
+			if (z.health <= 0) this.killZombie(z, this.zombies.indexOf(z));
+		}
+		// Hitscan-ish piercing beam visual: hot white-violet core.
+		this.heatArc(this.player.x, this.player.y, this.player.x + ax * len, this.player.y + ay * len);
+		this.addLight(this.player.x + ax * len * .5, this.player.y + ay * len * .5, 420, .9, .5);
+		soundEngine.tone({ f: 1800, f2: 200, type: `sawtooth`, dur: .3, vol: .3 });
+		this.screenShake = Math.max(this.screenShake, 8 * this.tune('shake') * this.motionScale());
+		this.lastRail = { hits, len: Math.round(len) };
+		this.alertZombies(this.player.x, this.player.y, 420);
+		if (w && w.currentMag === 0) this.reloadCurrentWeapon();
+	}
+	// Batch 12 (Lane 1): Copperhead Rounds — bullet hits stack a bleeding
+	// poison on the zombie (tag-gated to rapid+precise weapons). Each stack
+	// ticks copperheadPoisonDps for copperheadDurationSec seconds.
+	applyCopperhead(z, weaponId) {
+		const rank = this.boon(`copperhead`);
+		if (rank <= 0 || !copperheadApplies(this.boonStacks, weaponId || ``)) return;
+		const cur = this.poison.get(z);
+		const stacks = Math.min(copperheadMaxStacks(rank), (cur ? cur.stacks : 0) + 1);
+		this.poison.set(z, { stacks, t: copperheadDurationSec(rank) });
+	}
+	// Ticks one poisoned zombie. Returns true when the poison killed it.
+	tickPoison(z, dt) {
+		const ps = this.poison.get(z);
+		if (!ps) return false;
+		if (!this.zombies.includes(z)) { this.poison.delete(z); return false; }
+		ps.t -= dt;
+		const pdps = copperheadPoisonDps(this.boon(`copperhead`)) * ps.stacks;
+		z.health -= pdps * dt;
+		this.stats.damageDealt += pdps * dt;
+		z.hitFlash = Math.max(z.hitFlash, .08);
+		if (ps.t <= 0) this.poison.delete(z);
+		return z.health <= 0;
 	}
 	updateBomb() {
 		if (this.bombCharges < BOMB_MAX_CHARGES && Date.now() - this.bombLastRegen >= BOMB_REGEN_MS) {
@@ -3330,6 +3802,8 @@ export class GameEngine {
 	}
 	startNextWave() {
 		this.wave++, this.waveState = `active`;
+		this.waveStartSim = this.simTime; // Batch 12 (Lane 1): mid-wave event cadence anchor.
+		this.huntTargets = []; this.huntState = null; // Batch 12: hunt state is per-wave.
 		this.checkWindowChange();
 		this.eventCd = this.wave === 1 ? 99 : 14 + Math.random() * 8;
 		// Batch 4: D(t) time-curve multiplies the wave-system spawn count.
@@ -3589,7 +4063,7 @@ export class GameEngine {
 					this.spawnFloater(r.x, r.y - r.radius - 20, `!`, `#ffffff`);
 				}
 			}
-			if (r.isBurning && r.isBurning > 0 && (r.isBurning -= e * 1e3, r.health -= e * 35, Math.random() < .3 && this.particles.push(Object.assign(this.allocParticle(), {
+			if (r.isBurning && r.isBurning > 0 && (r.isBurning -= e * 1e3, r.health -= e * (35 + (r.burnTick || 0) * BURN_STACK_DPS), r.isBurning <= 0 && (r.burnTick = 0), Math.random() < .3 && this.particles.push(Object.assign(this.allocParticle(), {
 				x: r.x + (Math.random() - .5) * r.radius,
 				y: r.y + (Math.random() - .5) * r.radius,
 				vx: (Math.random() - .5) * 1.5,
@@ -3601,6 +4075,11 @@ export class GameEngine {
 				maxLife: .4,
 				type: `fire`
 			}))), r.health <= 0) {
+				this.killZombie(r, n);
+				continue;
+			}
+			// Batch 12 (Lane 1): Copperhead Rounds — poison stacks tick down.
+			if (this.tickPoison(r, e)) {
 				this.killZombie(r, n);
 				continue;
 			}
@@ -3885,6 +4364,8 @@ export class GameEngine {
 	killZombie(e, t) {
 		// Batch 6: codex discovery — first kill of each zombie type.
 		this.codexSeen?.add(e.type);
+		// Batch 12 (Lane 1): drop copperhead poison state with the corpse.
+		this.poison.delete(e);
 		// Batch 2: volatile affix — the elite pops, and takes the crowd with it.
 		if (e.affix === `volatile`) {
 			const R = 130, dmg = Math.round(e.maxHealth * .5);
@@ -3911,6 +4392,16 @@ export class GameEngine {
 		}
 		const comboBefore = Math.floor(this.comboMultiplier);
 		this.zombies.splice(t, 1), this.stats.kills++, this.bumpLifetime(`kills`), this.lastKillTime = Date.now(), this.comboMultiplier = Math.min(5, this.comboMultiplier + .25);
+		// Batch 12 (Lane 1): elite hunt — track marked kills per wave. Dropping
+		// the whole pack inside the wave pays the hunt bonus.
+		if (this.huntTargets.includes(e)) {
+			this.huntTargets = this.huntTargets.filter((z) => z !== e);
+			const hs = this.huntState;
+			if (hs && hs.wave === this.wave && !hs.done) {
+				hs.killed++;
+				if (hs.killed >= hs.total) { hs.done = true; this.grantHuntBonus(); }
+			}
+		}
 		// Batch 10 (Lane 1): corpse permanence — fading body decal, capped.
 		this.addCorpse(e);
 		// Batch 10 (Lane 1): last-kill slow-mo — the final zombie of the wave
@@ -6168,7 +6659,7 @@ export class GameEngine {
 		this.grit.push(g0);
 	}
 	spawnGrit(z) {
-		let value = this.gritValue(z.type) * (this.gritValueMul || 1); // Batch 9 (Lane 1): stage grit rule.
+		let value = this.gritValue(z.type) * (this.gritValueMul || 1) * sifterValueMul(this.boon(`sifter`)); // Batch 9 (Lane 1): stage grit rule. Batch 12 (Lane 1): sifter pays better.
 		if (this.gritBag > 0) { value += 1; this.gritBag--; }  // bag pays out into fresh drops
 		const bits = value > 3 ? 4 : value > 1 ? 2 : 1;
 		for (let i = 0; i < bits; i++) {
@@ -6227,7 +6718,7 @@ export class GameEngine {
 			}
 		}
 		const span = this.viewSize().w;
-		const magnet = (Math.max(420, span * 0.46) + this.getPerkLevel(`scavenger`) * 40 + this.gritBonus * 36) * (this.pickupRadiusMul || 1); // Batch 9: character pickup-radius passive.
+		const magnet = (Math.max(420, span * 0.46) + this.getPerkLevel(`scavenger`) * 40 + this.gritBonus * 36) * (this.pickupRadiusMul || 1) * sifterRadiusMul(this.boon(`sifter`)); // Batch 9: character pickup-radius passive. Batch 12 (Lane 1): sifter drifts farther.
 		// Batch 4: Dust Devil surge — every ground orb flies to the player.
 		if (this.vacuumSurge > 0) {
 			this.vacuumSurge -= dt;

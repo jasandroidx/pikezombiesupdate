@@ -1,6 +1,6 @@
 import { INITIAL_WEAPONS, tagsMatch } from "./constants";
 
-export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt" | "fork" | "ricochet" | "seeker" | "aura" | "wompus" | "nova" | "missiles" | "chainlightning" | "orbiter" | "tracer" | "saltcircle" | "cornliquor" | "brinebarrel";
+export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt" | "fork" | "ricochet" | "seeker" | "aura" | "wompus" | "nova" | "missiles" | "chainlightning" | "orbiter" | "tracer" | "saltcircle" | "cornliquor" | "brinebarrel" | "copperhead" | "whetstone" | "sifter";
 
 export type BoonRarity = "common" | "uncommon" | "rare";
 
@@ -59,6 +59,15 @@ export const BOON_CATALOG: BoonOffer[] = [
   { id: "cornliquor", name: "Corn Liquor", blurb: "Petersburg white lightning: +12% fire rate, −6% move speed per rank. Courage has a gait.", rarity: "common" },
   // brinebarrel: explosive-build support — barrels, bombers, B-bomb, Silas's Mash Bomb.
   { id: "brinebarrel", name: "Brine Barrel", blurb: "Pickle-brine from the Winslow cellar: explosions hit +30% harder per rank and leave a burning brine patch.", rarity: "rare" },
+  // Batch 12 (Lane 2): synergy picks.
+  // copperhead: weapon mod — poison rewards trigger-finger builds (cornliquor,
+  // trigger, the Enos Corner Repeater). Tag-gated to rapid + precise weapons.
+  { id: "copperhead", name: "Copperhead Rounds", blurb: "Tips dipped in Petersburg copperhead venom: your rounds stack a bleeding poison on the dead. Stacks.", rarity: "uncommon", tags: ["rapid", "precise"] },
+  // whetstone: bash passive + heavy-weapon support — the bash half is a global
+  // passive, the chainsaw half links through the heavy tag via supportApplies.
+  { id: "whetstone", name: "Whetstone", blurb: "A Stendal whetstone off the Backbone: your bash hits 25% harder per rank, and the chainsaw bites 15% deeper.", rarity: "uncommon", tags: ["heavy"] },
+  // sifter: economy passive — untagged, applies globally like cornliquor.
+  { id: "sifter", name: "White River Sifter", blurb: "A miner's sifter from the White River: grit drifts in 20% farther and pays 10% better per rank.", rarity: "common" },
 ];
 
 // Batch 3: ability forks with lockout — some picks close off alternatives.
@@ -127,11 +136,73 @@ export function brinePatch(rank: number): { radius: number; durationMs: number; 
   return { radius: 46 + 6 * rank, durationMs: 1500 + 500 * rank, dps: 10 * rank };
 }
 
+// Batch 12 (Lane 2): per-rank math for the three new synergy boons. DATA ONLY
+// (Batch 8/10 style): the engine lane wires these into the bullet-hit,
+// bash, chainsaw, and grit-pickup paths; nothing rebalances until then.
+// Exact integration points are named at each helper.
+
+// Copperhead Rounds (uncommon weapon mod): bullets apply a stacking poison.
+// Tag-gated to rapid + precise weapons (cornliquor/trigger/carbine builds).
+// Each bullet hit adds one stack to the zombie (up to copperheadMaxStacks);
+// each stack ticks copperheadPoisonDps for copperheadDurationSec seconds.
+// ENGINE LANE: hook the bullet-damage application in engine.ts (where
+// tracer pierce/speed are applied per fired bullet) — apply one poison stack
+// when copperheadApplies(boonStacks, weaponId) is true.
+export function copperheadMaxStacks(rank: number): number { return 2 + Math.max(0, Math.floor(rank)); }
+export function copperheadPoisonDps(rank: number): number { return 5 * Math.max(0, rank); } // per stack, per second
+export function copperheadDurationSec(rank: number): number { return 2.5 + 0.5 * Math.max(0, rank); }
+export function copperheadApplies(boonStacks: Record<string, number>, weaponId: string): boolean {
+  return (boonStacks["copperhead"] ?? 0) > 0 && supportApplies("copperhead", weaponId);
+}
+
+// Whetstone (uncommon): bash hits harder; chainsaw bites deeper.
+// The bash multiplier is a GLOBAL passive (bashing is not a weapon);
+// the chainsaw multiplier links through the heavy tag via supportApplies,
+// so it stacks honestly with the lead damage bonus like tracer does.
+// ENGINE LANE: multiply the bash damage in tryBash() by whetstoneBashMul,
+// and apply whetstoneChainsawMul inside playerDamageMul when the weapon
+// id is "chainsaw" and whetstoneApplies passes.
+export function whetstoneBashMul(rank: number): number { return 1 + 0.25 * Math.max(0, rank); }
+export function whetstoneChainsawMul(rank: number): number { return 1 + 0.15 * Math.max(0, rank); }
+export function whetstoneApplies(boonStacks: Record<string, number>, weaponId: string): boolean {
+  return (boonStacks["whetstone"] ?? 0) > 0 && supportApplies("whetstone", weaponId);
+}
+
+// White River Sifter (common economy passive): +20% pickup radius and
+// +10% grit value per rank. Untagged — economy is not a weapon, so there is
+// no tag family to gate on; applies globally. Synergy with County hide /
+// Pocket the leavings grit-economy builds.
+// ENGINE LANE: multiply the grit magnet radius at updateGrit() (the
+// pickupRadiusMul line) by sifterRadiusMul, and multiply grit orb value by
+// sifterValueMul alongside the existing gritValueMul.
+export function sifterRadiusMul(rank: number): number { return 1 + 0.20 * Math.max(0, rank); }
+export function sifterValueMul(rank: number): number { return 1 + 0.10 * Math.max(0, rank); }
+
+// Batch 12 (Lane 2): single probe-visible summary for the three new boons.
+// The engine lane can expose this verbatim as a window.__controlsTest probe;
+// it takes a boonStacks record (same shape as the engine's this.boonStacks)
+// and returns every computed effect value, so the test can verify the
+// mechanics end-to-end without duplicating the math.
+export function b12BoonSummary(boonStacks: Record<string, number>): {
+  copperhead: { rank: number; maxStacks: number; dps: number; durationSec: number };
+  whetstone: { rank: number; bashMul: number; chainsawMul: number };
+  sifter: { rank: number; radiusMul: number; valueMul: number };
+} {
+  const ch = Math.max(0, boonStacks["copperhead"] ?? 0);
+  const wh = Math.max(0, boonStacks["whetstone"] ?? 0);
+  const si = Math.max(0, boonStacks["sifter"] ?? 0);
+  return {
+    copperhead: { rank: ch, maxStacks: copperheadMaxStacks(ch), dps: copperheadPoisonDps(ch), durationSec: copperheadDurationSec(ch) },
+    whetstone: { rank: wh, bashMul: whetstoneBashMul(wh), chainsawMul: whetstoneChainsawMul(wh) },
+    sifter: { rank: si, radiusMul: sifterRadiusMul(si), valueMul: sifterValueMul(si) },
+  };
+}
+
 export function rollBoons(stacks: Record<string, number>, molotovs: number, maxMolotovs: number, posts = 0, pipes = 0, banished: Set<string> = new Set()): BoonOffer[] {
   const pool = BOON_CATALOG.filter((b) => {
     if (b.hidden) return false; // Batch 4: secrets are never drafted.
     if (banished.has(b.id)) return false;
-    if ((stacks[b.id] ?? 0) >= (b.id === "hide" ? 8 : b.id === "storm" || b.id === "salt" || b.id === "saltcircle" ? 6 : b.id === "fork" ? 3 : b.id === "seeker" ? 2 : b.id === "ricochet" ? 4 : b.id === "aura" ? 6 : b.id === "tracer" || b.id === "cornliquor" || b.id === "brinebarrel" ? 5 : 99)) return false;
+    if ((stacks[b.id] ?? 0) >= (b.id === "hide" ? 8 : b.id === "storm" || b.id === "salt" || b.id === "saltcircle" ? 6 : b.id === "fork" ? 3 : b.id === "seeker" ? 2 : b.id === "ricochet" ? 4 : b.id === "aura" ? 6 : b.id === "tracer" || b.id === "cornliquor" || b.id === "brinebarrel" || b.id === "copperhead" || b.id === "whetstone" || b.id === "sifter" ? 5 : 99)) return false;
     if (b.id === "jug" && molotovs >= maxMolotovs) return false;
     if (b.id === "post" && posts >= 3) return false;
     if (b.id === "pipe" && pipes >= 4) return false;
