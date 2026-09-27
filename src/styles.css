@@ -174,3 +174,24 @@
     animation: none;
   }
 }
+
+/* Batch 10 (Lane 2): HUD pickup pop-in — scale 0.1 → 1 over ~150ms with a
+   Back.easeOut-flavoured cubic-bezier, matching the canvas spawn-pop tween. */
+@keyframes pickup-pop {
+  0% {
+    transform: scale(0.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-pickup-pop {
+  animation: pickup-pop 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pickup-pop {
+    animation: none;
+  }
+}

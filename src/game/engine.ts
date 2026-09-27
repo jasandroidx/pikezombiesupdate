@@ -21,12 +21,12 @@ import {
   CellarHole,
   NoisePulse,
 } from "../types/game";
-import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG, supportApplies } from "./boons";
-import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVES, windowAt, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS } from "./constants";
+import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG, supportApplies, tracerPierceBonus, tracerSpeedMul, saltCircleDefenseMul, saltCircleApplies, cornLiquorFireRateMul, cornLiquorMoveMul, brineExplosionMul, brinePatch } from "./boons";
+import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVES, windowAt, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS, ILLUSIONIST, MORTAR_TUNING, SIGNATURE_TUNING } from "./constants";
 import { loadMeta, saveMeta, recordRun, topRuns, characterDef, stageDef, selectedCharacterId, selectedStageId } from "./meta";
 import * as metaNS from "./meta";
 import { soundEngine } from "../audio/soundEngine";
-import { renderEnvironment, drawBlobShadow, registerZombieHit, zombieFlashIntensity, applyZombieTint, clearZombieTint, drawZombieHitFlash, render7, renderTelegraphs, drawGlowSprite, drawSparkSprite, drawSmokeSprite } from "./mapRenderer";
+import { renderEnvironment, drawBlobShadow, registerZombieHit, zombieFlashIntensity, applyZombieTint, clearZombieTint, drawZombieHitFlash, render7, renderTelegraphs, drawGlowSprite, drawSparkSprite, drawSmokeSprite, pickupPopScale } from "./mapRenderer"; // Batch 10 (Lane 1): Lane 2 tweened pickup pop-in helper
 import { DynamicLighting } from "./lighting";
 import { radioFor } from "./radio";
 import { drawSprite, drawWildLabel, loadArt, ZOMBIE_LABELS } from "./art";
@@ -220,6 +220,7 @@ export class GameEngine {
 	_charMaxHpAdd = 0; // Batch 9: current character's flat max-HP slice (divided out on re-run).
 	_charSpeedMul = 1; // Batch 9: current character's speed slice (divided out on re-run).
 	lastMoveSpeed = 0;
+	_lastFireInterval = 0; // Batch 10 (Lane 4): last computed fire interval (ms) — probe surface for corn liquor.
 	walkPhase = 0;
 	moveVX = 0;
 	moveVY = 0;
@@ -265,6 +266,11 @@ export class GameEngine {
 	banishCharges = 2;
 	// VS-1: capped fading scorch decals from explosions.
 	scorchDecals = [];
+	// Batch 10 (Lane 1): capped fading corpse decals — last-kill permanence.
+	corpseDecals = [];
+	lastKillSlowT = 0;
+	// Batch 10 (Lane 1): lobbed mortar / Mash Bomb charges awaiting detonation.
+	lobbedCharges = [];
 	// VS-1: pooled damage-number throttle.
 	dmgFloaters = 0;
 	// VS-3: directional hurt feedback.
@@ -787,6 +793,69 @@ export class GameEngine {
 			haintClones: () => this.zombies.filter((z) => z.isClone).length,
 			cloneInfo: () => { const z = this.zombies.find((z) => z.isClone); return z ? { type: z.type, hp: Math.round(z.health), dmg: z.damage } : null; },
 			haintTick: () => { const z = this.zombies.find((z) => z.type === `haint` && !z.isClone); if (z) z.cloneCd = 0; return !!z; },
+			// Batch 10 (Lane 1): signature specials, illusionist, corpses, mortar.
+			triggerSignature: () => this.triggerSignature(),
+			signatureState: () => this.signatureState(),
+			sigTimers: () => ({
+				deadeye: +Math.max(0, this.deadeyeUntil - this.simTime).toFixed(2),
+				stillHeart: +Math.max(0, this.stillHeartUntil - this.simTime).toFixed(2),
+				lastKill: +this.lastKillSlowT.toFixed(2),
+				lobbed: this.lobbedCharges.length,
+				frMul: this.signatureFireRateMul(),
+			}),
+			sigReset: () => { this.signatureCdUntil = 0; this.deadeyeUntil = 0; this.stillHeartUntil = 0; this.lastKillSlowT = 0; return true; },
+			// Batch 10 (Lane 1): deterministic subsystem steppers — no wall-clock waits in tests.
+			stepUpdate: (dt) => { const b = this.simTime; this.update(dt); return +(this.simTime - b).toFixed(4); },
+			stepIllusionist: () => {
+				const z = this.zombies.find((x) => x.type === `illusionist` && !x.isClone);
+				if (!z) return -1;
+				z.cloneCd = 0;
+				this.tickIllusionist(z, 0.1);
+				return this.zombies.filter((x) => x.isClone && x.cloneOf === z.id).length;
+			},
+			stepCharges: (dt) => { this.updateLobbedCharges(dt); return this.lobbedCharges.length; },
+			lobbedT: () => this.lobbedCharges.length ? +this.lobbedCharges[0].t.toFixed(3) : -1,
+			stepCorpse: (dt) => { this.updateCorpseDecals(dt); return this.corpseDecals.length; },
+			critProbe: () => { this.fireCurrentWeapon(); const b = this.bullets[this.bullets.length - 1]; return b ? b.critChance : -1; },
+			forceLastKill: () => {
+				this.waveState = `active`;
+				this.zombiesToSpawn = 0;
+				this.zombies.length = 0;
+				const z = this.pushZombie(`shambler`, this.player.x + 200, this.player.y);
+				this.killZombie(z, this.zombies.indexOf(z));
+				return { slow: +this.lastKillSlowT.toFixed(2), remaining: this.zombies.length, corpses: this.corpseDecals.length };
+			},
+			setChar: (id) => { try { localStorage.setItem(`pz_character_v1`, id); } catch { } return selectedCharacterId(); },
+			illusionistTick: () => { const z = this.zombies.find((z) => z.type === `illusionist` && !z.isClone); if (z) z.cloneCd = 0; return !!z; },
+			illusionistInfo: () => {
+				const z = this.zombies.find((z) => z.type === `illusionist` && !z.isClone);
+				if (!z) return null;
+				const clones = this.zombies.filter((x) => x.isClone && x.cloneOf === z.id);
+				return { hp: Math.round(z.health), clones: clones.length, cloneHp: clones.map((c) => Math.round(c.health)), cloneDmg: clones.map((c) => c.damage) };
+			},
+			corpseCount: () => this.corpseDecals.length,
+			mortarInfo: () => { const w = this.weapons.find((x) => x.id === `mortar`); return w ? { unlocked: !!w.unlocked, dmg: w.damage, fireRate: w.fireRate, row: statsForLevel(`mortar`, 1) !== null, shop: SHOP_POOL.some((o) => o.weaponId === `mortar`) } : null; },
+			mortarFire: () => {
+				const w = this.weapons.find((x) => x.id === `mortar`);
+				if (!w) return { ok: false };
+				w.unlocked = true;
+				this.selectWeapon(this.weapons.indexOf(w));
+				const scorchBefore = this.scorchDecals.length;
+				const hpBefore = this.zombies.reduce((a, z) => a + z.health, 0);
+				const nBefore = this.zombies.length;
+				this.fireCurrentWeapon();
+				const shells = this.bullets.filter((b) => b.isMortar).length;
+				this.updateBullets(0.85, Date.now());
+				const hpAfter = this.zombies.reduce((a, z) => a + z.health, 0);
+				return { ok: true, shells, nBefore, hpBefore: Math.round(hpBefore), hpAfter: Math.round(hpAfter), scorchBefore, scorchAfter: this.scorchDecals.length };
+			},
+			// Batch 10 (Lane 4): boon-wiring probes.
+			lastBullet: () => { const b = this.bullets[this.bullets.length - 1]; return b ? { pierce: b.pierce, spd: +Math.hypot(b.vx, b.vy).toFixed(2), wt: b.weaponType } : null; },
+			fireInterval: () => +((this._lastFireInterval || 0).toFixed(2)),
+			brineState: () => ({ rank: this.boon(`brinebarrel`), puddles: this.firePuddles.filter((p) => p.isBrine).map((p) => ({ r: Math.round(p.radius), dur: p.duration, dps: p.dps || 0 })) }),
+			stepPuddles: (n = 1) => { for (let k = 0; k < n; k++) this.updateFirePuddles(Date.now()); return this.firePuddles.length; },
+			detonateBarrel: () => { const b = this.explosiveBarrels[0]; if (!b) return false; this.detonateExplosiveBarrel(b, 0); return true; },
+			draftIds: () => (this.draft || []).map((d) => d.id),
 			telegraphs: () => this.telegraphs.length,
 			stepB7: (n = 1) => { this.rebuildZombieHash(); for (let i = 0; i < n; i++) { this.simTime += 1 / 60; this.updateTelegraphs(1 / 60); this.updateOrbiters(1 / 60); } return this.telegraphs.length; },
 			setDark: (v) => { this.dark = !!v; return this.dark; },
@@ -2241,13 +2310,16 @@ export class GameEngine {
 		}
 		// Batch 5: whiff micro-slow — the world runs at 0.12x for 0.12s after a missed bash.
 		if (this.whiffSlowT > 0) { this.whiffSlowT -= e; e *= .12; }
+		// Batch 10 (Lane 1): Still Heart — 0.35x world sim while live (simTime itself stays real-time, so the 5s window is wall-clock). Last-kill — 0.5x for 1s.
+		if (this.stillHeartUntil > this.simTime) e *= SIGNATURE_TUNING.eula_stillwell.power;
+		if (this.lastKillSlowT > 0) { this.lastKillSlowT -= e; e *= .5; }
 		this.trauma = Math.max(0, this.trauma - e * 1.6);
 		for (let t = this.floaters.length - 1; t >= 0; t--) {
 			let n = this.floaters[t];
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && (n.onFree?.(), n.onFree = null, this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
 		this._simFrames = (this._simFrames || 0) + 1,
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateTelegraphs(e), this.updateOrbiters(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateScoreMulDrops(), this.updateCacheTimer(), this.updateFuse(e), this.updateKillSurge(e), this.updateBeastAudio(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateTelegraphs(e), this.updateOrbiters(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateCorpseDecals(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateScoreMulDrops(), this.updateCacheTimer(), this.updateFuse(e), this.updateLobbedCharges(e), this.updateKillSurge(e), this.updateBeastAudio(e);
 		// Batch 5: on-shoot micro-layer decays — muzzle punch 50ms, gun kick 40ms yoyo, camera punch 60ms.
 		this.muzzlePunch = Math.max(0, this.muzzlePunch - e);
 		if (this.gunKickT > 0) { this.gunKickT = Math.max(0, this.gunKickT - e); this.gunKick = 5 * Math.sin((1 - this.gunKickT / .04) * Math.PI); } else this.gunKick = 0;
@@ -2392,6 +2464,9 @@ export class GameEngine {
 		let gait = (this.player.isSneaking ? .5 : 1) * this.sprintBlend * (i ? 1.32 : 1);
 		if (this.bloodRush > 0) gait *= 1.22;
 		if (this.boon(`stride`)) gait *= 1 + this.boon(`stride`) * .06;
+		// Batch 10 (Lane 4): Corn Liquor — the tradeoff: −6%/rank move speed
+		// (floored at 0.5 in the helper). Global passive, untagged.
+		gait *= cornLiquorMoveMul(this.boon(`cornliquor`));
 		// Batch 2: frosted chill slows the player.
 		if (Date.now() < this.chillUntil) gait *= .7;
 		if (r > 0) {
@@ -2668,7 +2743,11 @@ export class GameEngine {
 			return;
 		}
 		const hunting = !this.isMouseDown && !this.player.isSneaking && !!this.nearestTarget(this.aimReach());
-		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + (supportApplies(`trigger`, t.id) ? this.boon(`trigger`) : 0) * .1) * this.shopFireRateMul / this.bpFireMul * (1 + (this.comboMultiplier - 1) * .06) * r); // Batch 9: trigger fire-rate is affinity-gated.
+		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + (supportApplies(`trigger`, t.id) ? this.boon(`trigger`) : 0) * .1) * this.shopFireRateMul / this.bpFireMul * (1 + (this.comboMultiplier - 1) * .06) * r * this.signatureFireRateMul()); // Batch 9: trigger fire-rate is affinity-gated. Batch 10 (Lane 1): Deadeye Draw multiplies on top.
+		// Batch 10 (Lane 4): Corn Liquor — +12%/rank fire rate (interval shrinks
+		// by 1/cornLiquorFireRateMul). Global passive, untagged.
+		a /= cornLiquorFireRateMul(this.boon(`cornliquor`));
+		this._lastFireInterval = a;
 		i && e - this.lastShotTime >= a && (t.currentMag > 0 || n ? (this.fireCurrentWeapon(), this.lastShotTime = e) : t.reserveAmmo > 0 ? this.reloadCurrentWeapon() : this.autoSwapFromDry());
 	}
 	nearestTarget(range) {
@@ -2770,6 +2849,13 @@ export class GameEngine {
 			if (e.currentMag === 0) this.reloadCurrentWeapon();
 			return;
 		}
+		// Batch 10 (Lane 1): Stendal Pit Mortar — lobbed shells at the densest
+		// nearby cluster, not aimed shots. Shells detonate 0.8s after launch.
+		if (e.id === `mortar`) {
+			this.fireMortar(e, dmgMul);
+			if (e.currentMag === 0) this.reloadCurrentWeapon();
+			return;
+		}
 		const reach = this.aimReach();
 		const longGun = e.id !== `shotgun` && e.id !== `chainsaw`;
 		const shotRange = longGun ? Math.max(e.range, reach * 0.9) : e.range;
@@ -2779,7 +2865,10 @@ export class GameEngine {
 		for (let n = 0; n < count; n++) {
 			const jitter = (Math.random() - .5) * spread;
 			const ang = this.player.angle + jitter;
-			const spd = e.bulletSpeed * (.92 + Math.random() * .14);
+			// Batch 10 (Lane 4): Tracer Rounds — affinity-gated weapon mod:
+			// +1 pierce/rank and +15% travel speed/rank on linked weapons.
+			const tracerRank = (this.boon(`tracer`) > 0 && supportApplies(`tracer`, e.id)) ? this.boon(`tracer`) : 0;
+			const spd = e.bulletSpeed * (.92 + Math.random() * .14) * tracerSpeedMul(tracerRank);
 			this.bullets.push(Object.assign(this.allocBullet(), {
 				id: Math.random().toString(),
 				x: this.player.x + Math.cos(this.player.angle) * origin,
@@ -2787,8 +2876,8 @@ export class GameEngine {
 				vx: Math.cos(ang) * spd,
 				vy: Math.sin(ang) * spd,
 				damage: e.damage * dmgMul,
-				critChance: e.critChance ?? 0,
-				pierce: e.id === `revolver` && this.evolved === `lincoln` ? Math.max(e.pierce, 4) : e.pierce,
+				critChance: this.stillHeartUntil > this.simTime ? 1 : (e.critChance ?? 0), // Batch 10 (Lane 1): Still Heart — guaranteed crits.
+				pierce: (e.id === `revolver` && this.evolved === `lincoln` ? Math.max(e.pierce, 4) : e.pierce) + tracerPierceBonus(tracerRank),
 				rangeRemaining: e.id === `shotgun` ? shotRange * (.55 + Math.random() * .35) : shotRange,
 				weaponType: e.id,
 				isCrossbowBolt: e.id === `crossbow`,
@@ -2850,6 +2939,18 @@ export class GameEngine {
 					vx: (Math.random() - .5) * 1.5, vy: (Math.random() - .5) * 1.5,
 					size: 3, color: `#fb923c`, alpha: .8, life: .3, maxLife: .3, type: `smoke`
 				}));
+			}
+			// Batch 10 (Lane 1): mortar shells arc over the fight — the fuse ticks,
+			// then the shell blooms where it lands. No collisions on the way up.
+			if (n.isMortar) {
+				n.mortarFuse -= e;
+				n.x += n.vx * r; n.y += n.vy * r;
+				if ((this._simFrames & 1) === 0) this.particles.push(Object.assign(this.allocParticle(), {
+					x: n.x, y: n.y, vx: (Math.random() - .5) * 1.2, vy: (Math.random() - .5) * 1.2,
+					size: 3, color: `#9ca3af`, alpha: .7, life: .35, maxLife: .35, type: `smoke`
+				}));
+				if (n.mortarFuse <= 0) { this.detonateMortarShell(n); this.freeBulletAt(t); }
+				continue;
 			}
 			// Batch 2: heatseeker — rounds curve toward the nearest dead man.
 			// Batch 9: affinity-gated — only linked weapons' rounds hunt.
@@ -3010,12 +3111,13 @@ export class GameEngine {
 		for (let t = this.zombies.length - 1; t >= 0; t--) {
 			let n = this.zombies[t], r = Math.hypot(n.x - e.x, n.y - e.y);
 			if (r <= 140) {
-				let i = 1 - r / 140, a = 350 * (.4 + i * .6);
+				let i = 1 - r / 140, a = 350 * (.4 + i * .6) * brineExplosionMul(this.boon(`brinebarrel`)); // Batch 10 (Lane 4): brine boosts barrel blasts.
 				n.health -= a, n.isBurning = 4e3;
 				let o = Math.atan2(n.y - e.y, n.x - e.x);
 				n.x += 18 * i * Math.cos(o), n.y += 18 * i * Math.sin(o), this.stats.damageDealt += a, this.beastDmgAcc = (this.beastDmgAcc || 0) + a, this.createBloodParticles(n.x, n.y, o), n.lastHitPower = a, n.lastHitAngle = o, n.chewAggroT = this.simTime + 3, n.health <= 0 && this.killZombie(n, t);
 			}
 		}
+		this.spawnBrinePatch(e.x, e.y); // Batch 10 (Lane 4): brine leaves a burning patch at the blast center.
 		let n = Math.hypot(this.player.x - e.x, this.player.y - e.y);
 		if (n <= 140) {
 			let e = 1 - n / 140;
@@ -3036,8 +3138,10 @@ export class GameEngine {
 				this.firePuddles.splice(t, 1);
 				continue;
 			}
-			for (let e of this.zombies) Math.hypot(e.x - n.x, e.y - n.y) <= n.radius && (e.health -= .9, e.isBurning = 3e3);
-			Math.hypot(this.player.x - n.x, this.player.y - n.y) <= n.radius && this.damagePlayer(.3);
+			// Batch 10 (Lane 4): brine patches burn at their dps rate (per 1/60 tick); classic puddles keep the flat tick.
+			for (let e of this.zombies) Math.hypot(e.x - n.x, e.y - n.y) <= n.radius && (e.health -= n.dps ? n.dps / 60 : .9, e.isBurning = 3e3);
+			// Batch 10 (Lane 4): brine is the player's own brew — it never burns the player.
+			!n.isBrine && Math.hypot(this.player.x - n.x, this.player.y - n.y) <= n.radius && this.damagePlayer(.3);
 		}
 	}
 	updateAcidSpits(e) {
@@ -3136,12 +3240,14 @@ export class GameEngine {
 			z.vx += (dx / d) * imp;
 			z.vy += (dy / d) * imp;
 			// Batch 3: B-bomb falloff — full damage at ground zero, 35% at the rim.
-			const bfall = BOMB_DMG * (.35 + .65 * (1 - d / (BOMB_RADIUS + z.radius)));
+			// Batch 10 (Lane 4): brine boosts the blast.
+			const bfall = BOMB_DMG * (.35 + .65 * (1 - d / (BOMB_RADIUS + z.radius))) * brineExplosionMul(this.boon(`brinebarrel`));
 			z.health -= bfall;
 			z.hitFlash = .3;
 			this.stats.damageDealt += bfall;
 			this.createBloodParticles(z.x, z.y, Math.atan2(dy, dx));
 		}
+		this.spawnBrinePatch(this.player.x, this.player.y); // Batch 10 (Lane 4): brine patch at ground zero.
 		this.emitNoise(this.player.x, this.player.y, 700),
 		this.addLight(this.player.x, this.player.y, 520, 1, .6),
 		this.addScorch(this.player.x, this.player.y, 130),
@@ -3313,6 +3419,7 @@ export class GameEngine {
 		else if (this.wave >= 4 && o < .2) a = `bloater_spitter`;
 		else if (this.wave >= 3 && o < .3) a = `bomber`;
 		else if (this.wave >= 4 && o < .4) a = this.rng() < .45 ? `riot_shield` : `riot`;
+		else if (this.wave >= 5 && o < .45) a = `illusionist`;
 		else if (this.wave >= 3 && o < .5) a = `miner_brute`;
 		else if (this.wave >= 2 && o < .72) a = `sprinter`;
 		this.pushZombie(a, n, r);
@@ -3325,6 +3432,8 @@ export class GameEngine {
 		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `bomber` ? (r = 45, i = 2.7, a = 12, o = 15, s = `#b45309`, l = 120, u = 18) : e === `riot` ? (r = 520, i = 0.85, a = 30, o = 24, s = `#3f3f46`, c = true, l = 300, u = 60) : e === `riot_shield` ? (r = 420, i = 0.95, a = 26, o = 23, s = `#52525b`, c = false, l = 350, u = 70) : e === `behemoth` && beh && (r = beh.health + this.wave * 250, i = beh.speed, a = beh.damage, o = beh.radius, s = beh.color, l = beh.scoreValue, u = beh.scrapValue);
 		// Batch 7: Haint illusionist — pale drifter that multiplies itself.
 		if (e === `haint`) { r = 90; i = 2.6; a = 12; o = 16; s = `#7c8db0`; l = 120; u = 22; }
+		// Batch 10 (Lane 1): Illusionist — trickster archetype; base stats from the ILLUSIONIST data table.
+		if (e === `illusionist`) { r = ILLUSIONIST.hp; i = ILLUSIONIST.speed; a = ILLUSIONIST.damage; o = ILLUSIONIST.radius; s = ILLUSIONIST.color; l = ILLUSIONIST.scoreValue; u = ILLUSIONIST.scrapValue; }
 		const em = this.eventMods();
 		// Batch 6: smooth time-based HP scaling replaces the old per-wave HP step.
 		// scalingAt(simTime) in constants.ts: hp = 1+gt/120. The speed/damage
@@ -3480,6 +3589,7 @@ export class GameEngine {
 			// Batch 7 (Lane 1): boss phases + haint illusionist tick.
 			r.type === `behemoth` && this.tickBehemoth(r, o, e);
 			r.type === `haint` && this.tickHaint(r, e);
+			r.type === `illusionist` && this.tickIllusionist(r, e);
 			// Batch 6 (Lane A): bomber fuse runs before state logic — a lit bomber can't re-chase.
 			if (r.type === `bomber` && !this.tickFuse(r, o, e, n)) continue;
 			// Batch 6 (Lane A): structure-chewing utility decision (throttled inside).
@@ -3782,6 +3892,14 @@ export class GameEngine {
 		}
 		const comboBefore = Math.floor(this.comboMultiplier);
 		this.zombies.splice(t, 1), this.stats.kills++, this.bumpLifetime(`kills`), this.lastKillTime = Date.now(), this.comboMultiplier = Math.min(5, this.comboMultiplier + .25);
+		// Batch 10 (Lane 1): corpse permanence — fading body decal, capped.
+		this.addCorpse(e);
+		// Batch 10 (Lane 1): last-kill slow-mo — the final zombie of the wave
+		// buys 1s at 0.5x. Only when the wave is truly spent.
+		if (this.waveState === `active` && this.zombiesToSpawn === 0 && this.zombies.length === 0) {
+			this.lastKillSlowT = 1;
+			this.spawnFloater(e.x, e.y - 40, `WAVE CLEAR`, `#d4a017`);
+		}
 		// VS-1: Harvest Streak — 3s kill window, bonus capped at 30.
 		this.streak = this.simTime - this.lastStreakKill <= 3 ? this.streak + 1 : 1;
 		this.lastStreakKill = this.simTime;
@@ -3815,6 +3933,7 @@ export class GameEngine {
 			for (let i = 0; i < 2; i++) {
 				const a = Math.random() * Math.PI * 2;
 				const g1 = this.gritPool.pop() || {};
+				g1.id = `grit-${(this._gritSeq = (this._gritSeq || 0) + 1)}`; // Batch 10 (Lane 1): stable id for the Lane 2 pickup pop-in tween
 				g1.x = this.player.x; g1.y = this.player.y; g1.vx = Math.cos(a) * 160; g1.vy = Math.sin(a) * 160; g1.value = comboAfter; g1.lucky = false;
 				this.grit.push(g1);
 			}
@@ -3825,13 +3944,15 @@ export class GameEngine {
 		if (e.elite && Math.random() < .3) this.dropVacuumAt(e.x, e.y);
 		if (e.type === `bomber`) {
 			// Batch 6 (Lane A): formal spec — blastRadius / blastDamage with the existing falloff.
+			// Batch 10 (Lane 4): brine boosts bomber blasts and leaves a burning patch.
 			const R = this.b6blastR;
 			this.screenShake = Math.max(this.screenShake, 7);
 			for (const z of this.zombies) {
 				const bd = Math.hypot(z.x - e.x, z.y - e.y);
 				// Batch 3: explosion falloff — edge of the blast hurts less.
-				if (bd < R) { const bf = 1 - bd / R; z.health -= Math.round(this.b6blastDmg * bf); z.hitFlash = 0.08; }
+				if (bd < R) { const bf = 1 - bd / R; z.health -= Math.round(this.b6blastDmg * bf * brineExplosionMul(this.boon(`brinebarrel`))); z.hitFlash = 0.08; }
 			}
+			this.spawnBrinePatch(e.x, e.y);
 			for (let k = 0; k < 14; k++) this.particles.push(Object.assign(this.allocParticle(), { x: e.x, y: e.y, vx: (Math.random() - .5) * 6, vy: (Math.random() - .5) * 6, size: 4, life: .5, maxLife: .5, alpha: 1 }));
 			const pd = Math.hypot(this.player.x - e.x, this.player.y - e.y);
 			if (pd < R * .7) this.player.health -= Math.round(this.b6blastPlayer * (1 - pd / (R * .7)));
@@ -3913,6 +4034,12 @@ export class GameEngine {
 		// Batch 2: frosted affix — the dead leave ice in your veins.
 		if (attacker && attacker.affix === `frosted`) { this.chillUntil = Date.now() + 2000; this.spawnFloater(this.player.x, this.player.y - 40, `CHILLED`, `#7dd3fc`); }
 		let t = e * (1 - this.getPerkLevel(`grit`) * .08);
+		// Batch 10 (Lane 4): Salt Circle — −8%/rank damage taken, but ONLY
+		// while standing still (no movement input / velocity ~0) and holding
+		// a linked tube-fed iron (affinity gate via saltCircleApplies).
+		if (saltCircleApplies(this.boonStacks, this.weapons[this.currentWeaponIndex]?.id ?? ``) && this.lastMoveSpeed < .5) {
+			t *= saltCircleDefenseMul(this.boon(`saltcircle`));
+		}
 		this.player.health -= t, this.stats.damageTaken += t, this.screenShake = 5 * this.tune('shake') * this.motionScale(), this.trauma = Math.min(1, this.trauma + .22 * this.tune('shake') * this.motionScale()), soundEngine.playPlayerHurt();
 		// VS-1: getting hurt breaks the Harvest Streak.
 		if (this.streak > 0) this.spawnFloater(this.player.x, this.player.y - 40, `STREAK LOST`, `#8a8f98`);
@@ -4551,6 +4678,247 @@ export class GameEngine {
 		if (n > 0) this.spawnFloater(r.x, r.y - 40, `HAINT MULTIPLIES`, `#a78bfa`);
 		r.cloneCd = 6;
 	}
+	// Batch 10 (Lane 1): Illusionist archetype (backlog). Every cloneCooldown
+	// seconds, if the player is near, the REAL illusionist spawns 2-3 clones.
+	// Clones are smoke: 1 HP, zero damage, drawn half-transparent — they exist
+	// to waste auto-fire. Clone counts come from the ILLUSIONIST data table.
+	tickIllusionist(r, dt) {
+		if (r.isClone) return;
+		const cfg = ILLUSIONIST;
+		r.cloneCd = (r.cloneCd ?? cfg.cloneCooldown * .5) - dt;
+		if (r.cloneCd > 0) return;
+		const o = Math.hypot(this.player.x - r.x, this.player.y - r.y);
+		if (o > 700) { r.cloneCd = 1; return; }
+		let have = 0;
+		for (const z of this.zombies) if (z.isClone && z.cloneOf === r.id) have++;
+		const want = Math.min(cfg.cloneCount, 2 + (Math.random() < .5 ? 1 : 0));
+		const n = Math.max(0, Math.min(want, cfg.cloneCount - have));
+		for (let k = 0; k < n; k++) {
+			const a = Math.random() * Math.PI * 2;
+			const c = this.pushZombie(`illusionist`, r.x + Math.cos(a) * 44, r.y + Math.sin(a) * 44);
+			c.isClone = true;
+			c.cloneOf = r.id;
+			c.maxHealth = 1;
+			c.health = 1;
+			c.damage = 0;
+			c.scoreValue = 0;
+			c.scrapValue = 0;
+			c.ai = `chase`;
+		}
+		if (n > 0) this.spawnFloater(r.x, r.y - 40, `SLEIGHT OF HAND`, `#a78bfa`);
+		r.cloneCd = cfg.cloneCooldown;
+	}
+	// Batch 10 (Lane 1): character signature specials. The name/desc/cooldown
+	// live on each CHARACTERS row (roster.ts); the engine dispatches the
+	// effect by character id. The UI lane binds triggerSignature() to the HUD
+	// button + key — the contract below must stay exact.
+	signatureState() {
+		let def = { special: { name: ``, cooldownSec: 20 } };
+		try { def = characterDef(selectedCharacterId()); } catch (err) { /* defaults hold */ }
+		const left = Math.max(0, (this.signatureCdUntil || 0) - this.simTime);
+		return { ready: left <= 0, timeLeft: +left.toFixed(2), name: def.special?.name ?? `` };
+	}
+	triggerSignature() {
+		if (!this.isRunning || this.isPaused || this.draft) return false;
+		let cid = `otis_hale`, cd = 20;
+		try { cid = selectedCharacterId(); cd = characterDef(cid).special?.cooldownSec ?? 20; } catch (err) { /* defaults hold */ }
+		if (!this.signatureState().ready) return false;
+		this.signatureCdUntil = this.simTime + cd;
+		if (cid === `otis_hale`) this.sigDeadeye();
+		else if (cid === `eula_stillwell`) this.sigStillHeart();
+		else if (cid === `silas_mccord`) this.sigMashBomb();
+		else if (cid === `thea_kettler`) this.sigDraglineSweep();
+		this.spawnFloater(this.player.x, this.player.y - 56, (this.signatureState().name || `SPECIAL`).toUpperCase(), `#f6c453`);
+		soundEngine.playPowerup();
+		return true;
+	}
+	// Batch 10 (Lane 1): Otis's Deadeye Draw — 2s of +150% fire rate.
+	signatureFireRateMul() {
+		return this.deadeyeUntil > this.simTime ? SIGNATURE_TUNING.otis_hale.power : 1;
+	}
+	sigDeadeye() {
+		this.deadeyeUntil = this.simTime + SIGNATURE_TUNING.otis_hale.durSec;
+		this.hitstop = Math.max(this.hitstop, .05 * this.tune('hitstop'));
+	}
+	// Batch 10 (Lane 1): Eula's Still Heart — 5s of 0.35x slow-mo (applied in
+	// update()) plus guaranteed crits (critChance: 1 stamped in fireCurrentWeapon).
+	sigStillHeart() {
+		this.stillHeartUntil = this.simTime + SIGNATURE_TUNING.eula_stillwell.durSec;
+		this.addLight(this.player.x, this.player.y, 380, .8, .3);
+	}
+	// Batch 10 (Lane 1): Silas's Mash Bomb — lob a still-charge at the densest
+	// nearby cluster. Detonates after a delay with AoE + scorch.
+	sigMashBomb() {
+		const tun = SIGNATURE_TUNING.silas_mccord;
+		const c = this.densestCluster(600);
+		const tx = c ? c.x : this.player.x + Math.cos(this.player.angle) * 300;
+		const ty = c ? c.y : this.player.y + Math.sin(this.player.angle) * 300;
+		this.lobCharge(tx, ty, tun.durSec, tun.radius || 120, tun.power, `MASH BOMB`);
+	}
+	// Batch 10 (Lane 1): Thea's Dragline Sweep — instant 360° chainsaw sweep,
+	// hitting every zombie in radius for double the current chainsaw damage.
+	sigDraglineSweep() {
+		const tun = SIGNATURE_TUNING.thea_kettler;
+		const R = tun.radius || 160;
+		const saw = this.weapons.find((w) => w.id === `chainsaw`);
+		const base = ((saw?.damage ?? 35) * tun.power);
+		const a = this.player.angle;
+		for (let i = this.zombies.length - 1; i >= 0; i--) {
+			const z = this.zombies[i];
+			const dx = z.x - this.player.x, dy = z.y - this.player.y;
+			if (Math.hypot(dx, dy) > R + z.radius) continue;
+			const dmg = Math.round(base * this.playerDamageMul(z, `chainsaw`));
+			z.health -= dmg; z.hitFlash = .25;
+			this.stats.damageDealt += dmg;
+			this.createBloodParticles(z.x, z.y, a + Math.PI);
+			if (z.health <= 0) this.killZombie(z, i);
+		}
+		this.shockwaves.push({ x: this.player.x, y: this.player.y, r: 12, maxR: R, life: .3, maxLife: .3, color: `#fbbf24` });
+		this.screenShake = Math.max(this.screenShake, 8 * this.tune('shake') * this.motionScale());
+		this.trauma = Math.min(1, this.trauma + .35 * this.tune('shake') * this.motionScale());
+		soundEngine.playShotFor(soundEngine.kindForWeapon({ soundType: `chainsaw` }), { power: 1.4 });
+	}
+	// Batch 10 (Lane 1): densest-cluster targeting, shared by the Mortar and
+	// Silas's Mash Bomb. Counts zombies within clusterRadius of each candidate.
+	densestCluster(maxRange) {
+		const CR = MORTAR_TUNING.clusterRadius;
+		let best = null, bestN = 0;
+		for (const z of this.zombies) {
+			if (Math.hypot(z.x - this.player.x, z.y - this.player.y) > maxRange) continue;
+			let n = 0;
+			for (const o of this.zombies) if (Math.hypot(o.x - z.x, o.y - z.y) < CR) n++;
+			if (n > bestN) { bestN = n; best = z; }
+		}
+		return best ? { x: best.x, y: best.y, count: bestN } : null;
+	}
+	// Batch 10 (Lane 1): lobbed charges — telegraphed delayed AoE. The Mash
+	// Bomb uses these; the Mortar uses its own shells (same delay pattern).
+	lobCharge(x, y, delaySec, radius, baseDmg, label) {
+		this.lobbedCharges.push({ x, y, t: delaySec, max: delaySec, radius, baseDmg, label });
+		this.emitNoise(x, y, 300);
+		this.spawnFloater(x, y - 34, label + ` INCOMING`, `#f97316`);
+	}
+	updateLobbedCharges(dt) {
+		for (let i = this.lobbedCharges.length - 1; i >= 0; i--) {
+			const c = this.lobbedCharges[i];
+			c.t -= dt;
+			if (c.t <= 0) { this.lobbedCharges.splice(i, 1); this.detonateCharge(c); }
+		}
+	}
+	// Batch 10 (Lane 1): shared AoE detonation for lobbed charges.
+	detonateCharge(c) {
+		for (const z of this.zombies) {
+			const d = Math.hypot(z.x - c.x, z.y - c.y);
+			if (d > c.radius + z.radius) continue;
+			const f = 1 - .5 * (d / (c.radius + z.radius));
+			const dmg = Math.round(c.baseDmg * f * this.explosionDmgMul(z));
+			z.health -= dmg; z.hitFlash = .12;
+			this.stats.damageDealt += dmg;
+			this.createBloodParticles(z.x, z.y, Math.atan2(z.y - c.y, z.x - c.x));
+		}
+		for (let i = this.zombies.length - 1; i >= 0; i--) {
+			if (this.zombies[i].health <= 0) this.killZombie(this.zombies[i], i);
+		}
+		this.spawnBrinePatch(c.x, c.y); // Batch 10 (Lane 4): Mash Bomb leaves a burning brine patch.
+		this.shockwaves.push({ x: c.x, y: c.y, r: 8, maxR: c.radius, life: .35, maxLife: .35, color: `#f97316` });
+		this.addScorch(c.x, c.y, Math.min(130, c.radius));
+		this.screenShake = Math.max(this.screenShake, 7 * this.tune('shake') * this.motionScale());
+		this.trauma = Math.min(1, this.trauma + .4 * this.tune('shake') * this.motionScale());
+		this.addLight(c.x, c.y, 420, 1, .5);
+		this.emitNoise(c.x, c.y, 500);
+		soundEngine.playBarrelExplosion();
+		this.spawnFloater(c.x, c.y - c.radius - 10, c.label, `#f97316`);
+	}
+	// Batch 10 (Lane 1): explosion damage multiplier — brinebarrel boon
+	// (Lane 4: +30%/rank) stacks on the standard per-zombie damage pipeline.
+	explosionDmgMul(z) {
+		return this.playerDamageMul(z, `mortar`) * brineExplosionMul(this.boon(`brinebarrel`));
+	}
+	// Batch 10 (Lane 4): Brine Barrel — explosions leave a burning brine patch
+	// at the blast center. Reuses the fire-puddle system; brine patches carry a
+	// dps field and only burn the dead (the player's own brew — no self burn).
+	spawnBrinePatch(x, y) {
+		const rank = this.boon(`brinebarrel`);
+		if (rank <= 0) return;
+		const p = brinePatch(rank);
+		this.firePuddles.push({
+			id: Math.random().toString(),
+			x, y,
+			radius: p.radius,
+			duration: p.durationMs,
+			createdTime: Date.now(),
+			dps: p.dps,
+			isBrine: true,
+		});
+	}
+	// Batch 10 (Lane 1): Stendal Pit Mortar — fire `cnt` shells (WEAPON_LEVELS)
+	// at the densest nearby cluster. Each shell lands fuseSec later and blooms.
+	fireMortar(w, dmgMul) {
+		const tun = MORTAR_TUNING;
+		const lvl = statsForLevel(`mortar`, w.upgradeLevel);
+		const shells = lvl ? lvl.cnt : 1;
+		const c = this.densestCluster(tun.clusterSearch);
+		let tx = c ? c.x : this.player.x + Math.cos(this.player.angle) * 300;
+		let ty = c ? c.y : this.player.y + Math.sin(this.player.angle) * 300;
+		for (let k = 0; k < shells; k++) {
+			const ox = this.player.x + (Math.random() - .5) * 20, oy = this.player.y - 10 + (Math.random() - .5) * 20;
+			const jx = tx + (Math.random() - .5) * 40, jy = ty + (Math.random() - .5) * 40;
+			const b = this.allocBullet();
+			b.x = ox; b.y = oy;
+			b.vx = (jx - ox) / (tun.fuseSec * 60);
+			b.vy = (jy - oy) / (tun.fuseSec * 60);
+			b.damage = w.damage * dmgMul;
+			b.radius = 6;
+			b.rangeRemaining = 1200;
+			b.weaponType = `mortar`;
+			b.color = `#d6a05c`;
+			b.isMortar = true;
+			b.mortarFuse = tun.fuseSec;
+			b.mortarDmg = b.damage;
+			b.mortarR = tun.aoeRadius;
+			this.bullets.push(b);
+		}
+		this.stats.shotsFired += shells;
+		this.screenShake = Math.max(this.screenShake, 6 * this.tune('shake') * this.motionScale());
+		soundEngine.playShotFor(soundEngine.kindForWeapon(w));
+	}
+	// Batch 10 (Lane 1): mortar shell impact — AoE with edge falloff + scorch decal.
+	detonateMortarShell(n) {
+		const R = n.mortarR || MORTAR_TUNING.aoeRadius;
+		for (const z of this.zombies) {
+			const d = Math.hypot(z.x - n.x, z.y - n.y);
+			if (d > R + z.radius) continue;
+			const f = 1 - .5 * (d / (R + z.radius));
+			const dmg = Math.round((n.mortarDmg || n.damage) * f * this.explosionDmgMul(z));
+			z.health -= dmg; z.hitFlash = .12;
+			this.stats.damageDealt += dmg;
+			this.createBloodParticles(z.x, z.y, Math.atan2(z.y - n.y, z.x - n.x));
+		}
+		for (let i = this.zombies.length - 1; i >= 0; i--) {
+			if (this.zombies[i].health <= 0) this.killZombie(this.zombies[i], i);
+		}
+		this.shockwaves.push({ x: n.x, y: n.y, r: 8, maxR: R, life: .35, maxLife: .35, color: `#d6a05c` });
+		this.addScorch(n.x, n.y, Math.min(130, R));
+		this.screenShake = Math.max(this.screenShake, 6 * this.tune('shake') * this.motionScale());
+		this.trauma = Math.min(1, this.trauma + .35 * this.tune('shake') * this.motionScale());
+		this.addLight(n.x, n.y, 420, 1, .5);
+		this.emitNoise(n.x, n.y, 500);
+		soundEngine.playBarrelExplosion();
+	}
+	// Batch 10 (Lane 1): corpse permanence — fading body decals, cap ~30,
+	// built on the VS-1 scorch-decal pattern (fading radial marks).
+	addCorpse(z) {
+		this.corpseDecals.push({ x: z.x, y: z.y, radius: Math.max(10, z.radius * .9), alpha: .5, maxAlpha: .5, life: 2 + Math.random() * 3 });
+		if (this.corpseDecals.length > 30) this.corpseDecals.shift();
+	}
+	updateCorpseDecals(dt) {
+		for (let i = this.corpseDecals.length - 1; i >= 0; i--) {
+			const c = this.corpseDecals[i];
+			c.life -= dt;
+			c.alpha = Math.max(0, .5 * (c.life / 5));
+			if (c.life <= 0) this.corpseDecals.splice(i, 1);
+		}
+	}
 	// Batch 7: per-run state reset (run-stat muls are set by applyRunStatMods in initRunMeta).
 	resetB7State() {
 		this.telegraphs = [];
@@ -4710,8 +5078,11 @@ export class GameEngine {
 			if (d.type !== `score_surge`) continue;
 			const bob = Math.sin(now * .006 + d.x) * 3;
 			const pulse = .85 + Math.sin(now * .01 + d.y) * .15;
+			// Batch 10 (Lane 1): Lane 2's tweened pickup pop-in — scale 0.1 -> 1 over 150ms.
+			const pop = pickupPopScale(d.id, now);
 			e.save();
 			e.translate(d.x, d.y + bob);
+			e.scale(pop, pop);
 			e.fillStyle = `rgba(255, 215, 0, 0.35)`;
 			e.beginPath();
 			e.arc(0, 0, 22 * pulse, 0, Math.PI * 2);
@@ -5428,7 +5799,7 @@ export class GameEngine {
 	}
 	allocBullet() {
 		const b = this.bulletPool.pop();
-		if (b) { b.x = 0; b.y = 0; b.vx = 0; b.vy = 0; b.radius = 0; b.damage = 0; b.pierce = 0; b.rangeRemaining = 0; b.color = ``; b.id = ``; b.weaponType = ``; b.isMolotov = false; b.isFlare = false; b.isSplinter = false; b.isCrossbowBolt = false; b.isForkChild = false; b.isMissile = false; b.missileTurn = 0; b.missileAoe = 0; b.bouncesLeft = undefined; b.lastHit = null; b.lastHitCd = 0; return b; }
+		if (b) { b.x = 0; b.y = 0; b.vx = 0; b.vy = 0; b.radius = 0; b.damage = 0; b.pierce = 0; b.rangeRemaining = 0; b.color = ``; b.id = ``; b.weaponType = ``; b.isMolotov = false; b.isFlare = false; b.isSplinter = false; b.isCrossbowBolt = false; b.isForkChild = false; b.isMissile = false; b.missileTurn = 0; b.missileAoe = 0; b.isMortar = false; b.mortarFuse = 0; b.mortarDmg = 0; b.mortarR = 0; b.bouncesLeft = undefined; b.lastHit = null; b.lastHitCd = 0; return b; }
 		return {};
 	}
 	freeBulletAt(t) {
@@ -5548,6 +5919,7 @@ export class GameEngine {
 			return;
 		}
 		const g0 = this.gritPool.pop() || {};
+		g0.id = `grit-${(this._gritSeq = (this._gritSeq || 0) + 1)}`; // Batch 10 (Lane 1): stable id for the Lane 2 pickup pop-in tween
 		g0.x = x; g0.y = y; g0.vx = vx; g0.vy = vy; g0.value = value; g0.lucky = lucky;
 		g0.tier = value >= 12 ? 3 : value >= 4 ? 2 : 1;
 		this.grit.push(g0);
@@ -5684,18 +6056,21 @@ export class GameEngine {
 	renderGrit(e) {
 		const { camL, camT, camR, camB } = this.viewCull(48);
 		const rad = Math.max(6, 12 / this.viewZoom());
+		const nowMs = Date.now();
 		for (const g of this.grit) {
 			if (g.x < camL || g.x > camR || g.y < camT || g.y > camB) continue;
 			const tier = g.tier || 1;
+			// Batch 10 (Lane 1): Lane 2's tweened pickup pop-in — scale 0.1 -> 1 over 150ms.
+			const pop = pickupPopScale(g.id, nowMs);
 			if (g.lucky || tier >= 3) {
 				e.fillStyle = tier >= 3 ? "rgba(255, 140, 40, 0.3)" : "rgba(255, 215, 0, 0.25)";
 				e.beginPath();
-				e.arc(g.x, g.y, rad * (tier >= 3 ? 3 : 2.4), 0, Math.PI * 2);
+				e.arc(g.x, g.y, rad * (tier >= 3 ? 3 : 2.4) * pop, 0, Math.PI * 2);
 				e.fill();
 			}
 			e.fillStyle = g.lucky ? "#ffd700" : tier === 3 ? "#ff9a3c" : tier === 2 ? "#ffe066" : "#f6c453";
 			e.beginPath();
-			e.arc(g.x, g.y, (g.lucky ? rad * 1.6 : rad) * (1 + (tier - 1) * .35), 0, Math.PI * 2);
+			e.arc(g.x, g.y, (g.lucky ? rad * 1.6 : rad) * (1 + (tier - 1) * .35) * pop, 0, Math.PI * 2);
 			e.fill();
 		}
 		for (const c of this.chests) {
@@ -5858,12 +6233,36 @@ export class GameEngine {
 			e.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
 			e.fill();
 		}
+		// Batch 10 (Lane 1): corpse permanence — dark fading body marks, same fade discipline as scorch.
+		for (const c of this.corpseDecals) {
+			const g = e.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.radius);
+			g.addColorStop(0, `rgba(60, 12, 14, ${c.alpha})`);
+			g.addColorStop(1, `rgba(60, 12, 14, 0)`);
+			e.fillStyle = g;
+			e.beginPath();
+			e.arc(c.x, c.y, c.radius, 0, Math.PI * 2);
+			e.fill();
+		}
 		this.renderHoles(e), this.renderLantern(e), this.renderBell(e), this.renderParticles(e);
 		this.renderShockwaves(e); // VS-3: kill shockwaves
 		// Batch 7: enemy telegraphs (engine stores sim-seconds; renderer takes ms) + celebration particles.
 		if (this.telegraphs.length) {
 			const nowMs = this.simTime * 1000;
 			renderTelegraphs(e, this.telegraphs.map((tg) => ({ kind: tg.kind, x: tg.x, y: tg.y, r: tg.r, t0: tg.t0 * 1000, dur: tg.dur * 1000 })), nowMs, this.player);
+		}
+		// Batch 10 (Lane 1): lobbed charges (Mash Bomb) — pulsing target ring that tightens as the fuse burns.
+		for (const c of this.lobbedCharges) {
+			const prog = 1 - Math.max(0, c.t) / Math.max(.001, c.max);
+			const pulse = .5 + .5 * Math.sin(this.simTime * 14);
+			e.strokeStyle = `rgba(249, 115, 22, ${(.4 + .5 * prog * pulse).toFixed(2)})`;
+			e.lineWidth = 3;
+			e.beginPath();
+			e.arc(c.x, c.y, Math.max(6, c.radius * (1 - prog * .35)), 0, Math.PI * 2);
+			e.stroke();
+			e.fillStyle = `rgba(249, 115, 22, ${(.25 * pulse).toFixed(2)})`;
+			e.beginPath();
+			e.arc(c.x, c.y, 8, 0, Math.PI * 2);
+			e.fill();
 		}
 		render7.celebration.renderWorld(e, performance.now());
 		this.renderSlashBursts(e); // Batch 5: oriented slash streaks
@@ -5959,7 +6358,8 @@ export class GameEngine {
 		}
 		if (t >= 820 && n >= 520 && !this.mapInView()) {
 			this.renderCompass(e, t, n);
-			this.renderMinimap(e, t, n);
+			// Batch 10 (Lane 2): engine-drawn minimap retired — the React
+			// <Minimap/> corner component (HUD) is the minimap now.
 		}
 		this.renderHurtDir(e, t, n); // VS-3: directional hurt feedback
 		this.renderEyeshine(e, l, u);
@@ -6278,6 +6678,8 @@ export class GameEngine {
 			if (!this._tracked || t === this._tracked) this._lastZombieBob = idleBob; // Batch 8 (Lane B): test probe.
 			e.save();
 			e.translate(t.x, t.y);
+			// Batch 10 (Lane 1): illusion clones read as ghosts — half-transparent.
+			if (t.isClone) e.globalAlpha = .55;
 			// Batch 6 (Lane B): pooled baked blob shadow.
 			drawBlobShadow(e, 2, t.radius * .72, t.radius * 1.05);
 			if (t.elite) {
@@ -6321,7 +6723,7 @@ export class GameEngine {
 			const tall = t.radius * (t.type === "crawler" ? 4.2 : t.type === "behemoth" ? 4.6 : 5.1) * fs;
 			// Batch 6 (Lane B): per-instance hue jitter + damage-flash bloom (hseed set above).
 			applyZombieTint(e, t.hseed);
-			drawSprite(e, t.type === "riot_shield" ? "riot" : t.type === "haint" ? "shambler" : t.type, tall, t.hitFlash, false);
+			drawSprite(e, t.type === "riot_shield" ? "riot" : t.type === "haint" || t.type === "illusionist" ? "shambler" : t.type, tall, t.hitFlash, false); // Batch 10 (Lane 1): illusionist reuses the shambler sprite; clones are alpha-flagged above.
 			clearZombieTint(e);
 			if (t.isBurning && t.isBurning > 0) {
 				e.fillStyle = "rgba(249, 115, 22, 0.35)";
@@ -6642,6 +7044,23 @@ export class GameEngine {
 				e.rotate(n);
 				e.fillStyle = t.color;
 				e.fillRect(-5, -1, 10, 2);
+			} else if (t.isMortar) {
+				// Batch 10 (Lane 1): lobbed shell — dark iron, arcing shadow below, fuse spark.
+				const n = Math.atan2(t.vy, t.vx);
+				e.globalAlpha = .35;
+				e.fillStyle = `#000`;
+				e.beginPath();
+				e.ellipse(t.x + 8, t.y + 14, 10, 4, 0, 0, Math.PI * 2);
+				e.fill();
+				e.globalAlpha = 1;
+				e.rotate(n);
+				e.fillStyle = `#3f3f46`;
+				e.fillRect(-8, -3, 16, 6);
+				e.fillStyle = `#d6a05c`;
+				e.beginPath();
+				e.arc(-8, 0, 2.5 + Math.random() * 1.5, 0, Math.PI * 2);
+				e.fill();
+				e.globalAlpha = 1;
 			} else if (t.isMissile) {
 				// Batch 4: canary rocket — red body, pale nose, orange exhaust flicker.
 				const n = Math.atan2(t.vy, t.vx);

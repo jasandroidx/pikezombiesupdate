@@ -39,6 +39,10 @@ export interface MetaSave {
   // Old saves without `daily` load as {} (see loadMeta below), so existing
   // saves keep working.
   daily: Record<string, true>;
+  // Batch 10 — Lane 3: County Record bloodline tree — branch id ->
+  // purchased tier count (0..4). Old saves without `tree` load as {}
+  // (see loadMeta below), so existing saves keep working.
+  tree: Record<string, number>;
 }
 
 export interface RunRecord {
@@ -59,6 +63,7 @@ const EMPTY: MetaSave = {
   questsDone: [],
   runs: [],
   daily: {},
+  tree: {},
 };
 
 function validRun(r: any): r is RunRecord {
@@ -78,6 +83,7 @@ export function loadMeta(): MetaSave {
       questsDone: [...parsed.questsDone],
       runs: Array.isArray(parsed.runs) ? parsed.runs.filter(validRun).slice(0, HALL_MAX) : [],
       daily: parsed.daily && typeof parsed.daily === "object" ? { ...(parsed.daily as Record<string, true>) } : {},
+      tree: sanitizeTree(parsed.tree),
     };
   } catch {
     return structuredClone(EMPTY);
@@ -259,6 +265,10 @@ export interface RunStatMods {
 /**
  * Permanent run modifiers from County Record Office purchases.
  * The engine calls this at player init and multiplies them into base stats.
+ *
+ * Batch 10 — Lane 3: bloodline-tree bonuses fold into the same object, so
+ * tree capstones reach run start through the existing run-mods channel
+ * (applyRunStatMods in engine.ts) with no engine changes.
  */
 export function getRunStatMods(): RunStatMods {
   const t = loadSave().shopTiers ?? {};
@@ -266,11 +276,12 @@ export function getRunStatMods(): RunStatMods {
   const hp = t.hp ?? 0;
   const spd = t.speed ?? 0;
   const xp = t.xp ?? 0;
+  const tree = loadMeta().tree ?? {};
   return {
-    damageMul: 1 + 0.04 * dmg,
-    hpMul: 1 + 0.1 * hp,
+    damageMul: (1 + 0.04 * dmg) * (1 + treeBranchBonus("deadeye", tree.deadeye ?? 0)),
+    hpMul: (1 + 0.1 * hp) * (1 + treeBranchBonus("homesteader", tree.homesteader ?? 0)),
     speedMul: 1 + 0.03 * spd,
-    xpMul: 1 + 0.05 * xp,
+    xpMul: (1 + 0.05 * xp) * (1 + treeBranchBonus("scrounger", tree.scrounger ?? 0)),
   };
 }
 
@@ -333,4 +344,249 @@ export function setSelectedStageId(id: string): void {
   } catch {
     // Storage full/blocked: the pick lasts for this session only.
   }
+}
+
+// ---------------------------------------------------------------------------
+// Batch 10 — Lane 3 (meta/UI): County Record bloodline tree.
+//
+// The lifetime quests above grow into a spendable permanent-stat tree:
+// 3 branches x 4 tiers (12 nodes), bought with stubs — the same permanent
+// coin the County Record Office stat shop spends (save.ts). Tiers in a
+// branch are bought in order; tier 4 is a capstone with a large wired bonus.
+//
+// Every node maps into the four channels the engine ALREADY applies at run
+// start through getRunStatMods() (damageMul / hpMul / speedMul / xpMul —
+// see applyRunStatMods in engine.ts). The tree needs no engine changes: the
+// engine merges whatever getRunStatMods() returns, so capstone effects reach
+// run start through the existing run-mods channel.
+//
+//   homesteader: survivability — adds to hpMul
+//   deadeye:     damage       — adds to damageMul
+//   scrounger:   economy      — adds to xpMul (grit/XP pickup economy)
+//
+// ENGINE INTEGRATION POINT (already landed, no coordinator work needed):
+//   applyRunStatMods() in engine.ts calls getRunStatMods() at player init.
+//   This module folds tree bonuses into that same object.
+// ---------------------------------------------------------------------------
+
+export type MetaTreeBranchId = "homesteader" | "deadeye" | "scrounger";
+
+export interface MetaTreeNode {
+  /** 1..4. Tier 4 is the capstone. */
+  tier: 1 | 2 | 3 | 4;
+  name: string;
+  /** Plain-words effect, e.g. "+8% max HP". */
+  effect: string;
+  flavor: string;
+  /** Stub cost of this tier. */
+  cost: number;
+  /** True on the tier-4 capstone. */
+  capstone: boolean;
+  /** Additive bonus this node contributes to its branch multiplier. */
+  bonus: number;
+}
+
+export interface MetaTreeBranch {
+  id: MetaTreeBranchId;
+  name: string;
+  /** One-word theme: what the branch buys. */
+  theme: string;
+  flavor: string;
+  nodes: [MetaTreeNode, MetaTreeNode, MetaTreeNode, MetaTreeNode];
+}
+
+export const META_TREE: MetaTreeBranch[] = [
+  {
+    id: "homesteader",
+    name: "Homesteader",
+    theme: "Survivability",
+    flavor: "Generations that stayed. The county keeps the ones who dig in.",
+    nodes: [
+      {
+        tier: 1,
+        name: "Stone Foundation",
+        effect: "+8% max HP",
+        flavor: "Footings set in Petersburg limestone. The house — and you — stands.",
+        cost: 200,
+        capstone: false,
+        bonus: 0.08,
+      },
+      {
+        tier: 2,
+        name: "Storm Cellar",
+        effect: "+8% max HP",
+        flavor: "Every farm on the trace keeps a cellar door. You've learned to live behind yours.",
+        cost: 500,
+        capstone: false,
+        bonus: 0.08,
+      },
+      {
+        tier: 3,
+        name: "Backbone Shoulders",
+        effect: "+9% max HP",
+        flavor: "Hauled coal up the Stendal backbone till your shoulders forgot how to quit.",
+        cost: 1200,
+        capstone: false,
+        bonus: 0.09,
+      },
+      {
+        tier: 4,
+        name: "Dug In Deep",
+        effect: "+25% max HP",
+        flavor: "Capstone. The county record lists your name under one word: unmoved.",
+        cost: 2500,
+        capstone: true,
+        bonus: 0.25,
+      },
+    ],
+  },
+  {
+    id: "deadeye",
+    name: "Deadeye",
+    theme: "Damage",
+    flavor: "The Washington Township line breeds patience and punishes a miss.",
+    nodes: [
+      {
+        tier: 1,
+        name: "Trigger Discipline",
+        effect: "+6% damage",
+        flavor: "Breathe out, squeeze, don't jerk it. Eula's rule, everybody's rule.",
+        cost: 200,
+        capstone: false,
+        bonus: 0.06,
+      },
+      {
+        tier: 2,
+        name: "Cold Barrel",
+        effect: "+6% damage",
+        flavor: "First shot of a frost morning flies truest. You keep that cold in you.",
+        cost: 500,
+        capstone: false,
+        bonus: 0.06,
+      },
+      {
+        tier: 3,
+        name: "Patoka Marksman",
+        effect: "+7% damage",
+        flavor: "Shot squirrels off the far bank of the Patoka at two hundred yards. The dead are bigger.",
+        cost: 1200,
+        capstone: false,
+        bonus: 0.07,
+      },
+      {
+        tier: 4,
+        name: "Ledger of the Dead",
+        effect: "+22% damage",
+        flavor: "Capstone. Every name you ever put down, tallied in one column. The column pays out.",
+        cost: 2500,
+        capstone: true,
+        bonus: 0.22,
+      },
+    ],
+  },
+  {
+    id: "scrounger",
+    name: "Scrounger",
+    theme: "Economy",
+    flavor: "Nothing wasted on the trace. You pick the county clean and it thanks you.",
+    nodes: [
+      {
+        tier: 1,
+        name: "Pocket Ledger",
+        effect: "+7% XP gain",
+        flavor: "Counted every pocket at the Old Ben company store. Grit's no different.",
+        cost: 200,
+        capstone: false,
+        bonus: 0.07,
+      },
+      {
+        tier: 2,
+        name: "Gleaner's Eye",
+        effect: "+8% XP gain",
+        flavor: "Walk a picked field behind the harvest and find dinner. Walk a dead wave and find grit.",
+        cost: 500,
+        capstone: false,
+        bonus: 0.08,
+      },
+      {
+        tier: 3,
+        name: "Trace Walker",
+        effect: "+9% XP gain",
+        flavor: "You walked the Buffalo Trace end to end and brought back everything that wasn't nailed down.",
+        cost: 1200,
+        capstone: false,
+        bonus: 0.09,
+      },
+      {
+        tier: 4,
+        name: "Company Store",
+        effect: "+25% XP gain",
+        flavor: "Capstone. The whole county's leavings flow through your hands, and your hands keep count.",
+        cost: 2500,
+        capstone: true,
+        bonus: 0.25,
+      },
+    ],
+  },
+];
+
+export const META_TREE_MAX_TIER = 4;
+
+/** Keep only known branch ids with sane 0..4 integer tiers. */
+function sanitizeTree(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (raw && typeof raw === "object") {
+    for (const b of META_TREE) {
+      const v = (raw as Record<string, unknown>)[b.id];
+      if (typeof v === "number" && Number.isFinite(v)) {
+        out[b.id] = Math.max(0, Math.min(META_TREE_MAX_TIER, Math.floor(v)));
+      }
+    }
+  }
+  return out;
+}
+
+/** Current state for the tree UI: defs + purchased tiers + stub balance. */
+export function getMetaTree(): {
+  branches: MetaTreeBranch[];
+  tiers: Record<MetaTreeBranchId, number>;
+  stubs: number;
+} {
+  const tree = loadMeta().tree;
+  const tiers = {} as Record<MetaTreeBranchId, number>;
+  for (const b of META_TREE) tiers[b.id] = tree[b.id] ?? 0;
+  return { branches: META_TREE, tiers, stubs: loadSave().stubs };
+}
+
+/**
+ * Total additive bonus a branch contributes at a given tier count
+ * (sum of node bonuses for tiers 1..n). Used by getRunStatMods().
+ */
+export function treeBranchBonus(branchId: string, tiers: number): number {
+  const branch = META_TREE.find((b) => b.id === branchId);
+  if (!branch) return 0;
+  let sum = 0;
+  const n = Math.max(0, Math.min(META_TREE_MAX_TIER, Math.floor(tiers)));
+  for (let i = 0; i < n; i++) sum += branch.nodes[i].bonus;
+  return sum;
+}
+
+/**
+ * Buy the next tier of a branch. Validates branch id, tier order
+ * (sequential), max tier, and stub balance. Persists tiers via meta.ts
+ * (pz_meta_v1) and spends stubs via save.ts. Does NOT throw.
+ */
+export function buyTreeTier(branchId: string): { ok: boolean; reason?: string } {
+  const branch = META_TREE.find((b) => b.id === branchId);
+  if (!branch) return { ok: false, reason: "unknown branch" };
+  const meta = loadMeta();
+  const cur = meta.tree[branch.id] ?? 0;
+  if (cur >= META_TREE_MAX_TIER) return { ok: false, reason: "maxed" };
+  const node = branch.nodes[cur];
+  const save = loadSave();
+  if (save.stubs < node.cost) return { ok: false, reason: "insufficient stubs" };
+  meta.tree = { ...meta.tree, [branch.id]: cur + 1 };
+  saveMeta(meta);
+  writeSave({ stubs: save.stubs - node.cost });
+  return { ok: true };
 }

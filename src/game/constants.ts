@@ -145,6 +145,31 @@ export const INITIAL_WEAPONS: Weapon[] = [
     // Batch 8 (Lane D): affinity tags.
     tags: ["heavy"],
   },
+  // Batch 10 (Lane 1): the mortar — lobbed AoE artillery, not an aimed shot.
+  {
+    id: "mortar",
+    name: "Stendal Pit Mortar",
+    category: "Artillery",
+    description: "Coal-country artillery from the Stendal Backbone. Lobs shells at the densest knot of the horde and lets the pit do the talking.",
+    damage: 110,
+    fireRate: 0.8,
+    pellets: 1,
+    spread: 0.0,
+    range: 700,
+    bulletSpeed: 14,
+    magazineSize: 4,
+    currentMag: 4,
+    reserveAmmo: 20,
+    maxReserveAmmo: 36,
+    reloadTime: 2400,
+    pierce: 99,
+    soundType: "mortar",
+    unlocked: false,
+    cost: 700,
+    upgradeLevel: 1,
+    // Batch 8 (Lane D): affinity tags.
+    tags: ["heavy", "scatter"],
+  },
 ];
 
 export const AVAILABLE_PERKS: Perk[] = [
@@ -991,6 +1016,7 @@ export const SHOP_POOL: ShopOfferDef[] = [
   { id: "shop_unlock_shotgun", name: "Scattergun", desc: "Unlock the shotgun", baseCost: 150, kind: "unlock", weaponId: "shotgun", repeatable: false },
   { id: "shop_unlock_carbine", name: "Carbine", desc: "Unlock the carbine", baseCost: 120, kind: "unlock", weaponId: "carbine", repeatable: false },
   { id: "shop_unlock_crossbow", name: "Crossbow", desc: "Unlock the crossbow", baseCost: 140, kind: "unlock", weaponId: "crossbow", repeatable: false },
+  { id: "shop_unlock_mortar", name: "Stendal Pit Mortar", desc: "Unlock the mortar", baseCost: 200, kind: "unlock", weaponId: "mortar", repeatable: false }, // Batch 10 (Lane 1)
 ];
 
 export const SHOP_OFFER_COUNT = 4;
@@ -1046,6 +1072,8 @@ export const WEAPON_LEVELS: Record<string, WeaponLevelRow> = {
   // cnt = chain jumps (chainlightning) / blade count (orbiter).
   chainlightning: { dmg: [45, 56, 70, 88, 110], cnt: [1, 1, 1, 1, 1], rad: [550, 575, 600, 625, 650], spd: [0, 0, 0, 0, 0], cd: [1.5, 1.4, 1.3, 1.2, 1.1] },
   orbiter:       { dmg: [14, 18, 23, 29, 36],   cnt: [3, 3, 4, 4, 5],   rad: [110, 115, 120, 125, 130], spd: [2.6, 2.8, 3.0, 3.2, 3.4], cd: [1.0, 1.0, 0.95, 0.9, 0.85] },
+  // Batch 10 (Lane 1): mortar — cnt = shells per volley.
+  mortar:        { dmg: [110, 135, 165, 200, 245], cnt: [1, 1, 1, 2, 2], rad: [700, 720, 740, 760, 780], spd: [14, 14.5, 15, 15.5, 16], cd: [1.25, 1.15, 1.05, 0.95, 0.85] },
 };
 
 export const WEAPON_MAX_TABLE_LEVEL = 5;
@@ -1415,6 +1443,7 @@ export const CODEX: CodexEntry[] = [
   { id: "crossbow", name: "Silent Hunter", blurb: "Broadheads. No report. The horde does not turn unless they see the light.", hint: "Unlock it at the workbench or in a supply cache." },
   { id: "chainsaw", name: "Stihl Yard Saw", blurb: "Two-stroke from a barn loft. Eats fuel. Eats everything else faster.", hint: "Unlock it at the workbench or in a supply cache." },
   { id: "wompus_howler", name: "Wompus Howler", blurb: "A Winslow gunsmith's joke that stopped being funny: a carbine bored out and tuned to yowl like the Wompus cat on every pull.", hint: "Secret — enter the Konami code. It is never drafted." },
+  { id: "mortar", name: "Stendal Pit Mortar", blurb: "Coal-country artillery off the Stendal Backbone. Lobs shells at the densest knot of the horde — don't stand in the ring.", hint: "Unlock it in the wave shop or the workbench." }, // Batch 10 (Lane 1)
 
   // --- evolutions (id === "evolution_<baseWeapon>") ---
   { id: "evolution_revolver", name: ".357 Deadeye", blurb: "Storm-forged .357. Hits 70% harder, cycles faster, punches three deep — and the lightning taught it where to bite: +10% crit, +10% damage.", hint: "Max the revolver's level, take Storm jar, and draft 3 Hand-loaded lead picks." },
@@ -1431,6 +1460,7 @@ export const CODEX: CodexEntry[] = [
   { id: "miner_brute", name: "Miner Brute", blurb: "A Stendal Backbone shaft man, still wearing his helmet and his shift. Hits like a roof bolt.", hint: "Mid-wave muscle. Helmets soak the first headshot." },
   { id: "bloater_spitter", name: "Bloater Spitter", blurb: "Swollen on Patoka water. Spits at range — the fog is its friend.", hint: "Keep distance; close the gap between spits." },
   { id: "riot_shield", name: "Riot Shield", blurb: "Deputy's barricade gear, still worn by the deputy. A wall with a grudge.", hint: "Flank it — the shield only faces forward." },
+  { id: "illusionist", name: "Illusionist", blurb: "A trickster out of the fog that multiplies itself. Most of what you see is smoke — the real one stands behind its ghosts.", hint: "Wave 5 onward. Kill the real body; the clones are 1-HP ghosts that deal no damage." }, // Batch 10 (Lane 1)
   { id: "behemoth", name: "The Behemoth", blurb: "Something old is walking out of the treeline. A county legend: every fifth wave, the ground shakes.", hint: "Boss — wave 5, 10, 15, ... Attune shrines for +12% boss damage each." },
   { id: "tipple_brute", name: "The Tipple Brute", blurb: "The tipple fell a long time ago. Something climbed out — and it remembers the slam.", hint: "Future boss. Not yet in the wild." },
   { id: "wompus_stalker", name: "The Wompus Stalker", blurb: "You hear it before you see it. Then you hear nothing at all.", hint: "Future boss. Not yet in the wild." },
@@ -1534,3 +1564,77 @@ export function scalingAt(gt: number): ScalingMults {
     damage: evalScalingExpr(SCALING.damage, gt),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Batch 10 (Lane 1): Illusionist archetype, mortar tuning, signature tuning.
+//
+// Pure data. The engine reads these tables at run time; nothing here changes
+// the draft / shop / boon pipelines.
+// ---------------------------------------------------------------------------
+
+export interface IllusionistDef {
+  type: "illusionist";
+  name: string;
+  cloneCooldown: number;
+  cloneCount: number;
+  hp: number;
+  speed: number;
+  damage: number;
+  radius: number;
+  color: string;
+  scoreValue: number;
+  scrapValue: number;
+}
+
+export const ILLUSIONIST: IllusionistDef = {
+  type: "illusionist",
+  name: "Illusionist",
+  cloneCooldown: 6,
+  cloneCount: 3,
+  hp: 110,
+  speed: 2.2,
+  damage: 10,
+  radius: 16,
+  color: "#a78bfa",
+  scoreValue: 150,
+  scrapValue: 25,
+};
+
+export interface MortarTuning {
+  /** Fuse delay in seconds between launch and detonation. */
+  fuseSec: number;
+  /** Blast radius of each shell. */
+  aoeRadius: number;
+  /** Zombies within this radius of a candidate count toward its cluster score. */
+  clusterRadius: number;
+  /** Max distance from the player the mortar looks for clusters. */
+  clusterSearch: number;
+}
+
+export const MORTAR_TUNING: MortarTuning = {
+  fuseSec: 0.8,
+  aoeRadius: 120,
+  clusterRadius: 150,
+  clusterSearch: 700,
+};
+
+export interface SignatureTuning {
+  /**
+   * Effect power: fire-rate multiplier (Deadeye), slow-mo scale (Still Heart),
+   * base damage (Mash Bomb), damage multiplier (Dragline Sweep).
+   */
+  power: number;
+  /** Effect duration in seconds (Mash Bomb: fuse delay before detonation). */
+  durSec: number;
+  /** AoE radius in units (Mash Bomb, Dragline Sweep). */
+  radius: number;
+  desc: string;
+}
+
+/** Per-character signature specials, keyed by character id (roster.ts). */
+export const SIGNATURE_TUNING: Record<string, SignatureTuning> = {
+  otis_hale:     { power: 2.5,  durSec: 2, radius: 0,   desc: "Deadeye Draw — 2s of +150% fire rate, the fastest holster in Pike County let loose." },
+  eula_stillwell: { power: 0.35, durSec: 5, radius: 0,   desc: "Still Heart — 5s at 0.35x slow-mo with guaranteed crits; she waits for the shot." },
+  silas_mccord:  { power: 160,  durSec: 1, radius: 120, desc: "Mash Bomb — a still-charge lobbed at the densest nearby cluster; 160 damage after a 1s delay." },
+  thea_kettler:  { power: 2,    durSec: 0, radius: 160, desc: "Dragline Sweep — an instant 360° chainsaw sweep for double damage inside 160 units." },
+};

@@ -6,7 +6,8 @@ export type WeaponType =
   | "crossbow"
   | "chainsaw"
   | "molotov"
-  | "wompus_howler"; // Batch 4: Konami-code secret weapon (see constants.ts)
+  | "wompus_howler" // Batch 4: Konami-code secret weapon (see constants.ts)
+  | "mortar"; // Batch 10 (Lane 1): Stendal Pit Mortar
 
 export interface Weapon {
   id: WeaponType;
@@ -25,7 +26,7 @@ export interface Weapon {
   maxReserveAmmo: number;
   reloadTime: number;
   pierce: number;
-  soundType: "magnum" | "shotgun" | "rifle" | "carbine" | "crossbow" | "chainsaw" | "molotov";
+  soundType: "magnum" | "shotgun" | "rifle" | "carbine" | "crossbow" | "chainsaw" | "molotov" | "mortar"; // Batch 10 (Lane 1): mortar
   unlocked: boolean;
   cost: number;
   upgradeLevel: number;
@@ -40,7 +41,7 @@ export interface Weapon {
   tags?: string[];
 }
 
-export type ZombieType = "shambler" | "sprinter" | "miner_brute" | "bloater_spitter" | "behemoth" | "crawler" | "riot_shield" | "tipple_brute" | "wompus_stalker"; // Batch 5: riot_shield (Lane A) + future boss ids (Lane C); additive, no runtime impact
+export type ZombieType = "shambler" | "sprinter" | "miner_brute" | "bloater_spitter" | "behemoth" | "crawler" | "riot_shield" | "tipple_brute" | "wompus_stalker" | "illusionist"; // Batch 5: riot_shield (Lane A) + future boss ids (Lane C); Batch 10 (Lane 1): illusionist; additive, no runtime impact
 export type ZombieAI = "wander" | "investigate" | "chase" | "attack";
 
 export interface Zombie {

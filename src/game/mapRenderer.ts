@@ -1,5 +1,155 @@
 import { GameLocation, BloodDecal, Drop, FirePuddle, MapObstacle, ExplosiveBarrel, LoreNote, Barricade } from '../types/game';
 
+// ---- Batch 10 (Lane 2): explicit rendering-layer manager ----
+
+/**
+ * Canonical frame draw order. Every draw call in the frame belongs to exactly
+ * one named layer; layers always flush ground → decals → entities → effects →
+ * lighting → ui, so layer violations are impossible by construction.
+ */
+export const RENDER_LAYERS = ['ground', 'decals', 'entities', 'effects', 'lighting', 'ui'] as const;
+export type RenderLayer = (typeof RENDER_LAYERS)[number];
+
+export const RENDER_LAYER_INDEX: Record<RenderLayer, number> = {
+  ground: 0, decals: 1, entities: 2, effects: 3, lighting: 4, ui: 5,
+};
+
+/**
+ * Engine render() call site → layer. The frame is two world passes with a
+ * screen-space lighting pass between them; the map is complete (a test asserts
+ * every render call inside engine render() appears here) so draw-order
+ * regressions get caught instead of shipping.
+ */
+export const ENGINE_LAYER_MAP: Record<string, RenderLayer> = {
+  renderEnvironment: 'ground', // internally routes ground+decals+entities via the queue below
+  renderSurgeDrops: 'entities',
+  renderHoles: 'entities',
+  renderLantern: 'entities',
+  renderBell: 'entities',
+  renderParticles: 'effects',
+  renderShockwaves: 'effects',
+  renderTelegraphs: 'effects',
+  'celebration.renderWorld': 'effects',
+  renderSlashBursts: 'effects',
+  paintFloaters: 'effects',
+  renderLighting: 'lighting',
+  renderDarkness: 'lighting',
+  'celebration.renderScreen': 'lighting',
+  renderZombies: 'entities',
+  renderProjectiles: 'entities',
+  renderGrit: 'entities',
+  renderTraps: 'entities',
+  renderPlayer: 'entities',
+  renderLightning: 'effects',
+  renderSalt: 'effects',
+  renderAura: 'effects',
+  renderNova: 'effects',
+  renderVacuumDrops: 'entities',
+  renderRig: 'entities',
+  renderNoisePulses: 'effects',
+  renderFlares: 'effects',
+  renderHoleMarkers: 'entities',
+  renderZombieLabels: 'entities',
+  renderBanner: 'ui',
+  interactHint: 'ui',
+  // Screen-space tail of engine render() (after the second world pass).
+  renderCompass: 'ui',
+  renderMinimap: 'ui',
+  renderHurtDir: 'ui',
+  renderEyeshine: 'effects',
+  renderDeathFlash: 'ui',
+};
+
+type LayerDrawFn = (ctx: CanvasRenderingContext2D) => void;
+
+/**
+ * Named-layer draw registry. Queue draw callbacks into layers in any order;
+ * flush() executes them in canonical RENDER_LAYERS order (FIFO within a layer).
+ */
+export class RenderLayerQueue {
+  private buckets: Record<RenderLayer, LayerDrawFn[]> = {
+    ground: [], decals: [], entities: [], effects: [], lighting: [], ui: [],
+  };
+  /** Layers executed by the most recent flush(), in execution order (test probe). */
+  readonly flushed: RenderLayer[] = [];
+
+  queue(layer: RenderLayer, fn: LayerDrawFn): void {
+    this.buckets[layer].push(fn);
+  }
+
+  flush(ctx: CanvasRenderingContext2D): void {
+    this.flushed.length = 0;
+    for (const layer of RENDER_LAYERS) {
+      const bucket = this.buckets[layer];
+      if (bucket.length === 0) continue;
+      this.flushed.push(layer);
+      for (let i = 0; i < bucket.length; i++) bucket[i](ctx);
+      bucket.length = 0;
+    }
+  }
+}
+
+/** Module-shared queue for renderEnvironment (one synchronous pass per frame). */
+const envLayers = new RenderLayerQueue();
+
+/** Last flush order of renderEnvironment's layer queue (test probe). */
+export function envLayerFlushOrder(): RenderLayer[] {
+  return envLayers.flushed.slice();
+}
+
+// ---- Batch 10 (Lane 2): tweened pickups ----
+
+/** Pickup spawn-pop duration: scale 0.1 → 1 with Back.easeOut, matching the banner pop. */
+export const PICKUP_POP_MS = 150;
+
+const pickupSeenAt = new Map<string, number>();
+let pickupPruneAt = 0;
+
+/**
+ * Spawn-pop scale for a pickup id. The first call for an id latches its birth
+ * at nowMs; returns 0.1 → 1 (Back.easeOut, slight overshoot like the banner
+ * pop) over PICKUP_POP_MS, then stays 1. Render-side state only — keyed by
+ * drop id, so no engine changes are needed. Engine-side draws (grit, surge
+ * drops) can call this too once their lane wires it in.
+ */
+export function pickupPopScale(id: string, nowMs = Date.now()): number {
+  let t0 = pickupSeenAt.get(id);
+  if (t0 === undefined) {
+    pickupSeenAt.set(id, nowMs);
+    t0 = nowMs;
+  }
+  const t = Math.min(1, Math.max(0, (nowMs - t0) / PICKUP_POP_MS));
+  return 0.1 + 0.9 * backEaseOut(t);
+}
+
+/** Forget spawn state for ids no longer on the ground (throttled; no per-frame alloc). */
+export function maybePrunePickupPop(drops: Drop[]): void {
+  const now = Date.now();
+  if (now - pickupPruneAt < 5000 && pickupSeenAt.size < 4096) return;
+  pickupPruneAt = now;
+  const live = new Set<string>();
+  for (const d of drops) live.add(d.id);
+  for (const id of pickupSeenAt.keys()) {
+    if (!live.has(id)) pickupSeenAt.delete(id);
+  }
+}
+
+/** Test hook: clear all pickup spawn state. */
+export function resetPickupPop(): void {
+  pickupSeenAt.clear();
+  pickupPruneAt = 0;
+}
+
+/** Batch 10 test probes, attached alongside the render-7 probes. */
+function attachBatch10Probes(): void {
+  const w = window as unknown as Record<string, unknown>;
+  const ct = w.__controlsTest as Record<string, unknown> | undefined;
+  if (!ct) return;
+  if (typeof ct.envLayerOrder !== 'function') ct.envLayerOrder = () => envLayerFlushOrder();
+  if (typeof ct.pickupPopScale !== 'function') ct.pickupPopScale = (id: string, nowMs?: number) => pickupPopScale(id, nowMs);
+  if (typeof ct.pickupPopReset !== 'function') ct.pickupPopReset = () => resetPickupPop();
+}
+
 const plates = new Map<string, HTMLCanvasElement>();
 
 function hashId(id: string) {
@@ -414,107 +564,137 @@ export function renderEnvironment(
   zoom = 1,
 ) {
   attachRender7Probes();
-  ctx.fillStyle = location.ground || '#1c1f19';
-  ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
-
-  const plate = plateFor(location);
-  let sx = viewport.x;
-  let sy = viewport.y;
-  let sw = viewport.width;
-  let sh = viewport.height;
-  if (sx < 0) { sw += sx; sx = 0; }
-  if (sy < 0) { sh += sy; sy = 0; }
-  if (sx + sw > plate.width) sw = plate.width - sx;
-  if (sy + sh > plate.height) sh = plate.height - sy;
-  if (sw > 1 && sh > 1) ctx.drawImage(plate, sx, sy, sw, sh, sx, sy, sw, sh);
-
-  // Batch 6: parallax ground layers — scroll slower than the ground for depth.
-  renderParallax(ctx, location, { x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height });
-
-  for (const decal of bloodDecals) {
-    if (!sees(viewport, decal.x, decal.y, decal.radius)) continue;
-
-    ctx.save();
-    ctx.translate(decal.x, decal.y);
-    ctx.rotate(decal.rotation);
-    ctx.fillStyle = `rgba(139, 0, 0, ${decal.alpha})`;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, decal.radius, decal.radius * 0.65, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = `rgba(90, 0, 0, ${decal.alpha * 0.8})`;
-    const dist = decal.radius * 0.9;
-    ctx.beginPath();
-    ctx.arc(Math.cos(decal.rotation) * dist, Math.sin(decal.rotation) * dist, decal.radius * 0.2, 0, Math.PI * 2);
-    ctx.arc(Math.cos(decal.rotation + 2.2) * dist, Math.sin(decal.rotation + 2.2) * dist, decal.radius * 0.16, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
+  attachBatch10Probes();
 
   const now = Date.now();
-  for (const puddle of firePuddles) {
-    if (!sees(viewport, puddle.x, puddle.y, puddle.radius)) continue;
-    const elapsed = now - puddle.createdTime;
-    const progress = elapsed / puddle.duration;
-    if (progress >= 1) continue;
-
-    const flicker = 0.85 + Math.sin(now * 0.02 + puddle.x) * 0.15;
-    const currentRadius = puddle.radius * flicker;
-
-    ctx.fillStyle = 'rgba(20, 10, 5, 0.7)';
-    ctx.beginPath();
-    ctx.arc(puddle.x, puddle.y, currentRadius * 1.1, 0, Math.PI * 2);
-    ctx.fill();
-
-    const grad = ctx.createRadialGradient(puddle.x, puddle.y, 0, puddle.x, puddle.y, currentRadius);
-    grad.addColorStop(0, 'rgba(255, 230, 120, 0.9)');
-    grad.addColorStop(0.3, 'rgba(255, 120, 20, 0.7)');
-    grad.addColorStop(0.7, 'rgba(220, 50, 10, 0.4)');
-    grad.addColorStop(1, 'rgba(180, 20, 0, 0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(puddle.x, puddle.y, currentRadius, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  for (const bar of barricades) {
-    if (!sees(viewport, bar.x + bar.width / 2, bar.y + bar.height / 2, Math.max(bar.width, bar.height))) continue;
-    renderBarricade(ctx, bar);
-  }
-
-  if (extractActive) {
-    renderExtract(ctx, location.extract);
-  }
-
-  for (const barrel of barrels) {
-    if (!sees(viewport, barrel.x, barrel.y, barrel.radius + 12)) continue;
-    renderExplosiveBarrel(ctx, barrel, now);
-  }
-
+  // Zoom-compensated pickup scale (Batch 6), kept identical; Batch 10 multiplies
+  // the spawn-pop tween on top so pickups ease in instead of popping.
   const pickup = Math.max(1, 1.15 / Math.max(0.2, zoom));
 
-  for (const drop of drops) {
-    // Batch 7: 96px-margin culling for pickups (counted; ground decals exempt).
-    if (!visibleInViewport(drop.x, drop.y, 20, viewport, 96)) { culledEntities++; continue; }
-    // Batch 6: blob shadow stays on the ground while the pickup bobs.
-    drawBlobShadow(ctx, drop.x, drop.y + 5, 11 * pickup, 0.38);
-    ctx.save();
-    ctx.translate(drop.x, drop.y);
-    ctx.scale(pickup, pickup);
-    ctx.translate(-drop.x, -drop.y);
-    renderDrop(ctx, drop, now);
-    ctx.restore();
-  }
+  // Layer mapping mirrors the original statement order exactly — ground fill +
+  // plate + parallax, then decals (blood, fire scorch), then entities
+  // (barricades, extract, barrels, drops, lore notes) — so this is a pure
+  // ordering refactor with zero visual change.
+  envLayers.queue('ground', (ctx) => {
+    ctx.fillStyle = location.ground || '#1c1f19';
+    ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
 
-  for (const note of loreNotes) {
-    if (note.collected) continue;
-    if (!visibleInViewport(note.x, note.y, 24, viewport, 96)) { culledEntities++; continue; }
-    ctx.save();
-    ctx.translate(note.x, note.y);
-    ctx.scale(pickup, pickup);
-    ctx.translate(-note.x, -note.y);
-    renderLoreNote(ctx, note, now);
-    ctx.restore();
-  }
+    const plate = plateFor(location);
+    let sx = viewport.x;
+    let sy = viewport.y;
+    let sw = viewport.width;
+    let sh = viewport.height;
+    if (sx < 0) { sw += sx; sx = 0; }
+    if (sy < 0) { sh += sy; sy = 0; }
+    if (sx + sw > plate.width) sw = plate.width - sx;
+    if (sy + sh > plate.height) sh = plate.height - sy;
+    if (sw > 1 && sh > 1) ctx.drawImage(plate, sx, sy, sw, sh, sx, sy, sw, sh);
+
+    // Batch 6: parallax ground layers — scroll slower than the ground for depth.
+    renderParallax(ctx, location, { x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height });
+  });
+
+  envLayers.queue('decals', (ctx) => {
+    for (const decal of bloodDecals) {
+      if (!sees(viewport, decal.x, decal.y, decal.radius)) continue;
+
+      ctx.save();
+      ctx.translate(decal.x, decal.y);
+      ctx.rotate(decal.rotation);
+      ctx.fillStyle = `rgba(139, 0, 0, ${decal.alpha})`;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, decal.radius, decal.radius * 0.65, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(90, 0, 0, ${decal.alpha * 0.8})`;
+      const dist = decal.radius * 0.9;
+      ctx.beginPath();
+      ctx.arc(Math.cos(decal.rotation) * dist, Math.sin(decal.rotation) * dist, decal.radius * 0.2, 0, Math.PI * 2);
+      ctx.arc(Math.cos(decal.rotation + 2.2) * dist, Math.sin(decal.rotation + 2.2) * dist, decal.radius * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  });
+
+  envLayers.queue('decals', (ctx) => {
+    for (const puddle of firePuddles) {
+      if (!sees(viewport, puddle.x, puddle.y, puddle.radius)) continue;
+      const elapsed = now - puddle.createdTime;
+      const progress = elapsed / puddle.duration;
+      if (progress >= 1) continue;
+
+      const flicker = 0.85 + Math.sin(now * 0.02 + puddle.x) * 0.15;
+      const currentRadius = puddle.radius * flicker;
+
+      ctx.fillStyle = 'rgba(20, 10, 5, 0.7)';
+      ctx.beginPath();
+      ctx.arc(puddle.x, puddle.y, currentRadius * 1.1, 0, Math.PI * 2);
+      ctx.fill();
+
+      const grad = ctx.createRadialGradient(puddle.x, puddle.y, 0, puddle.x, puddle.y, currentRadius);
+      grad.addColorStop(0, 'rgba(255, 230, 120, 0.9)');
+      grad.addColorStop(0.3, 'rgba(255, 120, 20, 0.7)');
+      grad.addColorStop(0.7, 'rgba(220, 50, 10, 0.4)');
+      grad.addColorStop(1, 'rgba(180, 20, 0, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(puddle.x, puddle.y, currentRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+
+  envLayers.queue('entities', (ctx) => {
+    for (const bar of barricades) {
+      if (!sees(viewport, bar.x + bar.width / 2, bar.y + bar.height / 2, Math.max(bar.width, bar.height))) continue;
+      renderBarricade(ctx, bar);
+    }
+  });
+
+  envLayers.queue('entities', (ctx) => {
+    if (extractActive) {
+      renderExtract(ctx, location.extract);
+    }
+  });
+
+  envLayers.queue('entities', (ctx) => {
+    for (const barrel of barrels) {
+      if (!sees(viewport, barrel.x, barrel.y, barrel.radius + 12)) continue;
+      renderExplosiveBarrel(ctx, barrel, now);
+    }
+  });
+
+  envLayers.queue('entities', (ctx) => {
+    for (const drop of drops) {
+      // Batch 7: 96px-margin culling for pickups (counted; ground decals exempt).
+      if (!visibleInViewport(drop.x, drop.y, 20, viewport, 96)) { culledEntities++; continue; }
+      // Batch 6: blob shadow stays on the ground while the pickup bobs.
+      drawBlobShadow(ctx, drop.x, drop.y + 5, 11 * pickup, 0.38);
+      // Batch 10: spawn-pop tween — scale 0.1 → 1 Back.easeOut over ~150ms.
+      const pop = pickupPopScale(drop.id, now);
+      const s = pickup * pop;
+      ctx.save();
+      ctx.translate(drop.x, drop.y);
+      ctx.scale(s, s);
+      ctx.translate(-drop.x, -drop.y);
+      renderDrop(ctx, drop, now);
+      ctx.restore();
+    }
+  });
+
+  envLayers.queue('entities', (ctx) => {
+    for (const note of loreNotes) {
+      if (note.collected) continue;
+      if (!visibleInViewport(note.x, note.y, 24, viewport, 96)) { culledEntities++; continue; }
+      ctx.save();
+      ctx.translate(note.x, note.y);
+      ctx.scale(pickup, pickup);
+      ctx.translate(-note.x, -note.y);
+      renderLoreNote(ctx, note, now);
+      ctx.restore();
+    }
+  });
+
+  envLayers.flush(ctx);
+  maybePrunePickupPop(drops);
 }
 
 function renderLoreNote(ctx: CanvasRenderingContext2D, note: LoreNote, now: number) {

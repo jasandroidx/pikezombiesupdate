@@ -42,6 +42,20 @@ export interface CharacterDef {
   passiveName: string;
   passiveDesc: string;
   mods: CharacterPassiveMods;
+  // Batch 10 (Lane 1): signature special — the active ability. The UI lane
+  // renders the HUD button/key against special.name; the engine lane's
+  // triggerSignature() reads special.cooldownSec for the cooldown and
+  // dispatches the effect by character id.
+  special: CharacterSpecial;
+}
+
+/** One active ability per survivor. name/desc/cooldown are data; the effect
+ *  itself is implemented in the engine (Lane 1) — see SIGNATURE_TUNING. */
+export interface CharacterSpecial {
+  name: string;
+  desc: string;
+  /** Cooldown between activations, in seconds. */
+  cooldownSec: number;
 }
 
 export const CHARACTERS: CharacterDef[] = [
@@ -55,6 +69,7 @@ export const CHARACTERS: CharacterDef[] = [
     passiveName: "Quickdraw",
     passiveDesc: "+12% fire rate — the county's fastest holster, and he knows it.",
     mods: { fireRateMul: 1.12 },
+    special: { name: "Deadeye Draw", desc: "2s of +150% fire rate — the fastest holster in Pike County, let loose.", cooldownSec: 20 },
   },
   {
     id: "eula_stillwell",
@@ -66,6 +81,7 @@ export const CHARACTERS: CharacterDef[] = [
     passiveName: "Still Hunter",
     passiveDesc: "+25% headshot damage — waits for the shot, then ends it.",
     mods: { headshotMul: 1.25 },
+    special: { name: "Still Heart", desc: "5s of 0.35× slow-mo and guaranteed crits — she waits for the shot.", cooldownSec: 30 },
   },
   {
     id: "silas_mccord",
@@ -77,6 +93,7 @@ export const CHARACTERS: CharacterDef[] = [
     passiveName: "Mash Fire",
     passiveDesc: "+10% damage — everything he touches comes out stronger.",
     mods: { damageMul: 1.1 },
+    special: { name: "Mash Bomb", desc: "Lobs a still-charge at the densest nearby cluster — delayed AoE blast.", cooldownSec: 25 },
   },
   {
     id: "thea_kettler",
@@ -88,6 +105,7 @@ export const CHARACTERS: CharacterDef[] = [
     passiveName: "Dragline",
     passiveDesc: "+25 max HP — pit-boss hide, scarred and unbothered.",
     mods: { maxHpAdd: 25 },
+    special: { name: "Dragline Sweep", desc: "A 360° chainsaw sweep that chews everything in reach.", cooldownSec: 20 },
   },
 ];
 

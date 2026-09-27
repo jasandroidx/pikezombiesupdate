@@ -8,6 +8,7 @@ import { dprCap } from "@/game/mapRenderer";
 import { loadSave } from "@/game/save";
 import { characterDef, markDailyPlayed, selectedCharacterId } from "@/game/meta";
 import { HUD } from "@/components/game/HUD";
+import type { SignatureState } from "@/components/game/HUD";
 import { StartScreen } from "@/components/game/StartScreen";
 import { UpgradeShopModal } from "@/components/game/UpgradeShopModal";
 import { GameOverModal } from "@/components/game/GameOverModal";
@@ -91,6 +92,9 @@ function GameApp() {
     // Batch 9 — Lane 4: Lane 1's score-multiplier powerup state, polled from
     // window.__controlsTest.scoreMulState() in onStatsUpdate. Null = hidden.
     scoreMul: null as { active: boolean; timeLeft: number; mult: number } | null,
+    // Batch 10 — Lane 3: engine lane's survivor special probe
+    // (window.__controlsTest.signatureState). Null = the HUD button hides.
+    signature: null as SignatureState | null,
     nearWorkbench: false,
     extractActive: false,
     interactHint: "",
@@ -282,7 +286,27 @@ function GameApp() {
           } catch {
             scoreMul = null;
           }
-          setHudStats({ ...stats, scoreMul });
+          // Batch 10 — Lane 3: poll the engine lane's survivor-special probe
+          // on the same tick. Shape: { ready: boolean; timeLeft: number; name: string }.
+          // Probe absent (engine lane still working) or errored -> null ->
+          // the special-ability HUD button hides gracefully.
+          let signature: typeof hudStats.signature = null;
+          try {
+            const sigProbe = window.__controlsTest?.signatureState;
+            if (typeof sigProbe === "function") {
+              const s = sigProbe();
+              if (s && typeof s === "object") {
+                signature = {
+                  ready: s.ready === true,
+                  timeLeft: typeof s.timeLeft === "number" && s.timeLeft > 0 ? s.timeLeft : 0,
+                  name: typeof s.name === "string" && s.name.length > 0 ? s.name : "Special",
+                };
+              }
+            }
+          } catch {
+            signature = null;
+          }
+          setHudStats({ ...stats, scoreMul, signature });
         },
         onLoreNoteFound: (note: LoreNote) => {
           setActiveLoreNote(note);
@@ -367,6 +391,24 @@ function GameApp() {
 
   const handleToggleMute = () => setIsMuted(soundEngine.toggleMute());
 
+  // Batch 10 — Lane 3: survivor special trigger. The engine lane owns
+  // engine.triggerSignature(); until it lands, this is a guarded no-op and
+  // the HUD button stays hidden (the signatureState probe is absent).
+  const handleTriggerSignature = useCallback(() => {
+    try {
+      const eng = engineRef.current as unknown as { triggerSignature?: () => void } | null;
+      if (eng && typeof eng.triggerSignature === "function") {
+        eng.triggerSignature();
+        return;
+      }
+      const probe = (window as unknown as { __controlsTest?: Record<string, unknown> }).__controlsTest
+        ?.triggerSignature;
+      if (typeof probe === "function") (probe as () => void)();
+    } catch {
+      // Probe absent: nothing to trigger.
+    }
+  }, []);
+
   const handleToggleWorkbench = () => {
     if (screen !== "playing") return;
     setPaused(false);
@@ -440,6 +482,14 @@ function GameApp() {
         handleToggleWorkbench();
       } else if (e.code === "KeyM") {
         handleToggleMute();
+      } else if (e.code === "KeyQ" && !e.repeat) {
+        // Batch 10 — Lane 3: survivor special key binding. The engine lane
+        // owns the actual trigger (engine.triggerSignature); this calls the
+        // same guarded path as the HUD button and no-ops until it lands.
+        if (screen === "playing" && !isWorkbenchOpen && !draft && !activeLoreNote) {
+          e.preventDefault();
+          handleTriggerSignature();
+        }
       } else if (e.code === "Escape") {
         e.preventDefault();
         if (isWorkbenchOpen) handleToggleWorkbench();
@@ -454,7 +504,7 @@ function GameApp() {
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [screen, isWorkbenchOpen, activeLoreNote, draft, showControls, showA11y, showCodex, showTuning]);
+  }, [screen, isWorkbenchOpen, activeLoreNote, draft, showControls, showA11y, showCodex, showTuning, handleTriggerSignature]);
 
   const handleUnlockWeapon = (index: number) => {
     const engine = engineRef.current;
@@ -602,6 +652,8 @@ function GameApp() {
             isMuted={isMuted}
             activePowerups={hudStats.activePowerups}
             scoreMul={hudStats.scoreMul}
+            signature={hudStats.signature}
+            onTriggerSignature={handleTriggerSignature}
             onToggleMute={handleToggleMute}
             onOpenWorkbench={handleToggleWorkbench}
             onSkipWaveTimer={() => engineRef.current?.skipWaveBreak()}

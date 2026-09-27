@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X, Zap, Shield, Wind, BookOpen, Coins, Landmark } from "lucide-react";
 import { getStatShop, buyStat, STAT_SHOP_MAX_TIER, type StatShopTrackId } from "@/game/meta";
+import { MetaTreePanel } from "./MetaTree";
 
 /**
  * County Record Office — permanent stat shop.
@@ -33,6 +34,10 @@ export function StatShopModal({ open, onClose }: StatShopModalProps) {
   // Bump to re-read getStatShop() after each purchase.
   const [tick, setTick] = useState(0);
   void tick;
+  // Batch 10 — Lane 3: Bloodlines tab hosts the County Record meta tree.
+  // Honors (the original stat shop) stays the default tab so existing flows
+  // and tests keep working unchanged.
+  const [tab, setTab] = useState<"honors" | "tree">("honors");
 
   if (!open) return null;
 
@@ -43,8 +48,23 @@ export function StatShopModal({ open, onClose }: StatShopModalProps) {
     if (res.ok) setTick((t) => t + 1);
   };
 
+  const tabBtn = (id: "honors" | "tree", label: string) => (
+    <button
+      key={id}
+      type="button"
+      data-testid={`record-tab-${id}`}
+      onClick={() => setTab(id)}
+      aria-pressed={tab === id}
+      className={`rounded border px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest ${
+        tab === id ? "border-accent/60 bg-accent/20 text-accent" : "border-border bg-bg text-muted hover:text-fg"
+      }`}
+    >
+      {label}
+    </button>
+  );
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
+    <div data-testid="stat-shop" className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
       <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded border border-border bg-surface shadow-2xl">
         <div className="flex items-center justify-between border-b border-border bg-bg p-4">
           <div className="flex items-center gap-3">
@@ -57,19 +77,27 @@ export function StatShopModal({ open, onClose }: StatShopModalProps) {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 rounded border border-border bg-surface-2 px-2.5 py-1.5">
-              <Coins className="h-4 w-4 text-accent" />
-              <span className="text-sm font-bold text-fg">{stubs}</span>
-              <span className="text-xs text-muted">stubs</span>
+            <div className="flex items-center gap-1">
+              {tabBtn("honors", "Honors")}
+              {tabBtn("tree", "Bloodlines")}
             </div>
+            {tab === "honors" && (
+              <div className="flex items-center gap-1.5 rounded border border-border bg-surface-2 px-2.5 py-1.5">
+                <Coins className="h-4 w-4 text-accent" />
+                <span className="text-sm font-bold text-fg">{stubs}</span>
+                <span className="text-xs text-muted">stubs</span>
+              </div>
+            )}
             <button onClick={onClose} className="rounded p-1.5 text-muted hover:bg-surface-2 hover:text-fg" aria-label="Close">
               <X className="h-5 w-5" />
             </button>
           </div>
         </div>
 
-        <div className="flex-1 space-y-3 overflow-y-auto p-4">
-          {tracks.map((track) => {
+        {tab === "honors" ? (
+          <>
+            <div className="flex-1 space-y-3 overflow-y-auto p-4">
+              {tracks.map((track) => {
             const Icon = TRACK_ICON[track.id];
             const cur = tiers[track.id] ?? 0;
             const maxed = cur >= STAT_SHOP_MAX_TIER;
@@ -119,13 +147,17 @@ export function StatShopModal({ open, onClose }: StatShopModalProps) {
               </div>
             );
           })}
-        </div>
+            </div>
 
-        <div className="border-t border-border bg-bg p-3">
-          <p className="text-center text-xs text-muted">
-            Purchased honors apply to every run at player init. Earn stubs by finishing runs.
-          </p>
-        </div>
+            <div className="border-t border-border bg-bg p-3">
+              <p className="text-center text-xs text-muted">
+                Purchased honors apply to every run at player init. Earn stubs by finishing runs.
+              </p>
+            </div>
+          </>
+        ) : (
+          <MetaTreePanel />
+        )}
       </div>
     </div>
   );

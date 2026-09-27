@@ -1,8 +1,14 @@
-import { useEffect, useState } from "react";
-import { Accessibility, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Accessibility, X, Download, Upload } from "lucide-react";
 import type { RefObject } from "react";
 import type { GameEngine } from "@/game/engine";
 import { soundEngine } from "@/audio/soundEngine";
+import {
+  collectSaveData,
+  serializeSaveData,
+  validateSaveData,
+  applySaveData,
+} from "./SaveTransfer";
 
 /* =====================================================================
  * ENGINE API CONTRACT — for the coordinator (NOT yet in engine.ts)
@@ -34,6 +40,10 @@ interface A11ySettings {
   reducedFlashing: boolean;
   highContrast: boolean;
   fontScale: number;
+  /** Batch 10 — Lane 3: deuteranopia/protanopia-safer UI palette. */
+  colorblind: boolean;
+  /** Batch 10 — Lane 3: frame cap in fps. 0 = unlimited. */
+  frameCap: number;
 }
 
 /** Duck-typed view of GameEngine for the hook the coordinator has not landed. */
@@ -51,13 +61,18 @@ const DEFAULTS: A11ySettings = {
   reducedFlashing: false,
   highContrast: false,
   fontScale: 1,
+  colorblind: false,
+  frameCap: 0,
 };
+
+const FRAME_CAPS = [0, 30, 60, 120] as const;
 
 function loadStored(): A11ySettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<A11ySettings>;
+      const fc = parsed.frameCap;
       return {
         master: clamp01(parsed.master ?? DEFAULTS.master),
         music: clamp01(parsed.music ?? DEFAULTS.music),
@@ -68,6 +83,8 @@ function loadStored(): A11ySettings {
         fontScale: typeof parsed.fontScale === "number" && Number.isFinite(parsed.fontScale)
           ? Math.min(1.3, Math.max(0.85, parsed.fontScale))
           : DEFAULTS.fontScale,
+        colorblind: !!parsed.colorblind,
+        frameCap: typeof fc === "number" && (FRAME_CAPS as readonly number[]).includes(fc) ? fc : DEFAULTS.frameCap,
       };
     }
   } catch {
@@ -97,6 +114,38 @@ function applyToWorld(s: A11ySettings, engine: GameEngine | null) {
   // High contrast + font scale are DOM-level (no CSS file edits needed):
   document.body.style.filter = s.highContrast ? "contrast(1.35) saturate(1.15)" : "";
   document.documentElement.style.fontSize = s.fontScale === 1 ? "" : `${16 * s.fontScale}px`;
+  applyColorblind(s.colorblind);
+  // Batch 10 — Lane 3: frame-cap handoff contract for the engine lane.
+  // The render loop (engine-owned) reads window.__pzFrameCap: 0 = unlimited.
+  (window as unknown as { __pzFrameCap?: number }).__pzFrameCap = s.frameCap;
+}
+
+/**
+ * Batch 10 — Lane 3: colorblind-safe UI palette. Swaps the red/gold theme
+ * pair for a blue/gold/purple set (Okabe-Ito-inspired) that stays distinct
+ * under red-green color blindness. DOM-level: no CSS file edits needed.
+ * Sets html[data-colorblind] so the engine lane can key canvas colors off it.
+ */
+const COLORBLIND_CSS = `
+html[data-colorblind] {
+  --color-primary: #0072b2;
+  --color-accent: #e69f00;
+  --color-danger: #cc79a7;
+}
+`;
+
+function applyColorblind(on: boolean) {
+  document.documentElement.toggleAttribute("data-colorblind", on);
+  const id = "pz-colorblind-palette";
+  let el = document.getElementById(id) as HTMLStyleElement | null;
+  if (on && !el) {
+    el = document.createElement("style");
+    el.id = id;
+    el.textContent = COLORBLIND_CSS;
+    document.head.appendChild(el);
+  } else if (!on && el) {
+    el.remove();
+  }
 }
 
 /**
@@ -142,15 +191,18 @@ function Toggle({
   detail,
   on,
   onChange,
+  testid,
 }: {
   label: string;
   detail: string;
   on: boolean;
   onChange: (v: boolean) => void;
+  testid?: string;
 }) {
   return (
     <button
       type="button"
+      data-testid={testid}
       onClick={() => onChange(!on)}
       aria-pressed={on}
       className={`flex w-full items-center justify-between gap-2 rounded border px-3 py-2 text-left ${
@@ -256,6 +308,42 @@ export function AccessibilityPanel({
                 on={settings.highContrast}
                 onChange={(v) => update({ highContrast: v })}
               />
+              <Toggle
+                label="Colorblind palette"
+                detail="Swaps reds for blues — stays readable with red-green color blindness."
+                on={settings.colorblind}
+                onChange={(v) => update({ colorblind: v })}
+                testid="a11y-colorblind"
+              />
+              <div>
+                <div className="mb-1 flex items-baseline justify-between">
+                  <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">Frame cap</span>
+                  <span className="font-mono text-[11px] text-accent">
+                    {settings.frameCap === 0 ? "Unlimited" : `${settings.frameCap} fps`}
+                  </span>
+                </div>
+                <div className="flex gap-1.5" role="group" aria-label="Frame cap">
+                  {FRAME_CAPS.map((cap) => (
+                    <button
+                      key={cap}
+                      type="button"
+                      data-testid={`frame-cap-${cap}`}
+                      onClick={() => update({ frameCap: cap })}
+                      aria-pressed={settings.frameCap === cap}
+                      className={`flex-1 rounded border px-2 py-1.5 font-mono text-[11px] uppercase tracking-widest ${
+                        settings.frameCap === cap
+                          ? "border-accent/70 bg-surface-2 text-accent"
+                          : "border-border bg-bg text-muted hover:text-fg"
+                      }`}
+                    >
+                      {cap === 0 ? "∞" : cap}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 font-lore text-[11px] text-muted">
+                  Caps the render loop. Takes effect on the next run.
+                </p>
+              </div>
               <label className="block">
                 <div className="flex items-baseline justify-between">
                   <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">Font scale</span>
@@ -274,8 +362,124 @@ export function AccessibilityPanel({
               </label>
             </div>
           </div>
+          <div>
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.22em] text-accent">Save data</div>
+            <SaveTransfer />
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Batch 10 — Lane 3: save export / import.
+ *
+ * Export downloads every pz_* key (+ pcz_save_v2, which holds stubs and
+ * shop tiers) as one JSON file. Import validates the file before writing
+ * anything — a corrupt file is rejected with a message and storage is
+ * left untouched.
+ */
+function SaveTransfer() {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [status, setStatus] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  const doExport = () => {
+    try {
+      const data = collectSaveData();
+      const blob = new Blob([serializeSaveData(data)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `pike-county-save-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+      setStatus({ kind: "ok", msg: `Exported ${Object.keys(data.keys).length} save keys.` });
+    } catch {
+      setStatus({ kind: "err", msg: "Export failed: could not build the file." });
+    }
+  };
+
+  const doImportFile = async (f: File) => {
+    setStatus(null);
+    let text: string;
+    try {
+      text = await f.text();
+    } catch {
+      setStatus({ kind: "err", msg: "Import failed: could not read the file." });
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      setStatus({ kind: "err", msg: "Import failed: file is not valid JSON. Nothing was changed." });
+      return;
+    }
+    const v = validateSaveData(parsed);
+    if (!v.ok) {
+      setStatus({ kind: "err", msg: `Import failed: ${v.reason}. Nothing was changed.` });
+      return;
+    }
+    applySaveData(v.keys);
+    setStatus({
+      kind: "ok",
+      msg: `Imported ${Object.keys(v.keys).length} save keys. Reload the page to apply them.`,
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-2">
+        <button
+          type="button"
+          data-testid="save-export"
+          onClick={doExport}
+          className="flex flex-1 items-center justify-center gap-2 rounded border border-border bg-bg px-3 py-2 font-mono text-[11px] uppercase tracking-[0.18em] text-fg hover:border-accent/60"
+        >
+          <Download className="h-4 w-4 text-accent" />
+          Export save
+        </button>
+        <button
+          type="button"
+          data-testid="save-import-btn"
+          onClick={() => fileRef.current?.click()}
+          className="flex flex-1 items-center justify-center gap-2 rounded border border-border bg-bg px-3 py-2 font-mono text-[11px] uppercase tracking-[0.18em] text-fg hover:border-accent/60"
+        >
+          <Upload className="h-4 w-4 text-accent" />
+          Import save
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".json,application/json"
+          data-testid="save-import"
+          className="hidden"
+          aria-label="Import save file"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) void doImportFile(f);
+          }}
+        />
+      </div>
+      <p className="font-lore text-[11px] leading-snug text-muted">
+        Downloads or restores every Pike County save key in this browser. Imports are validated first —
+        a bad file changes nothing.
+      </p>
+      {status && (
+        <div
+          data-testid="save-transfer-status"
+          role="status"
+          className={`rounded border px-2.5 py-1.5 font-mono text-[11px] ${
+            status.kind === "ok" ? "border-accent/60 text-accent" : "border-danger text-danger"
+          }`}
+        >
+          {status.msg}
+        </div>
+      )}
     </div>
   );
 }

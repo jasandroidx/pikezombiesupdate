@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Weapon, ActivePowerup } from "@/types/game";
 import { Volume2, VolumeX, Zap, Skull, Infinity, Radio, Bell } from "lucide-react";
+import { Minimap } from "./Minimap";
 
 /** Score-multiplier powerup state (Lane 1 probe shape: {active, timeLeft, mult}).
  *  timeLeft is in ms, matching the existing ActivePowerup durationRemaining. */
@@ -8,6 +9,16 @@ export interface ScoreMulState {
   active: boolean;
   timeLeft: number;
   mult: number;
+}
+
+/** Batch 10 — Lane 3: survivor special-ability state.
+ *  Engine-lane probe shape on window.__controlsTest:
+ *    signatureState() -> { ready: boolean; timeLeft: number; name: string }
+ *  Probe absent -> the button hides (no errors). */
+export interface SignatureState {
+  ready: boolean;
+  timeLeft: number;
+  name: string;
 }
 
 interface HUDProps {
@@ -31,6 +42,10 @@ interface HUDProps {
   activePowerups?: ActivePowerup[];
   /** Batch 9 — Lane 4: Lane 1's score-multiplier powerup. Null/absent = hidden. */
   scoreMul?: ScoreMulState | null;
+  /** Batch 10 — Lane 3: engine lane's survivor special probe. Null/absent = hidden. */
+  signature?: SignatureState | null;
+  /** Batch 10 — Lane 3: fires engine.triggerSignature() (guarded, no-op until the engine lane lands it). */
+  onTriggerSignature?: () => void;
   onToggleMute: () => void;
   onOpenWorkbench: () => void;
   onSkipWaveTimer: () => void;
@@ -95,6 +110,8 @@ export function HUD({
   isMuted,
   activePowerups = [],
   scoreMul = null,
+  signature = null,
+  onTriggerSignature,
   onToggleMute,
   onOpenWorkbench,
   onSkipWaveTimer,
@@ -157,6 +174,25 @@ export function HUD({
     scoreMul && scoreMul.active && scoreMulMax > 0
       ? Math.max(0, Math.min(100, (scoreMul.timeLeft / scoreMulMax) * 100))
       : 0;
+
+  // Batch 10 — Lane 3: survivor special cooldown. Capture the peak timeLeft
+  // when the cooldown starts so the sweep fills against a fixed full scale.
+  // Probe absent -> the button stays hidden entirely.
+  const [sigMax, setSigMax] = useState(0);
+  useEffect(() => {
+    if (signature && !signature.ready) {
+      if (signature.timeLeft > sigMax) setSigMax(signature.timeLeft);
+    } else if (sigMax !== 0) {
+      setSigMax(0);
+    }
+  }, [signature, sigMax]);
+  // Fill = recharged fraction of the sweep. Ready -> full ring + pulse.
+  const sigFill =
+    signature && sigMax > 0 && !signature.ready
+      ? Math.max(0, Math.min(100, 100 * (1 - signature.timeLeft / sigMax)))
+      : signature?.ready
+        ? 100
+        : 0;
 
   return (
     <div className="hud-shell pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-3 pb-32 md:p-4 md:pb-5 select-none">
@@ -284,7 +320,7 @@ export function HUD({
           {activePowerups.map((p) => (
             <div
               key={p.type}
-              className="flex items-center gap-1 rounded border border-accent/50 bg-surface px-2 py-1 font-mono text-[10px] uppercase text-accent"
+              className="animate-pickup-pop flex items-center gap-1 rounded border border-accent/50 bg-surface px-2 py-1 font-mono text-[10px] uppercase text-accent"
             >
               {p.type === "nuke" && <Skull className="h-3 w-3" />}
               {p.type === "infinite_ammo" && <Infinity className="h-3 w-3" />}
@@ -299,7 +335,7 @@ export function HUD({
         <div className="mt-2 flex justify-center">
           <div
             data-testid="score-mul-badge"
-            className="flex items-center gap-2 rounded border border-accent bg-surface px-3 py-1.5"
+            className="animate-pickup-pop flex items-center gap-2 rounded border border-accent bg-surface px-3 py-1.5"
           >
             <Zap className="h-3.5 w-3.5 text-accent" />
             <span className="font-heading text-sm font-bold tracking-wider text-accent">
@@ -327,7 +363,12 @@ export function HUD({
       )}
 
       <div className="flex w-full items-end justify-between">
-        <div className="hud-plate w-32 rounded px-2 py-1.5 md:w-40">
+        <div className="flex flex-col items-start gap-2">
+          {/* Batch 10 (Lane 2): corner minimap — second orthographic camera,
+              probe-fed, ~10Hz, DPR-aware. Bottom-left keeps it clear of the
+              wave-shop panel (top-right) and the engine's own canvas minimap. */}
+          <Minimap />
+          <div className="hud-plate w-32 rounded px-2 py-1.5 md:w-40">
           <div className="h-2.5 overflow-hidden rounded bg-surface-2">
             <div className={`h-full ${isCritical ? "bg-primary" : "bg-accent"}`} style={{ width: `${hpPercent}%` }} />
           </div>
@@ -337,6 +378,7 @@ export function HUD({
           {sneaking && (
             <div className="mt-1 font-mono text-[9px] uppercase tracking-widest text-accent">Quiet</div>
           )}
+          </div>
         </div>
 
         <div className="hud-plate rounded px-3 py-1.5 text-center">
@@ -353,6 +395,43 @@ export function HUD({
             Post {posts} · Pipe {pipes}
           </div>
         </div>
+
+        {/* Batch 10 — Lane 3: survivor special. Probe absent -> hidden, no errors. */}
+        {signature && (
+          <button
+            type="button"
+            data-testid="signature-button"
+            onClick={onTriggerSignature}
+            disabled={!signature.ready}
+            title={signature.ready ? `${signature.name} — press Q` : `${signature.name} — recharging`}
+            aria-label={signature.ready ? `Use special: ${signature.name}` : `Special recharging: ${signature.name}`}
+            className={`pointer-events-auto relative flex h-16 w-16 shrink-0 flex-col items-center justify-center overflow-hidden rounded-full border-2 md:h-[4.5rem] md:w-[4.5rem] ${
+              signature.ready
+                ? "animate-pulse border-accent bg-accent/15"
+                : "border-border bg-surface/80"
+            }`}
+          >
+            <span
+              data-testid="signature-sweep"
+              aria-hidden
+              className="absolute inset-0"
+              style={{
+                background: `conic-gradient(from -90deg, rgba(212,160,23,0.45) ${sigFill * 3.6}deg, transparent 0deg)`,
+              }}
+            />
+            <span className="relative max-w-[3.5rem] truncate px-1 font-heading text-[10px] font-bold leading-tight tracking-wide text-fg">
+              {signature.name}
+            </span>
+            <span
+              data-testid="signature-key"
+              className={`relative mt-0.5 rounded border px-1 font-mono text-[9px] uppercase tracking-widest ${
+                signature.ready ? "border-accent text-accent" : "border-border text-muted"
+              }`}
+            >
+              Q
+            </span>
+          </button>
+        )}
       </div>
     </div>
   );
