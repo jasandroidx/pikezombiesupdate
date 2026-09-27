@@ -11,6 +11,7 @@ import { UpgradeShopModal } from "@/components/game/UpgradeShopModal";
 import { GameOverModal } from "@/components/game/GameOverModal";
 import { LoreNoteModal } from "@/components/game/LoreNoteModal";
 import { MobileControls } from "@/components/game/MobileControls";
+import { WaveShop } from "@/components/game/WaveShop";
 import { PauseMenu } from "@/components/game/PauseMenu";
 import { TailgateDraft } from "@/components/game/TailgateDraft";
 import type { BoonOffer } from "@/game/boons";
@@ -88,6 +89,11 @@ function GameApp() {
     gritBag: 0,
     bombCharges: 1,
     bombMax: 2,
+    dashCharges: 2,
+    dashMax: 2,
+    waveState: "break",
+    shopOffers: [] as { id: string; name: string; desc: string; cost: number; locked: boolean; afford: boolean }[],
+    shopRerollCost: 15,
     activeEvents: [] as string[],
     waveCall: "",
     bounty: "",
@@ -477,10 +483,23 @@ function GameApp() {
             onSelectWeapon={(i) => engineRef.current?.selectWeapon(i)}
             bombCharges={hudStats.bombCharges}
             bombMax={hudStats.bombMax}
+            dashCharges={hudStats.dashCharges}
+            dashMax={hudStats.dashMax}
             gritBag={hudStats.gritBag}
             activeEvents={hudStats.activeEvents}
             modeLabel={mode === "outbreak" ? `Outbreak ${outbreakStep + 1}/${OUTBREAK_ORDER.length}` : "Survival"}
           />
+          {hudStats.waveState === "break" && hudStats.shopOffers && hudStats.shopOffers.length > 0 && (
+            <WaveShop
+              offers={hudStats.shopOffers}
+              rerollCost={hudStats.shopRerollCost}
+              scrap={hudStats.scrap}
+              waveTimer={hudStats.waveTimer}
+              onBuy={(i) => engineRef.current?.buyShopOffer(i)}
+              onReroll={() => engineRef.current?.rerollShop()}
+              onLock={(i) => engineRef.current?.toggleShopLock(i)}
+            />
+          )}
           {draft && draft.length > 0 && (
             <TailgateDraft
               offers={draft}
@@ -512,6 +531,7 @@ function GameApp() {
               if (engineRef.current) engineRef.current.forceSneak = on;
             }}
             onDodge={() => engineRef.current?.tryDodge()}
+            onDash={() => engineRef.current?.tryDash()}
             onBash={() => engineRef.current?.tryBash()}
             onPlantPost={() => engineRef.current?.plantPost()}
             onDropPipe={() => engineRef.current?.dropPipe()}

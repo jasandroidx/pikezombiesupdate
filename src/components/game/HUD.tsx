@@ -55,6 +55,8 @@ interface HUDProps {
   onSelectWeapon?: (index: number) => void;
   bombCharges?: number;
   bombMax?: number;
+  dashCharges?: number;
+  dashMax?: number;
   gritBag?: number;
   activeEvents?: string[];
 }
@@ -113,6 +115,8 @@ export function HUD({
   onSelectWeapon,
   bombCharges = 1,
   bombMax = 2,
+  dashCharges = 2,
+  dashMax = 2,
   gritBag = 0,
   activeEvents = [],
 }: HUDProps) {
@@ -165,6 +169,15 @@ export function HUD({
                   </span>
                 ))}{" "}
                 <span className="text-muted">[B]</span>
+              </span>
+              <span className="text-accent">
+                Dash{" "}
+                {Array.from({ length: dashMax }).map((_, i) => (
+                  <span key={i} className={i < dashCharges ? "text-accent" : "text-muted/40"}>
+                    ●
+                  </span>
+                ))}{" "}
+                <span className="text-muted">[Shift]</span>
               </span>
               {gritBag > 0 && <span className="text-accent">Bag +{gritBag}</span>}
             </div>

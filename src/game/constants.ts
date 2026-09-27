@@ -758,3 +758,55 @@ export const BOMB_RADIUS = 260;
 export const BOMB_DMG = 150;
 export const BOMB_MAX_CHARGES = 2;
 export const BOMB_REGEN_MS = 45000;
+
+export interface QuestDef {
+  id: string;
+  name: string;
+  desc: string;
+  stat: "kills" | "headshots" | "wavesCleared" | "chestsOpened" | "shrinesAttuned";
+  goal: number;
+  bonus: string;
+}
+
+// County Record: lifetime quests. Completed quests grant permanent run bonuses.
+export const QUESTS: QuestDef[] = [
+  { id: "first_blood", name: "First Blood", desc: "Kill 150 zombies (all time)", stat: "kills", goal: 150, bonus: "+5% damage, every run" },
+  { id: "deadeye", name: "Deadeye", desc: "Land 75 headshots (all time)", stat: "headshots", goal: 75, bonus: "+8% damage, every run" },
+  { id: "homesteader", name: "Homesteader", desc: "Clear 25 waves (all time)", stat: "wavesCleared", goal: 25, bonus: "+15 max HP, every run" },
+  { id: "relic_hunter", name: "Relic Hunter", desc: "Open 8 supply chests (all time)", stat: "chestsOpened", goal: 8, bonus: "+40 starting scrap, every run" },
+  { id: "tracebound", name: "Tracebound", desc: "Attune 6 shrines (all time)", stat: "shrinesAttuned", goal: 6, bonus: "+5% move speed, every run" },
+  { id: "exterminator", name: "Exterminator", desc: "Kill 800 zombies (all time)", stat: "kills", goal: 800, bonus: "+10% damage, every run" },
+];
+
+export const SHRINE_COUNT = 2;
+export const SHRINE_BOSS_DMG_PER = 0.12; // +12% damage vs elites/behemoth per attuned shrine
+
+export interface ShopOfferDef {
+  id: string;
+  name: string;
+  desc: string;
+  baseCost: number;
+  kind: "heal" | "ammo" | "maxhp" | "molotov" | "flare" | "firerate" | "dmg" | "speed" | "magnet" | "unlock" | "bombcharge";
+  weaponId?: string;
+  repeatable: boolean;
+}
+
+// Brotato-style between-wave shop pool. Costs scale with wave.
+export const SHOP_POOL: ShopOfferDef[] = [
+  { id: "shop_heal", name: "Patch Up", desc: "Restore 50 HP", baseCost: 35, kind: "heal", repeatable: true },
+  { id: "shop_ammo", name: "Ammo Cache", desc: "Refill all reserves", baseCost: 40, kind: "ammo", repeatable: true },
+  { id: "shop_flare", name: "Road Flare", desc: "+1 flare", baseCost: 30, kind: "flare", repeatable: true },
+  { id: "shop_molotov", name: "Moonshine Bomb", desc: "+1 molotov", baseCost: 50, kind: "molotov", repeatable: true },
+  { id: "shop_bombcharge", name: "Powder Keg", desc: "+1 bomb charge", baseCost: 100, kind: "bombcharge", repeatable: true },
+  { id: "shop_maxhp", name: "Iron Rations", desc: "+25 max HP", baseCost: 60, kind: "maxhp", repeatable: true },
+  { id: "shop_dmg", name: "Hot Loads", desc: "+8% damage", baseCost: 90, kind: "dmg", repeatable: true },
+  { id: "shop_firerate", name: "Trigger Job", desc: "+8% fire rate", baseCost: 80, kind: "firerate", repeatable: true },
+  { id: "shop_speed", name: "Light Boots", desc: "+6% move speed", baseCost: 70, kind: "speed", repeatable: true },
+  { id: "shop_magnet", name: "Grit Magnet", desc: "+30% pickup radius", baseCost: 55, kind: "magnet", repeatable: true },
+  { id: "shop_unlock_shotgun", name: "Scattergun", desc: "Unlock the shotgun", baseCost: 150, kind: "unlock", weaponId: "shotgun", repeatable: false },
+  { id: "shop_unlock_carbine", name: "Carbine", desc: "Unlock the carbine", baseCost: 120, kind: "unlock", weaponId: "carbine", repeatable: false },
+  { id: "shop_unlock_crossbow", name: "Crossbow", desc: "Unlock the crossbow", baseCost: 140, kind: "unlock", weaponId: "crossbow", repeatable: false },
+];
+
+export const SHOP_OFFER_COUNT = 4;
+export const SHOP_REROLL_BASE = 15;
