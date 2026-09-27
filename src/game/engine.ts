@@ -47,6 +47,7 @@ export interface GameEngineCallbacks {
   onExtract?: () => void;
   onWorkbenchPrompt?: (near: boolean) => void;
   onStatsUpdate: (stats: any) => void;
+  onCache?: (symbols: string[] | null) => void;
 }
 
 export class GameEngine {
@@ -239,6 +240,21 @@ export class GameEngine {
 	// VS-2: guaranteed elite cadence (~45s) and named wave windows.
 	lastEliteAt = 0;
 	currentWindowId = ``;
+	// VS-3: hit-feel module — one master kill switch for all of it.
+	hitFeel = true;
+	hitstopBudget = .3;
+	slowAfter = 0;
+	zoomPunch = 0;
+	camKickX = 0;
+	camKickY = 0;
+	shockwaves = [];
+	fuseTimer = 0;
+	// VS-3: periodic powerups + rubber-banded health orbs.
+	nextPowerupAt = 80;
+	// VS-3: Storm Cellar Caches.
+	caches = [];
+	cacheOpen = null;
+	nextCacheAt = 150;
 	stats = {
 		kills: 0,
 		headshots: 0,
@@ -434,6 +450,27 @@ export class GameEngine {
 			schedule: () => this.waveSchedule(),
 			curWindow: () => this.currentWindowId,
 			giveBoon: (id, n = 1) => { this.boonStacks[id] = (this.boonStacks[id] || 0) + n; },
+			// VS-3 probes: hit-feel, grit tiers/fusing, powerups, caches.
+			feelState: () => ({ on: this.hitFeel, budget: +this.hitstopBudget.toFixed(3) }),
+			setFeel: (on) => this.setHitFeel(on),
+			resetFeel: () => { this.hitstop = 0; this.hitstopBudget = .3; this.shockwaves = []; this.slowAfter = 0; this.zoomPunch = 0; this.camKickX = 0; this.camKickY = 0; },
+			doFeelKill: (big) => { const z = this.pushZombie(big ? `miner_brute` : `shambler`, this.player.x + 40, this.player.y); const hs0 = this.hitstop; this.feelKill(z); return { hs: +this.hitstop.toFixed(3), sw: this.shockwaves.length, slow: +this.slowAfter.toFixed(2), zp: +this.zoomPunch.toFixed(3) }; },
+			feelHitTest: () => { const b = { vx: 100, vy: 0 }; const z = this.pushZombie(`shambler`, this.player.x + 40, this.player.y); this.feelHit(b, z); return { kick: +this.camKickX.toFixed(2) }; },
+			whiff: () => { this.bashCd = 0; this.dodgeTimer = 0; const r = this.tryBash(); return { ok: r, feel: this.hitFeel }; },
+			gritTier: (v) => { this.dropGritOrb(this.player.x + 50, this.player.y, 0, 0, v); return (this.grit[this.grit.length - 1] || {}).tier; },
+			gritCount: () => this.grit.length,
+			fuseNow: () => { this.fuseTimer = 1; this.updateFuse(1); return this.grit.map((g) => g.tier); },
+			powerupState: () => ({ next: +this.nextPowerupAt.toFixed(1), sim: +this.simTime.toFixed(1), drops: this.drops.length }),
+			waveInfo: () => ({ wave: this.wave, state: this.waveState, draft: !!this.draft, sim: +this.simTime.toFixed(1) }),
+			forcePowerup: () => { this.nextPowerupAt = 0; this.updatePowerupDrops(); return this.drops.length; },
+			spinN: (n) => { const out = {}; for (let i = 0; i < n; i++) { const s = this.spinCache().join(`-`); out[s] = (out[s] || 0) + 1; } return out; },
+			applyCache: (syms, doubled) => { const r = this.applyCacheResult(syms, !!doubled); return { r, scrap: this.scrap, bomb: this.bombCharges }; },
+			gambleF: (syms, win) => this.gambleCache(syms, !!win),
+			dropCache: () => { this.dropCacheAt(this.player.x + 40, this.player.y); return this.caches.length; },
+			openNearCache: () => { this.checkCachePickup(); return !!this.cacheOpen; },
+			weapLevels: () => this.weapons.filter((w) => w.unlocked).map((w) => w.upgradeLevel),
+			cacheJackpot: () => { const n = this.maxOutWeapons(); return { n, levels: this.weapons.filter((w) => w.unlocked).map((w) => w.upgradeLevel) }; },
+			toneTest: () => { soundEngine.tone({ f: 440, dur: .05, vol: .01 }); return true; },
 			openChest: () => this.openChest(),
 			sweepGrit: () => this.sweepGritToBag(),
 			spawnGritAt: (x, y, v) => this.dropGritOrb(x, y, 0, 0, v),
@@ -761,7 +798,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -1595,7 +1632,7 @@ export class GameEngine {
 			let n = this.floaters[t];
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && (n.onFree?.(), n.onFree = null, this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateCacheTimer(), this.updateFuse(e);
 		this.dodgeCd = Math.max(0, this.dodgeCd - e);
 		this.bashCd = Math.max(0, this.bashCd - e);
 		this.bashSwing = Math.max(0, this.bashSwing - e);
@@ -1921,6 +1958,7 @@ export class GameEngine {
 			if (z.health <= 0) this.spawnFloater(z.x, z.y - 16, "BASH", "#e11d2e");
 		}
 		if (hits === 0) this.spawnFloater(this.player.x + ax * 28, this.player.y + ay * 28, "WHIFF", "#8a7a64");
+		if (hits === 0 && this.hitFeel) soundEngine.tone({ f: 700, f2: 180, type: `sine`, dur: .18, vol: .12 });
 		return true;
 	}
 	updateHordeEvents(e) {
@@ -2160,7 +2198,7 @@ export class GameEngine {
 						if (r.health <= 0 && !n.isSplinter) r.shatter = true;
 						if (this.evolved === `lincoln` && n.weaponType === `revolver` && e) this.player.health = Math.min(this.player.maxHealth, this.player.health + 4);
 						let a = Math.atan2(n.vy, n.vx), o = n.weaponType === `shotgun` ? 7 : 3;
-						if (r.x += Math.cos(a) * o, r.y += Math.sin(a) * o, this.createBloodParticles(n.x, n.y, a), r.hitFlash = .08, e ? this.spawnFloater(r.x, r.y - r.radius, `HEAD`, `#ff4d3a`) : this.spawnDamageNumber(r.x, r.y - r.radius, i, `#e8b34b`), soundEngine.playImpact(), i > 80 && (this.hitstop = Math.max(this.hitstop, .04)), n.pierce--, n.pierce <= 0) {
+						if (r.x += Math.cos(a) * o, r.y += Math.sin(a) * o, this.createBloodParticles(n.x, n.y, a), r.hitFlash = .08, e ? this.spawnFloater(r.x, r.y - r.radius, `HEAD`, `#ff4d3a`) : this.spawnDamageNumber(r.x, r.y - r.radius, i, `#e8b34b`), soundEngine.playImpact(), this.feelHit(n, r), i > 80 && (this.hitstop = Math.max(this.hitstop, .04)), n.pierce--, n.pierce <= 0) {
 							this.freeBulletAt(t);
 							break;
 						}
@@ -2828,6 +2866,7 @@ export class GameEngine {
 		if (e.elite && this.chestsThisMap < 3) {
 			this.chestsThisMap++;
 			this.chests.push({ x: e.x, y: e.y });
+			if (Math.random() < .35) this.dropCacheAt(e.x + 30, e.y); // VS-3: elites drop Storm Cellar Caches
 			this.spawnFloater(e.x, e.y - e.radius - 14, "ELITE DOWN — CHEST", "#ffd700");
 		}
 		this.tickBounty(`kill`);
@@ -2882,7 +2921,8 @@ export class GameEngine {
 		let s = .32 + i * .1;
 		if (Math.random() < s) {
 			let t = Math.random(), n = `ammo_universal`, r = 15;
-			t < .35 && this.player.health < this.player.maxHealth ? (n = `moonshine_med`, r = 35) : t < .55 ? (n = `molotov_pickup`, r = 1) : t < .75 && (n = `scrap`, r = 25), this.drops.push({
+			const medC = this.player.health < this.player.maxHealth * .4 ? .55 : .35; // VS-3: rubber-band health orbs when hurt
+			t < medC && this.player.health < this.player.maxHealth ? (n = `moonshine_med`, r = 35) : t < .55 ? (n = `molotov_pickup`, r = 1) : t < .75 && (n = `scrap`, r = 25), this.drops.push({
 				id: Math.random().toString(),
 				type: n,
 				x: e.x,
@@ -2971,7 +3011,6 @@ export class GameEngine {
 			s.alpha -= dt * .06;
 			if (s.alpha <= 0) this.scorchDecals.splice(i, 1);
 		}
-		if (this.hurtFlash > 0) this.hurtFlash -= dt;
 	}
 
 	// VS-1: pooled damage numbers — throttled so bullet storms don't spam floaters.
@@ -2999,8 +3038,257 @@ export class GameEngine {
 		return true;
 	}
 
-	// VS-3 hook: hit-feel reactions on kill. No-op until the feel module lands.
-	feelKill(e) {}
+	// VS-3: hit-feel module. One master kill switch (this.hitFeel) gates everything.
+	// Rationed hit-stop: a 0.3s budget that refills over time — big moments
+	// spend more, bullet spam can't drain it.
+	spendHitstop(amount) {
+		if (!this.hitFeel) return;
+		const spend = Math.min(amount, this.hitstopBudget);
+		this.hitstopBudget -= spend;
+		this.hitstop = Math.max(this.hitstop, spend);
+	}
+	feelHit(bullet, zombie) {
+		if (!this.hitFeel) return;
+		this.spendHitstop(.012);
+		const a = Math.atan2(bullet.vy, bullet.vx);
+		this.camKickX += Math.cos(a) * 2.5;
+		this.camKickY += Math.sin(a) * 2.5;
+	}
+	feelKill(z) {
+		if (!this.hitFeel) return;
+		const big = z.elite || z.type === `behemoth` || z.type === `miner_brute`;
+		this.spendHitstop(big ? .09 : .035);
+		if (big) {
+			// Slow-motion aftertaste.
+			this.slowAfter = .6;
+			this.worldSlow = Math.max(this.worldSlow, 1.4);
+			// Shockwave.
+			this.shockwaves.push({ x: z.x, y: z.y, r: 10, maxR: z.elite ? 150 : 220, life: .45, maxLife: .45 });
+			soundEngine.tone({ f: 90, f2: 34, type: `sine`, dur: .4, vol: .5 });
+		}
+		// Camera kick away from the kill + zoom punch.
+		const a = Math.atan2(z.y - this.player.y, z.x - this.player.x);
+		this.camKickX -= Math.cos(a) * (big ? 9 : 4);
+		this.camKickY -= Math.sin(a) * (big ? 9 : 4);
+		this.zoomPunch = Math.min(.09, this.zoomPunch + (big ? .05 : .02));
+		// Blood spray burst.
+		for (let i = 0; i < (big ? 16 : 8); i++) {
+			const pa = Math.random() * Math.PI * 2, sp = 60 + Math.random() * 220;
+			this.particles.push(Object.assign(this.allocParticle(), { x: z.x, y: z.y, vx: Math.cos(pa) * sp, vy: Math.sin(pa) * sp, size: 2 + Math.random() * 3, life: .4 + Math.random() * .3, maxLife: .7, color: `#a31621`, alpha: 1 }));
+		}
+		// Kill words.
+		if (z.type === `behemoth`) this.spawnFloater(z.x, z.y - 40, `COUNTY LEGEND`, `#ffd700`);
+		else if (z.elite) this.spawnFloater(z.x, z.y - 30, [`DROPPED`, `BIG GAME`, `PUT DOWN`][(Math.random() * 3) | 0], `#c77dff`);
+		else if (this.streak >= 20) this.spawnFloater(z.x, z.y - 26, `UNSTOPPABLE`, `#ff6ec7`);
+	}
+	updateFeel(dt) {
+		// Hit-stop budget refills; slow-mo aftertaste and zoom punch decay.
+		this.hitstopBudget = Math.min(.3, this.hitstopBudget + dt * .3);
+		if (this.slowAfter > 0) {
+			this.slowAfter -= dt;
+			if (this.slowAfter <= 0) this.worldSlow = 0;
+		}
+		this.zoomPunch = Math.max(0, this.zoomPunch - dt * .25);
+		this.camKickX *= Math.max(0, 1 - dt * 9);
+		this.camKickY *= Math.max(0, 1 - dt * 9);
+		for (let i = this.shockwaves.length - 1; i >= 0; i--) {
+			const s = this.shockwaves[i];
+			s.life -= dt;
+			s.r += (s.maxR - s.r) * dt * 7;
+			if (s.life <= 0) this.shockwaves.splice(i, 1);
+		}
+		if (this.hurtFlash > 0) this.hurtFlash = Math.max(0, this.hurtFlash - dt * 1.4);
+	}
+	setHitFeel(on) { this.hitFeel = !!on; }
+	renderShockwaves(e) {
+		for (const s of this.shockwaves) {
+			const a = Math.max(0, s.life / s.maxLife) * .55;
+			e.strokeStyle = `rgba(255, 214, 102, ${a})`;
+			e.lineWidth = 5 * (s.life / s.maxLife) + 1;
+			e.beginPath();
+			e.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+			e.stroke();
+			e.strokeStyle = `rgba(255, 255, 255, ${a * .5})`;
+			e.lineWidth = 2;
+			e.beginPath();
+			e.arc(s.x, s.y, s.r * .8, 0, Math.PI * 2);
+			e.stroke();
+		}
+	}
+	renderHurtDir(e, w, h) {
+		if (this.hurtFlash <= 0) return;
+		const a = this.hurtDir, alpha = Math.min(.6, this.hurtFlash * .7);
+		const cx = w / 2, cy = h / 2, r = Math.min(w, h) * .38;
+		e.save();
+			e.strokeStyle = `rgba(225, 29, 46, ${alpha})`;
+			e.lineWidth = 14;
+			e.beginPath();
+			e.arc(cx + Math.cos(a) * r * .4, cy + Math.sin(a) * r * .4, r, a - .5, a + .5);
+			e.stroke();
+			e.restore();
+	}
+
+	// VS-3: periodic powerup drops — the county provides, on a timer.
+	updatePowerupDrops() {
+		if (this.draft) return; // drops during the break breather too
+		if (this.simTime >= this.nextPowerupAt) {
+			this.nextPowerupAt = this.simTime + 75 + Math.random() * 30;
+			const pool = [`nuke`, `double_points`, `insta_kill`, `infinite_ammo`, `speed_boost`, `moonshine_med`];
+			const type = pool[(Math.random() * pool.length) | 0];
+			const a = Math.random() * Math.PI * 2, d = 120 + Math.random() * 80;
+			this.drops.push({ id: Math.random().toString(), type, x: this.player.x + Math.cos(a) * d, y: this.player.y + Math.sin(a) * d, amount: type === `moonshine_med` ? 40 : 1, duration: 3e4 });
+			this.spawnFloater(this.player.x, this.player.y - 56, `SUPPLY DROP`, `#4cc3ff`);
+			soundEngine.tone({ f: 660, f2: 990, type: `sine`, dur: .25, vol: .2 });
+		}
+	}
+
+	// VS-3: Storm Cellar Caches — elite drops + a timed cellar door.
+	updateCacheTimer() {
+		if (this.draft) return;
+		if (this.simTime >= this.nextCacheAt) {
+			this.nextCacheAt = this.simTime + 140 + Math.random() * 40;
+			const a = Math.random() * Math.PI * 2;
+			this.caches.push({ id: Math.random().toString(), x: this.player.x + Math.cos(a) * 220, y: this.player.y + Math.sin(a) * 220 });
+			this.spawnFloater(this.player.x, this.player.y - 64, `STORM CELLAR OPEN`, `#c77dff`);
+			this.callbacks.onRadio?.(`Unknown`, `A storm cellar door just creaked open somewhere close. What's down there's yours if you want it.`);
+			soundEngine.tone({ f: 220, f2: 110, type: `triangle`, dur: .5, vol: .25 });
+		}
+	}
+	dropCacheAt(x, y) {
+		if (this.caches.length >= 3) return;
+		this.caches.push({ id: Math.random().toString(), x, y });
+	}
+	// Slot-machine spin: diamond .55 / star .30 / seven .15.
+	spinCache() {
+		const syms = [];
+		for (let i = 0; i < 3; i++) {
+			const r = Math.random();
+			syms.push(r < .15 ? `seven` : r < .45 ? `star` : `diamond`);
+		}
+		return syms;
+	}
+	upgradeWeaponOnce(w) {
+		if (!w || w.upgradeLevel >= 8) return false;
+		w.upgradeLevel++;
+		w.damage = Math.round(w.damage * 1.2);
+		w.magazineSize = Math.round(w.magazineSize * 1.15);
+		w.currentMag = w.magazineSize;
+		return true;
+	}
+	maxOutWeapons() {
+		let n = 0;
+		for (const w of this.weapons) if (w.unlocked) while (this.upgradeWeaponOnce(w)) n++;
+		return n;
+	}
+	// Storm Cellar Cache rewards. symbols: three of seven/star/diamond.
+	applyCacheResult(symbols, doubled = false) {
+		const mult = doubled ? 2 : 1;
+		const sevens = symbols.filter((s) => s === `seven`).length;
+		const stars = symbols.filter((s) => s === `star`).length;
+		const diamonds = symbols.filter((s) => s === `diamond`).length;
+		if (sevens === 3) {
+			// 7-7-7 JACKPOT: every owned weapon to max upgrade.
+			const n = this.maxOutWeapons();
+			this.spawnFloater(this.player.x, this.player.y - 56, `7-7-7 JACKPOT — ${n} UPGRADES`, `#ffd700`);
+			this.callbacks.onRadio?.(`Unknown`, `Seven seven seven. The cellar just made you the best-armed soul in Pike County.`);
+			soundEngine.tone({ f: 523, type: `square`, dur: .12, vol: .2 });
+			soundEngine.tone({ f: 659, type: `square`, dur: .12, vol: .2, delay: .12 });
+			soundEngine.tone({ f: 784, type: `square`, dur: .3, vol: .25, delay: .24 });
+			this.trauma = Math.min(1, this.trauma + .4);
+			return `jackpot`;
+		}
+		const owned = this.weapons.filter((w) => w.unlocked);
+		const up = (k) => { for (let i = 0; i < k; i++) { const w = owned[(Math.random() * owned.length) | 0]; this.upgradeWeaponOnce(w); } };
+		// Pairs pay double for that symbol: a matching pair pays 4x the single rate.
+		const sevenK = (sevens === 2 ? 4 : sevens) * mult, starK = (stars === 2 ? 4 : stars) * mult, diaK = (diamonds === 2 ? 4 : diamonds) * mult;
+		if (sevenK > 0 && owned.length) { up(sevenK); this.spawnFloater(this.player.x, this.player.y - 48, `+${sevenK} WEAPON UPGRADE${sevenK > 1 ? `S` : ``}`, `#f6c453`); }
+		if (starK > 0) {
+			for (let i = 0; i < starK; i++) {
+				if (this.bombCharges < BOMB_MAX_CHARGES) this.bombCharges++;
+				else this.player.health = Math.min(this.player.maxHealth, this.player.health + 40);
+			}
+			this.spawnFloater(this.player.x, this.player.y - 40, `STAR CACHÉ x${starK}`, `#4cc3ff`);
+		}
+		if (diaK > 0) {
+			const scrap = 120 * diaK;
+			this.scrap += scrap; this.stats.scrapCollected += scrap;
+			for (let i = 0; i < 4 * diaK; i++) { const a = Math.random() * Math.PI * 2; this.dropGritOrb(this.player.x, this.player.y, Math.cos(a) * 130, Math.sin(a) * 130, 3); }
+			this.spawnFloater(this.player.x, this.player.y - 32, `+${scrap} SCRAP`, `#e8b34b`);
+		}
+		soundEngine.playPickup();
+		return `cache`;
+	}
+	// Double-or-nothing gamble on a cache result.
+	gambleCache(symbols, forceWin) {
+		const win = forceWin !== undefined ? forceWin : Math.random() < .5;
+		if (win) {
+			this.applyCacheResult(symbols, true);
+			this.spawnFloater(this.player.x, this.player.y - 64, `DOUBLED IT`, `#ffd700`);
+			soundEngine.tone({ f: 880, f2: 1320, type: `square`, dur: .2, vol: .2 });
+		} else {
+			this.spawnFloater(this.player.x, this.player.y - 64, `LOST IT ALL`, `#8a8f98`);
+			soundEngine.tone({ f: 220, f2: 110, type: `sawtooth`, dur: .35, vol: .2 });
+		}
+		return win;
+	}
+	openCache(cache) {
+		this.caches.splice(this.caches.indexOf(cache), 1);
+		const symbols = this.spinCache();
+		this.cacheOpen = { symbols, resolved: false };
+		this.isPaused = true; // slot machine pauses the county
+		this.callbacks.onCache?.(symbols);
+		soundEngine.tone({ f: 440, f2: 880, type: `triangle`, dur: .3, vol: .2 });
+	}
+	resolveCache() {
+		if (!this.cacheOpen) return;
+		this.applyCacheResult(this.cacheOpen.symbols, false);
+		this.closeCache();
+	}
+	gambleCacheUI() {
+		if (!this.cacheOpen) return;
+		this.gambleCache(this.cacheOpen.symbols);
+		this.closeCache();
+	}
+	closeCache() {
+		this.cacheOpen = null;
+		this.isPaused = false;
+		this.callbacks.onCache?.(null);
+	}
+	checkCachePickup() {
+		for (let i = this.caches.length - 1; i >= 0; i--) {
+			const c = this.caches[i];
+			if (Math.hypot(this.player.x - c.x, this.player.y - c.y) > this.player.radius + 26) continue;
+			this.openCache(c);
+		}
+	}
+
+	// VS-3: three-tier fusing XP gems. 3+ same-tier gems near each other fuse up.
+	updateFuse(dt) {
+		this.fuseTimer += dt;
+		if (this.fuseTimer < .6 || this.grit.length < 3) return;
+		this.fuseTimer = 0;
+		const used = new Set();
+		for (let i = 0; i < this.grit.length; i++) {
+			const g = this.grit[i];
+			if (used.has(g) || g.tier >= 3) continue;
+			const near = [g];
+			for (let j = 0; j < this.grit.length && near.length < 3; j++) {
+				const h = this.grit[j];
+				if (h === g || used.has(h) || h.tier !== g.tier) continue;
+				if (Math.hypot(h.x - g.x, h.y - g.y) < 110) near.push(h);
+			}
+			if (near.length < 3) continue;
+			near.forEach((h) => used.add(h));
+			const cx = near.reduce((a, h) => a + h.x, 0) / 3, cy = near.reduce((a, h) => a + h.y, 0) / 3;
+			const value = near.reduce((a, h) => a + h.value, 0);
+			for (const h of near) { this.grit.splice(this.grit.indexOf(h), 1); this.gritPool.push(h); }
+			this.dropGritOrb(cx, cy, 0, 0, value);
+			const fused = this.grit[this.grit.length - 1];
+			if (fused) fused.tier = Math.min(3, g.tier + 1);
+			this.spawnFloater(cx, cy - 14, `FUSED`, `#ffd700`);
+			soundEngine.tone({ f: 520, f2: 780, type: `sine`, dur: .15, vol: .18 });
+		}
+	}
 	updateDrops(dt = 1 / 60) {
 		const magnet = (Math.max(280, this.viewSize().w * 0.28) + this.getPerkLevel(`scavenger`) * 36) * (1 + this.shopMagnetBonus);
 		for (let e = this.drops.length - 1; e >= 0; e--) {
@@ -3393,11 +3681,14 @@ export class GameEngine {
 	}
 	dropGritOrb(x, y, vx, vy, value, lucky = false) {
 		if (this.grit.length >= GRIT_GROUND_CAP) {
-			this.grit[(Math.random() * this.grit.length) | 0].value += value;  // merge, don't spawn
+			const m = this.grit[(Math.random() * this.grit.length) | 0];
+			m.value += value;  // merge, don't spawn
+			m.tier = m.value >= 12 ? 3 : m.value >= 4 ? 2 : 1;
 			return;
 		}
 		const g0 = this.gritPool.pop() || {};
 		g0.x = x; g0.y = y; g0.vx = vx; g0.vy = vy; g0.value = value; g0.lucky = lucky;
+		g0.tier = value >= 12 ? 3 : value >= 4 ? 2 : 1;
 		this.grit.push(g0);
 	}
 	spawnGrit(z) {
@@ -3495,6 +3786,7 @@ export class GameEngine {
 			this.chests.splice(i, 1);
 			this.openChest();
 		}
+		this.checkCachePickup();
 	}
 	openChest() {
 		this.bumpLifetime(`chestsOpened`);
@@ -3522,15 +3814,16 @@ export class GameEngine {
 		const rad = Math.max(6, 12 / this.viewZoom());
 		for (const g of this.grit) {
 			if (g.x < camL || g.x > camR || g.y < camT || g.y > camB) continue;
-			if (g.lucky) {
-				e.fillStyle = "rgba(255, 215, 0, 0.25)";
+			const tier = g.tier || 1;
+			if (g.lucky || tier >= 3) {
+				e.fillStyle = tier >= 3 ? "rgba(255, 140, 40, 0.3)" : "rgba(255, 215, 0, 0.25)";
 				e.beginPath();
-				e.arc(g.x, g.y, rad * 2.4, 0, Math.PI * 2);
+				e.arc(g.x, g.y, rad * (tier >= 3 ? 3 : 2.4), 0, Math.PI * 2);
 				e.fill();
 			}
-			e.fillStyle = g.lucky ? "#ffd700" : "#f6c453";
+			e.fillStyle = g.lucky ? "#ffd700" : tier === 3 ? "#ff9a3c" : tier === 2 ? "#ffe066" : "#f6c453";
 			e.beginPath();
-			e.arc(g.x, g.y, g.lucky ? rad * 1.6 : rad, 0, Math.PI * 2);
+			e.arc(g.x, g.y, (g.lucky ? rad * 1.6 : rad) * (1 + (tier - 1) * .35), 0, Math.PI * 2);
 			e.fill();
 		}
 		for (const c of this.chests) {
@@ -3540,6 +3833,27 @@ export class GameEngine {
 			e.fillRect(-12, -9, 24, 18);
 			e.fillStyle = "#d4a017";
 			e.fillRect(-12, -2, 24, 4);
+			e.restore();
+		}
+		// VS-3: Storm Cellar Caches — purple-hazed cellar doors.
+		for (const c of this.caches) {
+			const pulse = .5 + .5 * Math.sin(this.simTime * 4);
+			e.save();
+			e.translate(c.x, c.y);
+			e.fillStyle = `rgba(199, 125, 255, ${.18 + pulse * .12})`;
+			e.beginPath();
+			e.arc(0, 0, 26, 0, Math.PI * 2);
+			e.fill();
+			e.fillStyle = "#3d2a55";
+			e.fillRect(-13, -10, 26, 20);
+			e.strokeStyle = "#c77dff";
+			e.lineWidth = 2;
+			e.strokeRect(-13, -10, 26, 20);
+			e.fillStyle = "#c77dff";
+			e.font = `bold 10px "IBM Plex Mono", monospace`;
+			e.textAlign = "center";
+			e.textBaseline = "middle";
+			e.fillText("7", 0, 1);
 			e.restore();
 		}
 		for (const s of this.shrines) {
@@ -3627,7 +3941,7 @@ export class GameEngine {
 	}
 	render() {
 		let e = this.ctx, t = this.canvas.width, n = this.canvas.height;
-		const zoom = this.viewZoom();
+		const zoom = this.viewZoom() * (1 + this.zoomPunch); // VS-3: kill zoom punch
 		const viewW = t / zoom, viewH = n / zoom;
 		const mapW = this.currentLocation.mapWidth, mapH = this.currentLocation.mapHeight;
 		let targetX = this.player.x, targetY = this.player.y;
@@ -3649,7 +3963,7 @@ export class GameEngine {
 			e.save();
 			e.translate(t / 2, n / 2);
 			e.scale(zoom, zoom);
-			e.translate(-this.camX, -this.camY);
+			e.translate(-this.camX + this.camKickX, -this.camY + this.camKickY); // VS-3: camera kick
 		};
 		let l = this.camX - viewW / 2, u = this.camY - viewH / 2;
 		let d = { x: l, y: u, width: viewW, height: viewH };
@@ -3666,6 +3980,7 @@ export class GameEngine {
 			e.fill();
 		}
 		this.renderHoles(e), this.renderLantern(e), this.renderBell(e), this.renderParticles(e);
+		this.renderShockwaves(e); // VS-3: kill shockwaves
 		this.paintFloaters(e, zoom);
 		e.restore();
 		const beam = this.player.flashlightRange * (1 + this.getPerkLevel(`highbeam`) * .25 + this.boon(`beam`) * .12);
@@ -3745,6 +4060,7 @@ export class GameEngine {
 			this.renderCompass(e, t, n);
 			this.renderMinimap(e, t, n);
 		}
+		this.renderHurtDir(e, t, n); // VS-3: directional hurt feedback
 		this.renderEyeshine(e, l, u);
 		e.restore();
 	}

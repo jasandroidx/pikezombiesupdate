@@ -85,6 +85,36 @@ class SoundEngine {
     src.playbackRate.setValueAtTime(0.9 + Math.random() * 0.2, this.ctx!.currentTime);
     return src;
   }
+  // VS-3: generic procedural tone. f -> f2 pitch slide, triangle/sine/square/sawtooth,
+  // short attack + exp decay envelope, optional start delay, optional lowpass.
+  public tone(o: { f?: number; f2?: number; type?: OscillatorType; dur?: number; vol?: number; delay?: number; lp?: number }) {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime + (o.delay || 0);
+    const osc = this.sfxOsc();
+    const g = this.ctx.createGain();
+    osc.type = o.type || 'sine';
+    const f = o.f || 440;
+    osc.frequency.setValueAtTime(Math.max(20, f), t);
+    if (o.f2) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.f2), t + (o.dur || 0.15));
+    const v = o.vol || 0.2;
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, t + (o.dur || 0.15));
+    osc.connect(g);
+    let tail: AudioNode = g;
+    if (o.lp) {
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(o.lp, t);
+      g.connect(lp);
+      tail = lp;
+    }
+    tail.connect(this.sfxGain);
+    osc.start(t);
+    osc.stop(t + (o.dur || 0.15) + 0.05);
+  }
   // VS-1: 24ms throttle for layered impact sounds — bullet storms can't spam them.
   private lastImpactAt = 0;
 

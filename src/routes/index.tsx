@@ -15,6 +15,7 @@ import { WaveShop } from "@/components/game/WaveShop";
 import { PauseMenu } from "@/components/game/PauseMenu";
 import { ControlsModal } from "@/components/game/ControlsModal";
 import { TailgateDraft } from "@/components/game/TailgateDraft";
+import { CacheSlots } from "@/components/game/CacheSlots";
 import type { BoonOffer } from "@/game/boons";
 import type { ActivePowerup, EngineSnapshot, GameMode, LoreNote, Perk, PlayerStats, Weapon } from "@/types/game";
 
@@ -44,6 +45,8 @@ function GameApp() {
   const [paused, setPaused] = useState(false);
   const [showControls, setShowControls] = useState(false);
   const [draft, setDraft] = useState<BoonOffer[] | null>(null);
+  const [cacheSymbols, setCacheSymbols] = useState<string[] | null>(null);
+  const [hitFeel, setHitFeel] = useState(true);
   const [boonStacks, setBoonStacks] = useState<Record<string, number>>({});
   const [rerolls, setRerolls] = useState(1);
   const [banishCharges, setBanishCharges] = useState(2);
@@ -229,6 +232,7 @@ function GameApp() {
           engineRef.current?.setPaused(true);
         },
         onRadio: (call: string, body: string) => setRadio({ call, body }),
+        onCache: (symbols: string[] | null) => setCacheSymbols(symbols),
         onExtractReady: () => {
           setRadio({ call: "WJPS Petersburg", body: "Truck's lit. Get off this ground before the next horn." });
         },
@@ -558,6 +562,13 @@ function GameApp() {
               }}
             />
           )}
+          {cacheSymbols && cacheSymbols.length > 0 && (
+            <CacheSlots
+              symbols={cacheSymbols}
+              onTake={() => engineRef.current?.resolveCache()}
+              onGamble={() => engineRef.current?.gambleCacheUI()}
+            />
+          )}
           <MobileControls
             onMoveChange={(vec) => {
               if (engineRef.current) engineRef.current.virtualJoystickMove = vec;
@@ -596,6 +607,12 @@ function GameApp() {
         <PauseMenu
           isMuted={isMuted}
           onToggleMute={handleToggleMute}
+          hitFeel={hitFeel}
+          onToggleHitFeel={() => {
+            const next = !hitFeel;
+            setHitFeel(next);
+            engineRef.current?.setHitFeel(next);
+          }}
           onResume={() => {
             setPaused(false);
             engineRef.current?.setPaused(false);

@@ -7,9 +7,11 @@ interface PauseMenuProps {
   onHome: () => void;
   isMuted: boolean;
   onToggleMute: () => void;
+  hitFeel: boolean;
+  onToggleHitFeel: () => void;
 }
 
-export function PauseMenu({ onResume, onWorkbench, onControls, onHome, isMuted, onToggleMute }: PauseMenuProps) {
+export function PauseMenu({ onResume, onWorkbench, onControls, onHome, isMuted, onToggleMute, hitFeel, onToggleHitFeel }: PauseMenuProps) {
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
       <div className="w-full max-w-sm rounded border border-border bg-surface p-5 shadow-2xl">
@@ -48,6 +50,14 @@ export function PauseMenu({ onResume, onWorkbench, onControls, onHome, isMuted, 
           >
             {isMuted ? <VolumeX className="h-5 w-5 text-primary" /> : <Volume2 className="h-5 w-5 text-accent" />}
             {isMuted ? "Sound off" : "Sound on"}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleHitFeel}
+            className="flex items-center justify-center gap-2 rounded border border-border bg-bg px-4 py-3 font-heading uppercase tracking-widest text-fg"
+          >
+            <span className={hitFeel ? "text-accent" : "text-muted"}>✦</span>
+            {hitFeel ? "Hit-feel on" : "Hit-feel off"}
           </button>
           <button
             type="button"
