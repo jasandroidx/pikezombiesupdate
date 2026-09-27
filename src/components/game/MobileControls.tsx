@@ -16,6 +16,8 @@ interface MobileControlsProps {
   onBash?: () => void;
   onPlantPost?: () => void;
   onDropPipe?: () => void;
+  onDetonateBomb?: () => void;
+  bombCharges?: number;
   molotovs?: number;
   flares?: number;
   posts?: number;
@@ -114,6 +116,8 @@ export function MobileControls({
   onBash,
   onPlantPost,
   onDropPipe,
+  onDetonateBomb,
+  bombCharges = 0,
   onNextWeapon,
   molotovs = 0,
   posts = 0,
@@ -180,6 +184,11 @@ export function MobileControls({
           {onBash && (
             <Act label="Bash" onPress={onBash}>
               <Hammer className="h-4 w-4" />
+            </Act>
+          )}
+          {onDetonateBomb && (
+            <Act label={`Bomb ${bombCharges}`} hot onPress={onDetonateBomb}>
+              <Flame className="h-4 w-4" />
             </Act>
           )}
           <Act label={`Mash ${molotovs}`} hot onPress={onThrowMolotov}>

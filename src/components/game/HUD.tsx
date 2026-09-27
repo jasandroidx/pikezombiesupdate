@@ -53,6 +53,10 @@ interface HUDProps {
   switchBanner?: number;
   helpVisible?: boolean;
   onSelectWeapon?: (index: number) => void;
+  bombCharges?: number;
+  bombMax?: number;
+  gritBag?: number;
+  activeEvents?: string[];
 }
 
 export function HUD({
@@ -107,6 +111,10 @@ export function HUD({
   switchBanner = 0,
   helpVisible = true,
   onSelectWeapon,
+  bombCharges = 1,
+  bombMax = 2,
+  gritBag = 0,
+  activeEvents = [],
 }: HUDProps) {
   const hpPercent = Math.max(0, Math.min(100, (health / maxHealth) * 100));
   const isCritical = hpPercent < 25;
@@ -148,6 +156,23 @@ export function HUD({
                 <div className="h-full bg-accent transition-[width] duration-150" style={{ width: `${gritPct}%` }} />
               </div>
             </div>
+            <div className="mt-1 flex items-center justify-between font-mono text-[9px] uppercase tracking-widest">
+              <span className="text-accent">
+                Bomb{" "}
+                {Array.from({ length: bombMax }).map((_, i) => (
+                  <span key={i} className={i < bombCharges ? "text-accent" : "text-muted/40"}>
+                    ●
+                  </span>
+                ))}{" "}
+                <span className="text-muted">[B]</span>
+              </span>
+              {gritBag > 0 && <span className="text-accent">Bag +{gritBag}</span>}
+            </div>
+            {activeEvents.length > 0 && (
+              <div className="mt-1 animate-pulse font-mono text-[10px] uppercase tracking-widest text-primary">
+                {activeEvents.map((id) => (id === "blood_moon" ? "Blood moon" : id === "golden_swarm" ? "Golden swarm" : id)).join(" · ")}
+              </div>
+            )}
             {bellReady && (
               <div className="mt-1 h-1 overflow-hidden rounded bg-surface-2">
                 <div className="h-full bg-accent" style={{ width: `${Math.min(100, bellHold * 100)}%` }} />

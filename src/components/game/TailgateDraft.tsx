@@ -5,6 +5,7 @@ export function TailgateDraft({
   stacks,
   level,
   rerolls,
+  evolutionHints = [],
   onTake,
   onReroll,
 }: {
@@ -12,6 +13,7 @@ export function TailgateDraft({
   stacks: Record<string, number>;
   level: number;
   rerolls: number;
+  evolutionHints?: string[];
   onTake: (id: string) => void;
   onReroll: () => void;
 }) {
@@ -49,6 +51,17 @@ export function TailgateDraft({
           >
             Reroll · {rerolls} left
           </button>
+        )}
+        {evolutionHints.length > 0 && (
+          <div className="mt-2 border-t border-border pt-2 text-center">
+            <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.28em] text-muted">Evolution codex</div>
+            {evolutionHints.map((h) => (
+              <div key={h} className="font-mono text-[11px] leading-snug text-accent">
+                {h}
+              </div>
+            ))}
+            <div className="mt-0.5 font-mono text-[9px] text-muted">Evolves on a supply chest</div>
+          </div>
         )}
       </div>
     </div>
