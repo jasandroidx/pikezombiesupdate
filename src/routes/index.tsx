@@ -150,7 +150,7 @@ function GameApp() {
     engine.gritBonus = magnet;
   };
 
-  const handleStartGame = (locationIndex: number, difficultyMultiplier: number, nextMode: GameMode = "survival") => {
+  const handleStartGame = (locationIndex: number, difficultyMultiplier: number, nextMode: GameMode = "survival", mutators: string[] = []) => {
     soundEngine.init();
     modeRef.current = nextMode;
     outbreakStepRef.current = 0;
@@ -162,7 +162,7 @@ function GameApp() {
     const idx = nextMode === "outbreak" ? locationIndexById(OUTBREAK_ORDER[0]) : locationIndex;
     setOutbreakStep(0);
     setSelectedLocationIdx(idx);
-    bootEngine(idx, difficultyMultiplier, nextMode, 0, null);
+    bootEngine(idx, difficultyMultiplier, nextMode, 0, null, mutators);
   };
 
   const bootEngine = (
@@ -171,6 +171,7 @@ function GameApp() {
     nextMode: GameMode,
     step: number,
     carry: EngineSnapshot | null,
+    mutators: string[] = [],
   ) => {
     if (!canvasRef.current) return;
     updateCanvasDimensions();
@@ -220,6 +221,7 @@ function GameApp() {
     );
 
     applySaveUnlocks(engine);
+    engine.mutators = mutators;
     if (carry) engine.importSnapshot(carry);
     if (nextMode === "outbreak") {
       const last = step >= OUTBREAK_ORDER.length - 1;

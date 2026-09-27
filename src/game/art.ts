@@ -5,6 +5,8 @@ export const ZOMBIE_LABELS: Record<string, string> = {
   bloater_spitter: "BLOATER",
   behemoth: "BEHEMOTH",
   crawler: "CRAWLER",
+  bomber: "BOMBER",
+  riot: "RIOT",
 };
 
 const PATHS: Record<string, string> = {
@@ -15,6 +17,8 @@ const PATHS: Record<string, string> = {
   bloater_spitter: "/sprites/cast/bloater_spitter.jpg",
   behemoth: "/sprites/cast/behemoth.jpg",
   crawler: "/sprites/cast/crawler.jpg",
+  bomber: "/sprites/cast/sprinter.jpg",
+  riot: "/sprites/cast/miner_brute.jpg",
 };
 
 const cache = new Map<string, HTMLCanvasElement>();
