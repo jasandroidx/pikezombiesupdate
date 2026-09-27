@@ -66,6 +66,25 @@ class SoundEngine {
     }
   }
 
+  // Group 1: one-shot SFX constructors with ±10% pitch variation.
+  // Music paths (drone/pulse/banjo) keep calling ctx directly — never use these.
+  private sfxOsc(): OscillatorNode {
+    const osc = this.ctx!.createOscillator();
+    const j = 0.9 + Math.random() * 0.2;
+    const param: any = osc.frequency;
+    const setV = param.setValueAtTime.bind(param);
+    const expR = param.exponentialRampToValueAtTime.bind(param);
+    const linR = param.linearRampToValueAtTime.bind(param);
+    param.setValueAtTime = (v: number, t: number) => setV(v * j, t);
+    param.exponentialRampToValueAtTime = (v: number, t: number) => expR(v * j, t);
+    param.linearRampToValueAtTime = (v: number, t: number) => linR(v * j, t);
+    return osc;
+  }
+  private sfxNoise(): AudioBufferSourceNode {
+    const src = this.ctx!.createBufferSource();
+    src.playbackRate.setValueAtTime(0.9 + Math.random() * 0.2, this.ctx!.currentTime);
+    return src;
+  }
   public toggleMute(): boolean {
     this.isMuted = !this.isMuted;
     if (this.masterGain && this.ctx) {
@@ -90,7 +109,7 @@ class SoundEngine {
     switch (type) {
       case 'shotgun': {
         // Heavy bass punch + wide noise blast + mechanical rack
-        const osc = this.ctx.createOscillator();
+        const osc = this.sfxOsc();
         const oscGain = this.ctx.createGain();
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(140, t);
@@ -103,7 +122,7 @@ class SoundEngine {
         osc.stop(t + 0.35);
 
         // Noise body
-        const noise = this.ctx.createBufferSource();
+        const noise = this.sfxNoise();
         noise.buffer = this.noiseBuffer;
         const filter = this.ctx.createBiquadFilter();
         filter.type = 'lowpass';
@@ -128,7 +147,7 @@ class SoundEngine {
 
       case 'rifle': {
         // High-velocity crack + mountain echo
-        const osc = this.ctx.createOscillator();
+        const osc = this.sfxOsc();
         const oscGain = this.ctx.createGain();
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(240, t);
@@ -140,7 +159,7 @@ class SoundEngine {
         osc.start(t);
         osc.stop(t + 0.28);
 
-        const noise = this.ctx.createBufferSource();
+        const noise = this.sfxNoise();
         noise.buffer = this.noiseBuffer;
         const filter = this.ctx.createBiquadFilter();
         filter.type = 'bandpass';
@@ -159,7 +178,7 @@ class SoundEngine {
 
       case 'magnum': {
         // Punchy revolver thud
-        const osc = this.ctx.createOscillator();
+        const osc = this.sfxOsc();
         const oscGain = this.ctx.createGain();
         osc.type = 'sine';
         osc.frequency.setValueAtTime(180, t);
@@ -171,7 +190,7 @@ class SoundEngine {
         osc.start(t);
         osc.stop(t + 0.28);
 
-        const noise = this.ctx.createBufferSource();
+        const noise = this.sfxNoise();
         noise.buffer = this.noiseBuffer;
         const filter = this.ctx.createBiquadFilter();
         filter.type = 'lowpass';
@@ -189,7 +208,7 @@ class SoundEngine {
 
       case 'carbine': {
         // Rapid snap
-        const osc = this.ctx.createOscillator();
+        const osc = this.sfxOsc();
         const oscGain = this.ctx.createGain();
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(190, t);
@@ -201,7 +220,7 @@ class SoundEngine {
         osc.start(t);
         osc.stop(t + 0.12);
 
-        const noise = this.ctx.createBufferSource();
+        const noise = this.sfxNoise();
         noise.buffer = this.noiseBuffer;
         const filter = this.ctx.createBiquadFilter();
         filter.type = 'bandpass';
@@ -219,7 +238,7 @@ class SoundEngine {
 
       case 'crossbow': {
         // String twang and whoosh
-        const osc = this.ctx.createOscillator();
+        const osc = this.sfxOsc();
         const oscGain = this.ctx.createGain();
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(380, t);
@@ -235,7 +254,7 @@ class SoundEngine {
 
       case 'chainsaw': {
         // Throaty motor rip
-        const osc = this.ctx.createOscillator();
+        const osc = this.sfxOsc();
         const oscGain = this.ctx.createGain();
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(110 + Math.random() * 20, t);
@@ -265,7 +284,7 @@ class SoundEngine {
 
     // High pitch clink
     for (let i = 0; i < 3; i++) {
-      const osc = this.ctx.createOscillator();
+      const osc = this.sfxOsc();
       const oscGain = this.ctx.createGain();
       osc.type = 'sine';
       osc.frequency.setValueAtTime(1800 + i * 900 + Math.random() * 400, t + i * 0.03);
@@ -278,7 +297,7 @@ class SoundEngine {
     }
 
     // Fire whoosh
-    const noise = this.ctx.createBufferSource();
+    const noise = this.sfxNoise();
     noise.buffer = this.noiseBuffer;
     const filter = this.ctx.createBiquadFilter();
     filter.type = 'lowpass';
@@ -300,7 +319,7 @@ class SoundEngine {
     const t = this.ctx.currentTime;
 
     // Meat impact crunch
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const oscGain = this.ctx.createGain();
     osc.type = 'square';
     osc.frequency.setValueAtTime(isHeadshot ? 280 : 160, t);
@@ -314,7 +333,7 @@ class SoundEngine {
 
     if (isHeadshot) {
       // High ding satisfaction
-      const bell = this.ctx.createOscillator();
+      const bell = this.sfxOsc();
       const bellGain = this.ctx.createGain();
       bell.type = 'sine';
       bell.frequency.setValueAtTime(1400, t);
@@ -333,7 +352,7 @@ class SoundEngine {
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
 
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const filter = this.ctx.createBiquadFilter();
     const gain = this.ctx.createGain();
 
@@ -409,7 +428,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc.type = 'sine';
     osc.frequency.setValueAtTime(520, t);
@@ -432,7 +451,7 @@ class SoundEngine {
     const freqs = [523.25, 659.25, 783.99, 1046.5];
     freqs.forEach((freq, idx) => {
       if (!this.ctx || !this.sfxGain) return;
-      const osc = this.ctx.createOscillator();
+      const osc = this.sfxOsc();
       const gain = this.ctx.createGain();
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(freq, t + idx * 0.06);
@@ -452,7 +471,7 @@ class SoundEngine {
     const t = this.ctx.currentTime;
 
     // Rustling paper crinkle followed by an eerie harmonic resonance
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc.type = 'sine';
     osc.frequency.setValueAtTime(330, t); // E4
@@ -476,7 +495,7 @@ class SoundEngine {
     const t = this.ctx.currentTime;
 
     // Heavy low punch
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const oscGain = this.ctx.createGain();
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(140, t);
@@ -489,7 +508,7 @@ class SoundEngine {
     osc.stop(t + 0.6);
 
     // Roaring noise explosion blast
-    const noise = this.ctx.createBufferSource();
+    const noise = this.sfxNoise();
     noise.buffer = this.noiseBuffer;
     const filter = this.ctx.createBiquadFilter();
     filter.type = 'lowpass';
@@ -512,7 +531,7 @@ class SoundEngine {
     const t = this.ctx.currentTime;
 
     // Ultra deep rumble
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const oscGain = this.ctx.createGain();
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(80, t);
@@ -525,7 +544,7 @@ class SoundEngine {
     osc.stop(t + 1.4);
 
     // Huge shockwave white noise
-    const noise = this.ctx.createBufferSource();
+    const noise = this.sfxNoise();
     noise.buffer = this.noiseBuffer;
     const filter = this.ctx.createBiquadFilter();
     filter.type = 'lowpass';
@@ -546,7 +565,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc.type = 'triangle';
     osc.frequency.setValueAtTime(130, t);
@@ -564,7 +583,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc.type = "sine";
     osc.frequency.setValueAtTime(220, t);
@@ -582,7 +601,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc.type = "square";
     osc.frequency.setValueAtTime(90, t);
@@ -600,8 +619,8 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
-    const osc1 = this.ctx.createOscillator();
-    const osc2 = this.ctx.createOscillator();
+    const osc1 = this.sfxOsc();
+    const osc2 = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc1.type = 'sawtooth';
     osc2.type = 'triangle';
@@ -629,7 +648,7 @@ class SoundEngine {
       [165, 0.8, 0.4],
       [110, 1.6, 0.25],
     ] as const) {
-      const osc = this.ctx.createOscillator();
+      const osc = this.sfxOsc();
       const gain = this.ctx.createGain();
       osc.type = "sine";
       osc.frequency.setValueAtTime(freq, t + delay);
@@ -647,7 +666,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc.type = "sine";
     osc.frequency.setValueAtTime(480, t);
@@ -665,7 +684,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
     const t = this.ctx.currentTime;
-    const noise = this.ctx.createBufferSource();
+    const noise = this.sfxNoise();
     noise.buffer = this.noiseBuffer;
     const filter = this.ctx.createBiquadFilter();
     filter.type = "lowpass";
@@ -685,7 +704,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc.type = "triangle";
     osc.frequency.setValueAtTime(180, t);
@@ -705,7 +724,7 @@ class SoundEngine {
   private playClick(volume: number, freq: number) {
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc.type = 'sine';
     osc.frequency.setValueAtTime(freq, t);
@@ -726,7 +745,7 @@ class SoundEngine {
     else this.gritStep = Math.min(12, this.gritStep + 1);
     this.gritAt = now;
     const freq = 640 * Math.pow(1.059, this.gritStep);
-    const osc = this.ctx.createOscillator();
+    const osc = this.sfxOsc();
     const gain = this.ctx.createGain();
     osc.type = "sine";
     osc.frequency.setValueAtTime(freq, now);

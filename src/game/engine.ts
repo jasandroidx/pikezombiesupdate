@@ -150,6 +150,17 @@ export class GameEngine {
 	bellLureUntil = 0;
 	lastSprintNoise = 0;
 	noisePulses = [];
+	// Group 1: spatial hash (cell 64) for zombie queries
+	zhash = new Map();
+	zhashMaxR = 20;
+	zhashCell = 64;
+	// Group 1: object pools for high-churn short-lived objects
+	particlePool = [];
+	floaterPool = [];
+	gritPool = [];
+	bulletPool = [];
+	// Group 1: dynamic point lights (world coords, ttl in seconds)
+	dynLights = [];
 	camX = 0;
 	camY = 0;
 	trauma = 0;
@@ -330,6 +341,15 @@ export class GameEngine {
 			weapon: (id) => { const w = this.weapons.find((x) => x.id === id); return w && { reserve: w.reserveAmmo, max: w.maxReserveAmmo }; },
 			setWave: (n) => { this.wave = n; },
 			spawnType: (t) => this.pushZombie(t, this.player.x + 120, this.player.y),
+			ghostLead: (type, mvx, mvy) => { // Group 1 test hook: personality target for a fake zombie, deterministic
+				const z = { type, x: this.player.x - 100, y: this.player.y, flank: 1, id: `testhook` };
+				const i = this.player.x - z.x, a = this.player.y - z.y, o = Math.hypot(i, a);
+				const kvx = this.moveVX, kvy = this.moveVY;
+				this.moveVX = mvx; this.moveVY = mvy;
+				const pt = this.personalityTarget(z, i, a, o);
+				this.moveVX = kvx; this.moveVY = kvy;
+				return { tx: pt[0], ty: pt[1], blend: pt[2] };
+			},
 			lastZombie: () => { const z = this.zombies[this.zombies.length - 1]; return z && { t: z.type, hp: Math.round(z.health) }; },
 			barrels: () => this.explosiveBarrels.map((b) => ({ x: Math.round(b.x), y: Math.round(b.y) })),
 			spawnPt: () => ({ x: this.currentLocation.spawn.x, y: this.currentLocation.spawn.y }),
@@ -344,7 +364,7 @@ export class GameEngine {
 				mods: this.eventMods(),
 				evoHints: this.evolutionHints(),
 				revolver: (() => { const w = this.weapons.find((x) => x.id === `revolver`); return w ? { name: w.name, dmg: w.damage, fireRate: w.fireRate, pierce: w.pierce } : null; })(),
-				zombies: () => this.zombies.map((z) => ({ id: String(z.id).slice(-6), t: z.type, h: Math.round(z.health), d: Math.round(Math.hypot(z.x - this.player.x, z.y - this.player.y)) })),
+				zombies: () => this.zombies.map((z) => ({ id: String(z.id).slice(-6), t: z.type, h: Math.round(z.health), d: Math.round(Math.hypot(z.x - this.player.x, z.y - this.player.y)), state: z.ai, tx: Math.round(z.tx), ty: Math.round(z.ty) })),
 			}),
 			detonate: () => this.detonateBomb(),
 			dash: () => this.tryDash(),
@@ -368,6 +388,11 @@ export class GameEngine {
 			sweepGrit: () => this.sweepGritToBag(),
 			spawnGritAt: (x, y, v) => this.dropGritOrb(x, y, 0, 0, v),
 			fireEvent: (id) => { const ev = RUN_EVENTS.find((e) => e.id === id); if (ev && !this.firedEvents.includes(id)) this.fireEvent(ev); },
+			noise: (x, y, r) => this.emitNoise(x, y, r),
+			dynLightCount: () => this.dynLights.length,
+			lightingOverlay: () => !!(this.lighting && this.lighting.darknessCanvas),
+			hashCells: () => this.zhash.size,
+			spawn150: (t = `shambler`) => { for (let i = 0; i < 150; i++) { const z = this.pushZombie(t, this.player.x + 400 + (i % 15) * 60, this.player.y + 400 + ((i / 15) | 0) * 60); z.ai = `wander`; } },
 		};
 		let e = window.__controlsTest;
 		e.teleport = (e, t) => {
@@ -564,7 +589,7 @@ export class GameEngine {
 		soundEngine.playNuke(), this.screenShake = 14;
 		for (let e = 0; e < 60; e++) {
 			let e = Math.random() * Math.PI * 2, t = Math.random() * 500;
-			this.particles.push({
+			this.particles.push(Object.assign(this.allocParticle(), {
 				x: this.player.x + Math.cos(e) * t,
 				y: this.player.y + Math.sin(e) * t,
 				vx: (Math.random() - .5) * 12,
@@ -575,7 +600,7 @@ export class GameEngine {
 				life: .8 + Math.random() * .4,
 				maxLife: 1.2,
 				type: `fire`
-			});
+			}));
 		}
 		this.zombies.length;
 		for (let e = this.zombies.length - 1; e >= 0; e--) {
@@ -798,12 +823,12 @@ export class GameEngine {
 			radius: 6,
 			color: `#f59e0b`
 		};
-		this.bullets.push(e), soundEngine.playGunshot(`molotov`), this.alertZombies(this.player.x, this.player.y, 360);
+		this.bullets.push(Object.assign(this.allocBullet(), e)), soundEngine.playGunshot(`molotov`), this.alertZombies(this.player.x, this.player.y, 360);
 	}
 	throwFlare() {
 		if (this.player.flares <= 0 || this.isPaused) return false;
 		this.player.flares--;
-		this.bullets.push({
+		this.bullets.push(Object.assign(this.allocBullet(), {
 			id: Math.random().toString(),
 			x: this.player.x + Math.cos(this.player.angle) * 22,
 			y: this.player.y + Math.sin(this.player.angle) * 22,
@@ -816,7 +841,7 @@ export class GameEngine {
 			isFlare: true,
 			radius: 5,
 			color: `#f6c453`
-		});
+		}));
 		soundEngine.playGunshot(`carbine`);
 		this.spawnFloater(this.player.x, this.player.y - 36, "FLARE", "#f6c453");
 		return true;
@@ -828,7 +853,7 @@ export class GameEngine {
 		soundEngine.playBottleShatter();
 		for (let i = 0; i < 10; i++) {
 			const a = Math.random() * Math.PI * 2;
-			this.particles.push({
+			this.particles.push(Object.assign(this.allocParticle(), {
 				x, y,
 				vx: Math.cos(a) * (1 + Math.random() * 2),
 				vy: Math.sin(a) * (1 + Math.random() * 2) - 1.2,
@@ -838,7 +863,7 @@ export class GameEngine {
 				life: .45,
 				maxLife: .45,
 				type: `spark`
-			});
+			}));
 		}
 	}
 	updateOrbit(dt) {
@@ -998,7 +1023,7 @@ export class GameEngine {
 		this.rig.shot = 0.46;
 		const a = Math.atan2(best.y - this.rig.y, best.x - this.rig.x);
 		this.rig.angle = a;
-		this.bullets.push({
+		this.bullets.push(Object.assign(this.allocBullet(), {
 			id: Math.random().toString(),
 			x: this.rig.x + Math.cos(a) * 18,
 			y: this.rig.y + Math.sin(a) * 18,
@@ -1011,7 +1036,7 @@ export class GameEngine {
 			isSplinter: true,
 			radius: 3.4,
 			color: `#fde68a`
-		});
+		}));
 	}
 	postStats() {
 		return this.postRank >= 3
@@ -1140,7 +1165,7 @@ export class GameEngine {
 			t.shot = t.interval || 0.58;
 			t.left--;
 			const a = t.angle;
-			this.bullets.push({
+			this.bullets.push(Object.assign(this.allocBullet(), {
 				id: Math.random().toString(),
 				x: t.x + Math.cos(a) * 22,
 				y: t.y + Math.sin(a) * 22,
@@ -1152,7 +1177,7 @@ export class GameEngine {
 				weaponType: `lever_rifle`,
 				radius: 3.2,
 				color: `#fefce8`
-			});
+			}));
 			soundEngine.playGunshot(`rifle`);
 			this.alertZombies(t.x, t.y, 90, true);
 			if (t.left <= 0) {
@@ -1197,7 +1222,7 @@ export class GameEngine {
 			for (let k = 0; k < 18; k++) {
 				const a = Math.random() * Math.PI * 2;
 				const sp = 1.6 + Math.random() * 4.2;
-				this.particles.push({
+				this.particles.push(Object.assign(this.allocParticle(), {
 					x: bomb.x,
 					y: bomb.y,
 					vx: Math.cos(a) * sp,
@@ -1208,7 +1233,7 @@ export class GameEngine {
 					life: 0.35 + Math.random() * 0.25,
 					maxLife: 0.55,
 					type: "spark"
-				});
+				}));
 			}
 		}
 	}
@@ -1499,9 +1524,9 @@ export class GameEngine {
 		this.trauma = Math.max(0, this.trauma - e * 1.6);
 		for (let t = this.floaters.length - 1; t >= 0; t--) {
 			let n = this.floaters[t];
-			n.y += n.vy * e, n.life -= e, n.life <= 0 && this.floaters.splice(t, 1);
+			n.y += n.vy * e, n.life -= e, n.life <= 0 && (this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e);
 		this.dodgeCd = Math.max(0, this.dodgeCd - e);
 		this.bashCd = Math.max(0, this.bashCd - e);
 		this.bashSwing = Math.max(0, this.bashSwing - e);
@@ -1746,7 +1771,7 @@ export class GameEngine {
 		if (!this.player.isSneaking) this.alertZombies(this.player.x, this.player.y, this.player.isSprinting ? 150 : 78, true);
 		const dirX = this.lastMoveSpeed > .2 ? this.moveVX / this.lastMoveSpeed : 0;
 		const dirY = this.lastMoveSpeed > .2 ? this.moveVY / this.lastMoveSpeed : 0;
-		for (let i = 0; i < 3; i++) this.particles.push({
+		for (let i = 0; i < 3; i++) this.particles.push(Object.assign(this.allocParticle(), {
 			x: this.player.x - dirX * 6 + (Math.random() - .5) * 8,
 			y: this.player.y + 10 - dirY * 4 + (Math.random() - .5) * 4,
 			vx: -dirX * .4 + (Math.random() - .5) * .6,
@@ -1757,7 +1782,7 @@ export class GameEngine {
 			life: .28 + Math.random() * .16,
 			maxLife: .4,
 			type: "dust"
-		});
+		}));
 	}
 	tryDodge() {
 		if (this.dodgeCd > 0 || this.dodgeTimer > 0 || this.player.stamina < 20) return false;
@@ -1899,6 +1924,7 @@ export class GameEngine {
 		this.hasPowerup(`infinite_ammo`) || e.currentMag--;
 		this.stats.shotsFired++;
 		this.muzzleFlashTimer = e.id === `shotgun` ? 1.4 : e.id === `crossbow` ? .35 : 1;
+		this.addLight(this.player.x + Math.cos(this.player.angle) * 30, this.player.y + Math.sin(this.player.angle) * 30, 340, .9, .12);
 		this.recoilKick = Math.max(this.recoilKick, e.id === `shotgun` ? 12 : e.id === `lever_rifle` ? 9 : e.id === `chainsaw` ? 4 : e.id === `carbine` ? 3.5 : 7);
 		if (e.id === `shotgun`) this.pumpAnim = 10;
 		soundEngine.playGunshot(e.soundType);
@@ -1929,7 +1955,7 @@ export class GameEngine {
 				this.stats.damageDealt += e.damage;
 				this.createBloodParticles(z.x, z.y, this.player.angle);
 			}
-			for (let i = 0; i < 6; i++) this.particles.push({
+			for (let i = 0; i < 6; i++) this.particles.push(Object.assign(this.allocParticle(), {
 				x: this.player.x + ax * 28,
 				y: this.player.y + ay * 28,
 				vx: ax * 2 + (Math.random() - .5) * 3,
@@ -1940,7 +1966,7 @@ export class GameEngine {
 				life: .2,
 				maxLife: .25,
 				type: "spark"
-			});
+			}));
 			if (e.currentMag === 0) this.reloadCurrentWeapon();
 			return;
 		}
@@ -1954,7 +1980,7 @@ export class GameEngine {
 			const jitter = (Math.random() - .5) * spread;
 			const ang = this.player.angle + jitter;
 			const spd = e.bulletSpeed * (.92 + Math.random() * .14);
-			this.bullets.push({
+			this.bullets.push(Object.assign(this.allocBullet(), {
 				id: Math.random().toString(),
 				x: this.player.x + Math.cos(this.player.angle) * origin,
 				y: this.player.y + Math.sin(this.player.angle) * origin,
@@ -1967,14 +1993,14 @@ export class GameEngine {
 				isCrossbowBolt: e.id === `crossbow`,
 				radius: e.id === `shotgun` ? 4.4 : e.id === `revolver` ? 4.2 : e.id === `carbine` ? 2.2 : e.id === `crossbow` ? 4 : 3.2,
 				color: e.id === `shotgun` ? `#fdba74` : e.id === `revolver` ? `#fbbf24` : e.id === `lever_rifle` ? `#fefce8` : e.id === `carbine` ? `#fde047` : e.id === `crossbow` ? `#e2e8f0` : `#fef08a`
-			});
+			}));
 		}
 		if (e.currentMag === 0 && e.id !== `chainsaw` && !this.hasPowerup(`infinite_ammo`)) this.fanTheCylinder();
 		if (e.id === `shotgun`) {
 			const ax = Math.cos(this.player.angle), ay = Math.sin(this.player.angle);
 			for (let i = 0; i < 14; i++) {
 				const j = (Math.random() - .5) * .7;
-				this.particles.push({
+				this.particles.push(Object.assign(this.allocParticle(), {
 					x: this.player.x + ax * 30,
 					y: this.player.y + ay * 30,
 					vx: Math.cos(this.player.angle + j) * (1.2 + Math.random() * 2.4),
@@ -1985,10 +2011,10 @@ export class GameEngine {
 					life: .22 + Math.random() * .18,
 					maxLife: .4,
 					type: "dust"
-				});
+				}));
 			}
 		}
-		this.particles.push({
+		this.particles.push(Object.assign(this.allocParticle(), {
 			x: this.player.x,
 			y: this.player.y,
 			vx: Math.cos(this.player.angle - Math.PI / 2) * (2 + Math.random() * 2),
@@ -1999,7 +2025,7 @@ export class GameEngine {
 			life: .6,
 			maxLife: .6,
 			type: `shell`
-		});
+		}));
 		if (e.currentMag === 0) this.reloadCurrentWeapon();
 	}
 	updateBullets(e, t) {
@@ -2012,7 +2038,7 @@ export class GameEngine {
 			const mx = ox + (n.x - ox) * 0.5, my = oy + (n.y - oy) * 0.5;
 			if (this.checkObstacleCollision(n.x, n.y, n.radius, false) || this.checkObstacleCollision(mx, my, n.radius, false)) {
 				n.isFlare ? this.plantFlare(n.x, n.y) : this.createHitSparks(n.x, n.y, `#f59e0b`);
-				this.bullets.splice(t, 1);
+				this.freeBulletAt(t);
 				continue;
 			}
 			let i = false;
@@ -2021,34 +2047,37 @@ export class GameEngine {
 				if (Math.hypot(r.x - n.x, r.y - n.y) <= r.radius + n.radius) {
 					if (n.isFlare) {
 						this.plantFlare(n.x, n.y);
-						this.bullets.splice(t, 1);
+						this.freeBulletAt(t);
 						i = true;
 						break;
 					}
-					r.health -= n.damage, this.createHitSparks(n.x, n.y, `#ef4444`), soundEngine.playZombieHit(false), r.health <= 0 && this.detonateExplosiveBarrel(r, e), this.bullets.splice(t, 1), i = true;
+					r.health -= n.damage, this.createHitSparks(n.x, n.y, `#ef4444`), soundEngine.playZombieHit(false), r.health <= 0 && this.detonateExplosiveBarrel(r, e), this.freeBulletAt(t), i = true;
 					break;
 				}
 			}
 			if (!i) {
 				if (n.isMolotov && n.rangeRemaining <= 0) {
-					this.detonateMolotov(n.x, n.y), this.bullets.splice(t, 1);
+					this.detonateMolotov(n.x, n.y), this.freeBulletAt(t);
 					continue;
 				}
 				if (n.isFlare && n.rangeRemaining <= 0) {
-					this.plantFlare(n.x, n.y), this.bullets.splice(t, 1);
+					this.plantFlare(n.x, n.y), this.freeBulletAt(t);
 					continue;
 				}
 				if (n.rangeRemaining <= 0) {
-					this.bullets.splice(t, 1);
+					this.freeBulletAt(t);
 					continue;
 				}
-				for (let e = this.zombies.length - 1; e >= 0; e--) {
+				const bq = this.queryZombies((ox + n.x) / 2, (oy + n.y) / 2, Math.hypot(n.x - ox, n.y - oy) / 2 + this.zhashMaxR + n.radius, []);
+				bq.sort((x, y) => y - x);
+				for (const e of bq) {
 					let r = this.zombies[e];
+					if (!r) continue;
 					if (!this.segmentHitsCircle(ox, oy, n.x, n.y, n.radius, r.x, r.y, r.radius)) continue;
 					{
 						if (n.isFlare) {
 							this.plantFlare(n.x, n.y);
-							this.bullets.splice(t, 1);
+							this.freeBulletAt(t);
 							break;
 						}
 						this.stats.shotsHit++;
@@ -2060,7 +2089,7 @@ export class GameEngine {
 						if (this.evolved === `lincoln` && n.weaponType === `revolver` && e) this.player.health = Math.min(this.player.maxHealth, this.player.health + 4);
 						let a = Math.atan2(n.vy, n.vx), o = n.weaponType === `shotgun` ? 7 : 3;
 						if (r.x += Math.cos(a) * o, r.y += Math.sin(a) * o, this.createBloodParticles(n.x, n.y, a), r.hitFlash = .08, this.spawnFloater(r.x, r.y - r.radius, e ? `HEAD` : `${Math.round(i)}`, e ? `#ff4d3a` : `#e11d2e`), i > 80 && (this.hitstop = Math.max(this.hitstop, .04)), n.pierce--, n.pierce <= 0) {
-							this.bullets.splice(t, 1);
+							this.freeBulletAt(t);
 							break;
 						}
 					}
@@ -2086,10 +2115,12 @@ export class GameEngine {
 			radius: n,
 			duration: r,
 			createdTime: Date.now()
-		}), this.screenShake = 5, this.trauma = Math.min(1, this.trauma + .25), soundEngine.playBottleShatter(), this.alertZombies(e, t, 380);
+		}), this.screenShake = 5, this.trauma = Math.min(1, this.trauma + .25), soundEngine.playBottleShatter(), this.addLight(e, t, 380, .95, .4), this.alertZombies(e, t, 380);
 		for (let r of this.zombies) Math.hypot(r.x - e, r.y - t) <= n && (r.health -= 120, r.isBurning = 4e3);
 	}
 	detonateExplosiveBarrel(e, t) {
+		this.emitNoise(e.x, e.y, 500),
+		this.addLight(e.x, e.y, 420, 1, .5),
 		this.explosiveBarrels.splice(t, 1), this.screenShake = 10, this.trauma = Math.min(1, this.trauma + .55), soundEngine.playBarrelExplosion(), this.alertZombies(e.x, e.y, 700), this.firePuddles.push({
 			id: Math.random().toString(),
 			x: e.x,
@@ -2100,7 +2131,7 @@ export class GameEngine {
 		});
 		for (let t = 0; t < 35; t++) {
 			let t = Math.random() * Math.PI * 2, n = 2 + Math.random() * 6;
-			this.particles.push({
+			this.particles.push(Object.assign(this.allocParticle(), {
 				x: e.x,
 				y: e.y,
 				vx: Math.cos(t) * n,
@@ -2111,7 +2142,7 @@ export class GameEngine {
 				life: .4 + Math.random() * .4,
 				maxLife: .8,
 				type: `smoke`
-			});
+			}));
 		}
 		for (let t = this.zombies.length - 1; t >= 0; t--) {
 			let n = this.zombies[t], r = Math.hypot(n.x - e.x, n.y - e.y);
@@ -2241,11 +2272,13 @@ export class GameEngine {
 			this.stats.damageDealt += BOMB_DMG;
 			this.createBloodParticles(z.x, z.y, Math.atan2(dy, dx));
 		}
+		this.emitNoise(this.player.x, this.player.y, 700),
+		this.addLight(this.player.x, this.player.y, 520, 1, .6),
 		this.screenShake = Math.max(this.screenShake, 12), this.trauma = Math.min(1, this.trauma + .8);
 		this.hitstop = Math.max(this.hitstop, .12);
 		for (let k = 0; k < 28; k++) {
 			const a = (Math.PI * 2 * k) / 28;
-			this.particles.push({ x: this.player.x, y: this.player.y, vx: Math.cos(a) * 9, vy: Math.sin(a) * 9, size: 5, life: .5, maxLife: .5, alpha: 1, color: `#fde68a` });
+			this.particles.push(Object.assign(this.allocParticle(), { x: this.player.x, y: this.player.y, vx: Math.cos(a) * 9, vy: Math.sin(a) * 9, size: 5, life: .5, maxLife: .5, alpha: 1, color: `#fde68a` }));
 		}
 		this.spawnFloater(this.player.x, this.player.y - 64, `BOMB`, "#f97316");
 		soundEngine.playNuke();
@@ -2374,6 +2407,9 @@ export class GameEngine {
 			scrapValue: u,
 			spitCooldown: 2500,
 			ai: e === `crawler` ? `chase` : `wander`,
+			flank: Math.random() < .5 ? -1 : 1,
+			tx: t,
+			ty: n,
 			hearX: t,
 			hearY: n,
 			wanderAngle: Math.random() * Math.PI * 2,
@@ -2388,11 +2424,12 @@ export class GameEngine {
 			d.scrapValue = Math.round(d.scrapValue * 2);
 		}
 		this.zombies.push(d), soundEngine.playZombieGroan(e === `crawler` ? `shambler` : e === `bomber` ? `bloater_spitter` : e === `riot` ? `miner_brute` : e);
+		return d;
 	}
 	updateZombies(e, t) {
 		for (let n = this.zombies.length - 1; n >= 0; n--) {
 			let r = this.zombies[n];
-			if (r.isBurning && r.isBurning > 0 && (r.isBurning -= e * 1e3, r.health -= e * 35, Math.random() < .3 && this.particles.push({
+			if (r.isBurning && r.isBurning > 0 && (r.isBurning -= e * 1e3, r.health -= e * 35, Math.random() < .3 && this.particles.push(Object.assign(this.allocParticle(), {
 				x: r.x + (Math.random() - .5) * r.radius,
 				y: r.y + (Math.random() - .5) * r.radius,
 				vx: (Math.random() - .5) * 1.5,
@@ -2403,7 +2440,7 @@ export class GameEngine {
 				life: .4,
 				maxLife: .4,
 				type: `fire`
-			})), r.health <= 0) {
+			}))), r.health <= 0) {
 				this.killZombie(r, n);
 				continue;
 			}
@@ -2422,7 +2459,8 @@ export class GameEngine {
 				r.ai = o <= r.radius + this.player.radius + 2 ? `attack` : `chase`;
 			} else if (r.ai === `chase` || r.ai === `attack`) r.ai = `investigate`;
 			else if (r.ai === `wander` && s > 40 && (r.hearX !== r.x || r.hearY !== r.y)) r.ai = `investigate`;
-			r.ai === `wander` ? (r.wanderAngle += (Math.random() - .5) * .8 * e, r.angle = r.wanderAngle) : r.ai === `investigate` ? (r.angle = Math.atan2(r.hearY - r.y, r.hearX - r.x), s < 28 && (r.ai = `wander`)) : r.angle = Math.atan2(a, i), r.type === `bloater_spitter` && (r.spitCooldown ||= 2500, r.spitCooldown -= e * 1e3, r.spitCooldown <= 0 && o < 450) && (r.spitCooldown = 3200, this.acidSpits.push({
+			r.ai === `wander` ? (r.wanderAngle += (Math.random() - .5) * .8 * e, r.angle = r.wanderAngle) : r.ai === `investigate` ? (r.angle = Math.atan2(r.hearY - r.y, r.hearX - r.x), s < 28 && (r.ai = `wander`)) : r.angle = Math.atan2(a, i),
+			(r.ai === `investigate` || r.ai === `wander`) && (r.tx = r.ai === `investigate` ? r.hearX : r.x, r.ty = r.ai === `investigate` ? r.hearY : r.y), r.type === `bloater_spitter` && (r.spitCooldown ||= 2500, r.spitCooldown -= e * 1e3, r.spitCooldown <= 0 && o < 450) && (r.spitCooldown = 3200, this.acidSpits.push({
 				id: Math.random().toString(),
 				x: r.x,
 				y: r.y,
@@ -2444,8 +2482,9 @@ export class GameEngine {
 				r.ai = flareDist < 48 ? `wander` : `investigate`;
 				r.angle = Math.atan2(flare.y - r.y, flare.x - r.x);
 			}
+			r.ai === `wander` && Math.random() < e * .1 && this.spawnFloater(r.x, r.y - 18, `...`, `#5b6470`);
 			let u = r.speed;
-			r.type === `behemoth` && r.health < r.maxHealth * .4 && (u *= 1.4), r.ai === `wander` && (u *= .35), r.ai === `investigate` && (u *= .7);
+			r.type === `behemoth` && r.health < r.maxHealth * .4 && (u *= 1.4), r.ai === `wander` && (u *= .35), r.ai === `investigate` && (u *= .7), r.type === `bloater_spitter` && (r.ai === `chase` || r.ai === `attack`) && o <= 380 && o >= 240 && (u *= .5);
 			if ((r.ai === `chase` || r.ai === `attack`) && o < r.radius + this.player.radius + 26) u *= .42;
 			if (r.stunUntil && this.simTime < r.stunUntil) u = 0;
 			else if (this.worldSlow > 0) u *= .4;
@@ -2454,12 +2493,24 @@ export class GameEngine {
 				const flow = this.flow.dir(r.x, r.y);
 				let dx = flow ? flow.x : Math.cos(r.angle);
 				let dy = flow ? flow.y : Math.sin(r.angle);
+				const pt = this.personalityTarget(r, i, a, o);
+				r.tx = pt[0]; r.ty = pt[1];
+				const pb = pt[2];
+				if (pb > 0) {
+					const vx = pt[0] - r.x, vy = pt[1] - r.y, vl = Math.hypot(vx, vy) || 1;
+					dx = dx * (1 - pb) + (vx / vl) * pb;
+					dy = dy * (1 - pb) + (vy / vl) * pb;
+				}
 				let sx = 0, sy = 0, sn = 0;
 				const reach = r.radius + 28;
 				const reach2 = reach * reach;
-				for (let k = 0; k < this.zombies.length && sn < 5; k++) {
+				const zq = this.queryZombies(r.x, r.y, reach, []);
+				zq.sort((x, y) => x - y);
+				for (const k of zq) {
+					if (sn >= 5) break;
 					if (k === n) continue;
 					const oth = this.zombies[k];
+					if (!oth) continue;
 					const ix = r.x - oth.x, iy = r.y - oth.y;
 					const d2 = ix * ix + iy * iy;
 					if (d2 >= reach2 || d2 < 1) continue;
@@ -2575,7 +2626,7 @@ export class GameEngine {
 			.filter((n) => n.d < 200 && n.d > 0)
 			.sort((a, b) => a.d - b.d)
 			.slice(0, count);
-		const fire = (a) => this.bullets.push({
+		const fire = (a) => this.bullets.push(Object.assign(this.allocBullet(), {
 			id: Math.random().toString(),
 			x: z.x,
 			y: z.y,
@@ -2588,7 +2639,7 @@ export class GameEngine {
 			isSplinter: true,
 			radius: 3.6,
 			color: `#f6c453`
-		});
+		}));
 		if (!near.length) {
 			for (let i = 0; i < count; i++) fire((Math.PI * 2 * i) / count);
 			return;
@@ -2598,7 +2649,7 @@ export class GameEngine {
 	fanTheCylinder() {
 		for (let i = 0; i < 8; i++) {
 			const a = (Math.PI * 2 * i) / 8;
-			this.bullets.push({
+			this.bullets.push(Object.assign(this.allocBullet(), {
 				id: Math.random().toString(),
 				x: this.player.x,
 				y: this.player.y,
@@ -2611,7 +2662,7 @@ export class GameEngine {
 				isSplinter: false,
 				radius: 3,
 				color: `#fde68a`
-			});
+			}));
 		}
 		this.screenShake = Math.max(this.screenShake, 4);
 	}
@@ -2624,7 +2675,9 @@ export class GameEngine {
 			// Balance: halved streak payout (2 orbs, was 4) — early XP economy ran too hot
 			for (let i = 0; i < 2; i++) {
 				const a = Math.random() * Math.PI * 2;
-				this.grit.push({ x: this.player.x, y: this.player.y, vx: Math.cos(a) * 160, vy: Math.sin(a) * 160, value: comboAfter });
+				const g1 = this.gritPool.pop() || {};
+				g1.x = this.player.x; g1.y = this.player.y; g1.vx = Math.cos(a) * 160; g1.vy = Math.sin(a) * 160; g1.value = comboAfter; g1.lucky = false;
+				this.grit.push(g1);
 			}
 			soundEngine.playPowerup();
 		}
@@ -2635,7 +2688,7 @@ export class GameEngine {
 			for (const z of this.zombies) {
 				if (Math.hypot(z.x - e.x, z.y - e.y) < R) { z.health -= 90; z.hitFlash = 0.08; }
 			}
-			for (let k = 0; k < 14; k++) this.particles.push({ x: e.x, y: e.y, vx: (Math.random() - .5) * 6, vy: (Math.random() - .5) * 6, size: 4, life: .5, maxLife: .5, alpha: 1 });
+			for (let k = 0; k < 14; k++) this.particles.push(Object.assign(this.allocParticle(), { x: e.x, y: e.y, vx: (Math.random() - .5) * 6, vy: (Math.random() - .5) * 6, size: 4, life: .5, maxLife: .5, alpha: 1 }));
 			if (Math.hypot(this.player.x - e.x, this.player.y - e.y) < R * .7) this.player.health -= 18;
 			soundEngine.playBarrelExplosion();
 		}
@@ -2783,14 +2836,15 @@ export class GameEngine {
 	updateParticles(e) {
 		for (let t = this.particles.length - 1; t >= 0; t--) {
 			let n = this.particles[t];
-			n.x += n.vx * e * 60, n.y += n.vy * e * 60, n.life -= e, n.alpha = Math.max(0, n.life / n.maxLife), n.life <= 0 && this.particles.splice(t, 1);
+			n.x += n.vx * e * 60, n.y += n.vy * e * 60, n.life -= e, n.alpha = Math.max(0, n.life / n.maxLife), n.life <= 0 && (this.particlePool.push(n), this.particles.splice(t, 1));
 		}
+		if (this.particles.length > 180) for (let t = 0; t < this.particles.length - 180; t++) this.particlePool.push(this.particles[t]);
 		if (this.particles.length > 180) this.particles.splice(0, this.particles.length - 180);
 	}
 	createBloodParticles(e, t, n) {
 		for (let r = 0; r < 7; r++) {
 			let r = n + (Math.random() - .5) * 1.2, i = 2 + Math.random() * 4;
-			this.particles.push({
+			this.particles.push(Object.assign(this.allocParticle(), {
 				x: e,
 				y: t,
 				vx: Math.cos(r) * i,
@@ -2801,13 +2855,13 @@ export class GameEngine {
 				life: .35 + Math.random() * .25,
 				maxLife: .5,
 				type: `blood`
-			});
+			}));
 		}
 	}
 	createHitSparks(e, t, n) {
 		for (let r = 0; r < 6; r++) {
 			let r = Math.random() * Math.PI * 2, i = 1.5 + Math.random() * 3.5;
-			this.particles.push({
+			this.particles.push(Object.assign(this.allocParticle(), {
 				x: e,
 				y: t,
 				vx: Math.cos(r) * i,
@@ -2818,14 +2872,14 @@ export class GameEngine {
 				life: .2 + Math.random() * .15,
 				maxLife: .3,
 				type: `spark`
-			});
+			}));
 		}
 	}
 	zombieSees(z, dist) {
 		const touch = z.radius + this.player.radius + 34;
 		if (dist <= touch) return true;
 		const sight = z.type === `sprinter` ? 300 : z.type === `behemoth` ? 380 : z.type === `crawler` ? 150 : z.type === `bloater_spitter` ? 260 : 230;
-		const range = this.player.isSneaking ? sight * 0.62 : sight;
+		const range = this.player.isSneaking ? sight * 0.62 : this.player.isSprinting ? sight * 2 : sight;
 		if (dist > range) return false;
 		let ang = Math.atan2(this.player.y - z.y, this.player.x - z.x) - z.angle;
 		while (ang > Math.PI) ang -= Math.PI * 2;
@@ -2889,7 +2943,7 @@ export class GameEngine {
 			this.scrap -= 25, e.boarded = true, e.boardHealth = e.maxBoardHealth, this.score += 40, this.spawnFloater(e.x, e.y - 18, `BOARDED`, `#d4a017`), soundEngine.playBoard();
 			for (let t = 0; t < 8; t++) {
 				let t = Math.random() * Math.PI * 2;
-				this.particles.push({
+				this.particles.push(Object.assign(this.allocParticle(), {
 					x: e.x,
 					y: e.y,
 					vx: Math.cos(t) * (1 + Math.random() * 2),
@@ -2900,7 +2954,7 @@ export class GameEngine {
 					life: .4,
 					maxLife: .4,
 					type: `wood_splinter`
-				});
+				}));
 			}
 			this.holes.length > 0 && this.holes.every((e) => e.boarded) && this.callbacks.onRadio?.(`Unknown`, `The holes went quiet. Keep the lantern. They'll try the boards.`);
 		}
@@ -2939,7 +2993,7 @@ export class GameEngine {
 			case `revolver`: return 480;
 			case `shotgun`: return 580;
 			case `lever_rifle`: return 740;
-			case `chainsaw`: return 300;
+			case `chainsaw`: return 420;
 			default: return 420;
 		}
 	}
@@ -2964,16 +3018,121 @@ export class GameEngine {
 			for (let r of this.zombies) Math.hypot(r.x - e, r.y - t) <= n && (r.hearX = e, r.hearY = t, r.ai === `wander` && (r.ai = `investigate`));
 		}
 	}
+	emitNoise(x, y, radius) {
+		this.alertZombies(x, y, radius);
+	}
+	// Group 1: ghost personalities — per-type targeting rule. Returns [tx, ty, blend]
+	// where blend 0 = pure flow-field pathing, 1 = direct steering to target.
+	nearestObjective(x, y) {
+		let bx = 0, by = 0, bd = 1e12, found = false;
+		for (const h of this.holes) if (h.boarded) {
+			const dx = h.x - x, dy = h.y - y, d = dx * dx + dy * dy;
+			if (d < bd) { bd = d; bx = h.x; by = h.y; found = true; }
+		}
+		for (const t of this.traps) if (t.live !== false) {
+			const dx = t.x - x, dy = t.y - y, d = dx * dx + dy * dy;
+			if (d < bd) { bd = d; bx = t.x; by = t.y; found = true; }
+		}
+		return found ? { x: bx, y: by } : null;
+	}
+	personalityTarget(r, i, a, o) {
+		const px = this.player.x, py = this.player.y;
+		switch (r.type) {
+			case `sprinter`:
+				return [px + this.moveVX * 24, py + this.moveVY * 24, .65];
+			case `crawler`: {
+				const d = o || 1, s = r.flank || 1;
+				return [px + (-a / d) * s * 130, py + (i / d) * s * 130, .65];
+			}
+			case `miner_brute`: {
+				const ob = this.nearestObjective(r.x, r.y);
+				return ob ? [ob.x, ob.y, .8] : [px, py, 0];
+			}
+			case `bomber`: {
+				const ob = this.nearestObjective(r.x, r.y);
+				let tx = px, ty = py;
+				const pd = i * i + a * a;
+				if (ob) { const dx = ob.x - r.x, dy = ob.y - r.y; if (dx * dx + dy * dy < pd) { tx = ob.x; ty = ob.y; } }
+				return [tx, ty, .8];
+			}
+			case `bloater_spitter`: {
+				if (o > 380) return [px, py, .7];
+				if (o < 240) { const d = o || 1; return [r.x - (i / d) * 220, r.y - (a / d) * 220, .7]; }
+				return [px, py, 0];
+			}
+			case `riot`: {
+				const q = this.queryZombies(r.x, r.y, 500, []);
+				let ax = 0, ay = 0, ad = 1e12;
+				for (const k of q) {
+					const z = this.zombies[k];
+					if (!z || z === r) continue;
+					const dx = z.x - r.x, dy = z.y - r.y, d = dx * dx + dy * dy;
+					if (d < ad) { ad = d; ax = z.x; ay = z.y; }
+				}
+				return ad < 1e12 ? [(px + ax) / 2, (py + ay) / 2, .5] : [px, py, 0];
+			}
+			default:
+				return [px, py, 0];
+		}
+	}
+	// Group 1: spatial hash broadphase for zombie queries
+	rebuildZombieHash() {
+		const h = this.zhash, c = this.zhashCell;
+		h.clear();
+		let maxR = 20;
+		for (let k = 0; k < this.zombies.length; k++) {
+			const z = this.zombies[k];
+			if (z.radius > maxR) maxR = z.radius;
+			const key = Math.floor(z.x / c) * 4096 + Math.floor(z.y / c);
+			let cell = h.get(key);
+			if (!cell) h.set(key, cell = []);
+			cell.push(k);
+		}
+		this.zhashMaxR = maxR;
+	}
+	queryZombies(x, y, radius, out) {
+		out.length = 0;
+		const c = this.zhashCell;
+		const x0 = Math.floor((x - radius) / c), x1 = Math.floor((x + radius) / c);
+		const y0 = Math.floor((y - radius) / c), y1 = Math.floor((y + radius) / c);
+		for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) {
+			const cell = this.zhash.get(cx * 4096 + cy);
+			if (cell) for (let j = 0; j < cell.length; j++) out.push(cell[j]);
+		}
+		return out;
+	}
+	// Group 1: dynamic point lights
+	addLight(x, y, radius, intensity, ttl) {
+		if (this.dynLights.length >= 24) this.dynLights.shift();
+		this.dynLights.push({ x, y, radius, intensity, ttl });
+	}
+	updateDynLights(e) {
+		for (let i = this.dynLights.length - 1; i >= 0; i--) {
+			const l = this.dynLights[i];
+			l.ttl -= e;
+			if (l.ttl <= 0) this.dynLights.splice(i, 1);
+		}
+	}
+	// Group 1: object pools
+	allocParticle() {
+		const p = this.particlePool.pop();
+		if (p) { p.x = 0; p.y = 0; p.vx = 0; p.vy = 0; p.size = 0; p.color = ``; p.alpha = 0; p.life = 0; p.maxLife = 1; p.type = ``; return p; }
+		return {};
+	}
+	allocBullet() {
+		const b = this.bulletPool.pop();
+		if (b) { b.x = 0; b.y = 0; b.vx = 0; b.vy = 0; b.radius = 0; b.damage = 0; b.pierce = 0; b.rangeRemaining = 0; b.color = ``; b.id = ``; b.weaponType = ``; b.isMolotov = false; b.isFlare = false; b.isSplinter = false; b.isCrossbowBolt = false; return b; }
+		return {};
+	}
+	freeBulletAt(t) {
+		const b = this.bullets[t];
+		this.bullets.splice(t, 1);
+		if (b) this.bulletPool.push(b);
+	}
 	spawnFloater(e, t, n, r) {
-		this.floaters.push({
-			x: e,
-			y: t,
-			text: n,
-			color: r,
-			life: .7,
-			maxLife: .7,
-			vy: -28
-		}), this.floaters.length > 40 && this.floaters.shift();
+		const f = this.floaterPool.pop() || {};
+		f.x = e; f.y = t; f.text = n; f.color = r; f.life = .7; f.maxLife = .7; f.vy = -28;
+		this.floaters.push(f), this.floaters.length > 40 && this.floaterPool.push(this.floaters.shift());
 	}
 	boon(id: string) {
 		return this.boonStacks[id] || 0;
@@ -3050,7 +3209,9 @@ export class GameEngine {
 			this.grit[(Math.random() * this.grit.length) | 0].value += value;  // merge, don't spawn
 			return;
 		}
-		this.grit.push({ x, y, vx, vy, value, lucky });
+		const g0 = this.gritPool.pop() || {};
+		g0.x = x; g0.y = y; g0.vx = vx; g0.vy = vy; g0.value = value; g0.lucky = lucky;
+		this.grit.push(g0);
 	}
 	spawnGrit(z) {
 		let value = this.gritValue(z.type);
@@ -3120,7 +3281,7 @@ export class GameEngine {
 			if (d < this.player.radius + 18) {
 				this.addXp(g.value);
 				soundEngine.playGrit();
-				this.grit.splice(i, 1);
+				this.gritPool.push(g), this.grit.splice(i, 1);
 				continue;
 			}
 			if (d < magnet) {
@@ -3342,7 +3503,13 @@ export class GameEngine {
 			const xy = this.worldToScreen(fl.x, fl.y);
 			m.push({ x: xy.x, y: xy.y, radius: 210 * zoom, intensity: .9 });
 		}
-		this.lighting.renderLighting(e, t, n, f, this.muzzleFlashTimer, this.currentLocation.ambientLight, p, m);
+		for (const dl of this.dynLights) {
+			const xy = this.worldToScreen(dl.x, dl.y);
+			if (xy.x < -dl.radius || xy.y < -dl.radius || xy.x > t + dl.radius || xy.y > n + dl.radius) continue;
+			m.push({ x: xy.x, y: xy.y, radius: dl.radius * zoom, intensity: dl.intensity });
+		}
+		const bloodMoon = this.activeEvents.some((a) => a.id === `blood_moon`);
+		this.lighting.renderLighting(e, t, n, f, this.muzzleFlashTimer, this.currentLocation.ambientLight, p, m, bloodMoon);
 		if (this.bloodRush > 0 || this.invuln > 1.2 && this.lastStandUsed) {
 			e.save();
 			e.fillStyle = this.bloodRush > 0 ? "rgba(140, 18, 24, 0.12)" : "rgba(194, 59, 34, 0.14)";

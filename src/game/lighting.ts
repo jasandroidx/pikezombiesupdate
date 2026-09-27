@@ -9,7 +9,7 @@ interface LightSource {
 }
 
 export class DynamicLighting {
-  private darknessCanvas: HTMLCanvasElement;
+  public darknessCanvas: HTMLCanvasElement;
   private darknessCtx: CanvasRenderingContext2D;
   private fogSprite: HTMLCanvasElement;
   private fogParticles: { x: number; y: number; vx: number; vy: number; radius: number; alpha: number }[] = [];
@@ -77,7 +77,8 @@ export class DynamicLighting {
     dCtx.arc(player.x, player.y, 210, 0, Math.PI * 2);
     dCtx.fill();
 
-    // 2. High-Beam Flashlight Cone
+    // 2. High-Beam Flashlight Cone (subtle flicker for texture)
+    const nowMs = Date.now();
     const fRange = player.flashlightRange;
     const fAngle = player.flashlightAngle;
     const fSpread = 0.55; // cone angle span in radians
@@ -87,9 +88,10 @@ export class DynamicLighting {
     dCtx.rotate(fAngle);
 
     const coneGrad = dCtx.createRadialGradient(0, 0, 20, 0, 0, fRange);
-    coneGrad.addColorStop(0, 'rgba(0, 0, 0, 1.0)');
-    coneGrad.addColorStop(0.65, 'rgba(0, 0, 0, 0.85)');
-    coneGrad.addColorStop(0.9, 'rgba(0, 0, 0, 0.45)');
+    const coneFlick = 1 + Math.sin(nowMs * 0.021) * 0.035 + Math.sin(nowMs * 0.0073) * 0.02;
+    coneGrad.addColorStop(0, `rgba(0, 0, 0, ${Math.min(1, coneFlick).toFixed(3)})`);
+    coneGrad.addColorStop(0.65, `rgba(0, 0, 0, ${(0.85 * coneFlick).toFixed(3)})`);
+    coneGrad.addColorStop(0.9, `rgba(0, 0, 0, ${(0.45 * coneFlick).toFixed(3)})`);
     coneGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
     dCtx.fillStyle = coneGrad;
