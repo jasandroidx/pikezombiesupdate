@@ -121,7 +121,7 @@ const bh = await page.evaluate(() => {
 ok("behemoth starts in fight phase", bh.p0 === "fight", JSON.stringify(bh.p0));
 ok("behemoth enters charge windup", bh.pCharge === "charge", JSON.stringify({ pCharge: bh.pCharge }));
 ok("charge windup pushes a telegraph", bh.tgCharge >= 1, JSON.stringify({ tg: bh.tgCharge }));
-ok("summon spawns exactly 4 crawlers", bh.z1 === bh.z0 + 4 && bh.kinds.every((t) => t === "crawler"), JSON.stringify({ z0: bh.z0, z1: bh.z1, kinds: bh.kinds }));
+ok("summon spawns exactly 4 adds incl. Old Ben's brood", bh.z1 === bh.z0 + 4 && bh.kinds.length === 4 && bh.kinds.filter((t) => t === "crawler").length === 2 && bh.kinds.includes("splinter") && bh.kinds.includes("mound"), JSON.stringify({ z0: bh.z0, z1: bh.z1, kinds: bh.kinds }));
 ok("summon fires once (no more on later steps)", bh.z2 === bh.z1, JSON.stringify({ z1: bh.z1, z2: bh.z2 }));
 ok("behemoth enrages below 30% HP", bh.pEnrage === "enrage" && bh.info && bh.info.enraged === true, JSON.stringify({ pEnrage: bh.pEnrage, info: bh.info }));
 

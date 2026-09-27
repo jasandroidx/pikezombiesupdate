@@ -42,7 +42,7 @@ export interface Weapon {
   tags?: string[];
 }
 
-export type ZombieType = "shambler" | "sprinter" | "miner_brute" | "bloater_spitter" | "behemoth" | "crawler" | "riot_shield" | "tipple_brute" | "wompus_stalker" | "illusionist"; // Batch 5: riot_shield (Lane A) + future boss ids (Lane C); Batch 10 (Lane 1): illusionist; additive, no runtime impact
+export type ZombieType = "shambler" | "sprinter" | "miner_brute" | "bloater_spitter" | "behemoth" | "crawler" | "riot_shield" | "tipple_brute" | "wompus_stalker" | "illusionist" | "old_ben" | "splinter" | "mound"; // Batch 5: riot_shield (Lane A) + future boss ids (Lane C); Batch 10 (Lane 1): illusionist; Batch 13 (Lane 1): old_ben boss + splinter/mound boss-fight adds; additive, no runtime impact
 export type ZombieAI = "wander" | "investigate" | "chase" | "attack";
 
 export interface Zombie {

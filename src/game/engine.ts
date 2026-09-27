@@ -22,7 +22,7 @@ import {
   NoisePulse,
 } from "../types/game";
 import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG, supportApplies, tracerPierceBonus, tracerSpeedMul, saltCircleDefenseMul, saltCircleApplies, cornLiquorFireRateMul, cornLiquorMoveMul, brineExplosionMul, brinePatch, copperheadMaxStacks, copperheadPoisonDps, copperheadDurationSec, copperheadApplies, whetstoneBashMul, whetstoneChainsawMul, whetstoneApplies, sifterRadiusMul, sifterValueMul, b12BoonSummary } from "./boons";
-import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVES, windowAt, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS, ILLUSIONIST, MORTAR_TUNING, SIGNATURE_TUNING, SLOT_MACHINE_NAME, SLOT_SPIN_BASE, SLOT_SPIN_STEP, rollSlotSymbol, classifySlotWin, slotPairSymbol, SHOWER_COUNT_MIN, SHOWER_COUNT_MAX, SHOWER_DURATION_SEC, SHOWER_MID_WAVE_SEC, HUNT_PACK_MIN, HUNT_PACK_MAX, HUNT_BONUS_GRIT_ORBS, BURN_STACK_DPS, BURN_MAX_STACKS, BURN_REFRESH_MS } from "./constants";
+import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVES, windowAt, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS, ILLUSIONIST, MORTAR_TUNING, SIGNATURE_TUNING, SLOT_MACHINE_NAME, SLOT_SPIN_BASE, SLOT_SPIN_STEP, rollSlotSymbol, classifySlotWin, slotPairSymbol, SHOWER_COUNT_MIN, SHOWER_COUNT_MAX, SHOWER_DURATION_SEC, SHOWER_MID_WAVE_SEC, HUNT_PACK_MIN, HUNT_PACK_MAX, HUNT_BONUS_GRIT_ORBS, BURN_STACK_DPS, BURN_MAX_STACKS, BURN_REFRESH_MS, OLD_BEN_TUNING } from "./constants";
 import { loadMeta, saveMeta, recordRun, topRuns, characterDef, stageDef, selectedCharacterId, selectedStageId } from "./meta";
 import * as metaNS from "./meta";
 import { soundEngine } from "../audio/soundEngine";
@@ -354,6 +354,9 @@ export class GameEngine {
 	runXpMul = 1;
 	// Batch 7 (Lane 1): Behemoth phase config — local; the BOSSES table in constants.ts is untouched.
 	behemothPhases = { chargeEvery: 7, chargeWindup: 0.8, chargeLaneR: 90, chargeDashSpeed: 520, summonAt: 0.6, enrageAt: 0.3, enrageSpeedMul: 1.35, enrageDmgMul: 1.25 };
+	// Batch 13 (Lane 1): Old Ben (boss #2) attack tuning — data lives in
+	// OLD_BEN_TUNING (constants.ts); the field lets probes read/tweak it.
+	oldBenCfg = OLD_BEN_TUNING;
 	// Batch 4: nova burst, homing missiles, vacuum drops, time-curve director.
 	novaCd = 0;
 	novaFlash = 0;
@@ -815,6 +818,41 @@ export class GameEngine {
 			behemothPhase: () => { const z = this.zombies.find((z) => z.type === `behemoth`); return z ? (z.bossPhase || `fight`) : `none`; },
 			behemothInfo: () => { const z = this.zombies.find((z) => z.type === `behemoth`); return z ? { phase: z.bossPhase || `fight`, enraged: !!z.enraged, speed: +z.speed.toFixed(2), summoned: !!z.summoned } : null; },
 			bossCharge: () => { const z = this.zombies.find((z) => z.type === `behemoth`); if (z) { z.chargeCd = 0; z.chargeWindupT = 0; } return !!z; },
+			// Batch 13 (Lane 1) probes: Old Ben (boss #2), boss-fight adds, mound shield.
+			boss2Info: () => {
+				const z = this.zombies.find((z) => z.type === `old_ben`);
+				return z ? {
+					x: Math.round(z.x), y: Math.round(z.y),
+					hp: Math.round(z.health), maxHp: z.maxHealth,
+					frac: +(z.health / Math.max(1, z.maxHealth)).toFixed(3),
+					fury: !!z.fury, phase: z.bossPhase || `fight`, atk: z.benAtk || null,
+					cds: { slam: +(z.slamCd || 0).toFixed(2), call: +(z.callCd || 0).toFixed(2), charge: +(z.chargeCd || 0).toFixed(2) },
+				} : null;
+			},
+			forceOldBen: () => {
+				const z = this.pushZombie(`old_ben`, this.player.x + 300, this.player.y);
+				z.slamCd = 9999; z.callCd = 9999; z.chargeCd = 9999; // attacks only fire when forced
+				return this.zombies.indexOf(z);
+			},
+			oldBenAttack: (name) => { const z = this.zombies.find((z) => z.type === `old_ben`); if (z && !z.benAtk) z.forceAtk = name; return !!z; },
+			oldBenSched: (wave) => {
+				const w0 = this.wave; this.wave = wave; this.zombiesToSpawn = 1;
+				this.spawnRandomZombie(); this.wave = w0;
+				const z = this.zombies[this.zombies.length - 1];
+				return z ? z.type : null;
+			},
+			setPlayerPos: (x, y) => { this.player.x = x; this.player.y = y; return { x: this.player.x, y: this.player.y }; },
+			playerHp: () => Math.round(this.player.health),
+			clearInvuln: () => { this.invuln = 0; return true; },
+			codexHas: (id) => !!this.codexSeen?.has(id),
+			mapSize: () => ({ w: this.currentLocation.mapWidth, h: this.currentLocation.mapHeight }),
+			hitZombie: (i, dmg) => {
+				const z = this.zombies[i]; if (!z) return null;
+				const dealt = this.applyAffixDefense(z, dmg); z.health -= dealt;
+				return { dealt: +dealt.toFixed(2), hp: Math.round(z.health) };
+			},
+			shockCount: () => this.shockwaves.length,
+			gritOrbs: () => this.grit.length,
 			hurtZombie: (i, n) => { const z = this.zombies[i]; if (z) z.health -= n; return z ? Math.round(z.health) : -1; },
 			haintClones: () => this.zombies.filter((z) => z.isClone).length,
 			cloneInfo: () => { const z = this.zombies.find((z) => z.isClone); return z ? { type: z.type, hp: Math.round(z.health), dmg: z.damage } : null; },
@@ -2325,7 +2363,7 @@ export class GameEngine {
 			// Batch 12 (Lane 1): whetstone — chainsaw support via the heavy tag.
 			if (weaponType === `chainsaw` && whetstoneApplies(this.boonStacks, weaponType)) m *= whetstoneChainsawMul(this.boon(`whetstone`));
 		}
-			if (z.type === `behemoth` || z.type === `miner_brute` || z.elite) {
+			if (z.type === `behemoth` || z.type === `old_ben` || z.type === `miner_brute` || z.elite) {
 				let attuned = 0;
 				for (const s of this.shrines) s.attuned && attuned++;
 				m *= 1 + SHRINE_BOSS_DMG_PER * attuned;
@@ -3308,7 +3346,7 @@ export class GameEngine {
 							soundEngine.playZombieHit(true);
 						}
 						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4 * (this.runHeadshotMul || 1), this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r, n.weaponType), i = this.applyAffixDefense(r, i), r.health -= i, this.stats.damageDealt += i, this.applyCopperhead(r, n.weaponType);
-						if (!n.isSplinter && r.health > 0 && r.health <= r.maxHealth * .2 && r.type !== `behemoth` && r.type !== `miner_brute`) r.health = 0;
+						if (!n.isSplinter && r.health > 0 && r.health <= r.maxHealth * .2 && r.type !== `behemoth` && r.type !== `old_ben` && r.type !== `miner_brute`) r.health = 0;
 						if (e) this.tickBounty(`head`);
 						if (r.health <= 0 && !n.isSplinter) r.shatter = true;
 						if (this.evolved === `lincoln` && n.weaponType === `revolver` && e) this.player.health = Math.min(this.player.maxHealth, this.player.health + 4);
@@ -3720,7 +3758,7 @@ export class GameEngine {
 			const dx = z.x - this.player.x, dy = z.y - this.player.y;
 			const d = Math.hypot(dx, dy) || 1;
 			if (d > BOMB_RADIUS + z.radius) continue;
-			const mass = z.type === `behemoth` ? 4.2 : z.type === `miner_brute` ? 2.6 : z.type === `bloater_spitter` ? 1.8 : z.type === `crawler` ? 0.7 : 1;
+			const mass = z.type === `behemoth` ? 4.2 : z.type === `old_ben` ? 4.0 : z.type === `miner_brute` ? 2.6 : z.type === `bloater_spitter` ? 1.8 : z.type === `crawler` ? 0.7 : 1;
 			const imp = 20 / mass;
 			z.vx += (dx / d) * imp;
 			z.vy += (dy / d) * imp;
@@ -3902,6 +3940,9 @@ export class GameEngine {
 		if (this.wave === 1) a = o < .28 ? `sprinter` : `shambler`;
 		else if (i) a = i.kind === `pit` && o < .45 ? `miner_brute` : `crawler`;
 		else if (this.wave >= 5 && this.wave % 5 == 0 && this.zombiesToSpawn === 1) a = `behemoth`;
+		// Batch 13 (Lane 1): Old Ben (boss #2) — waves 13/18/23/...; never
+		// collides with the Behemoth's wave-%5==0 cadence.
+		else if (this.wave >= 13 && this.wave % 5 == 3 && this.zombiesToSpawn === 1) a = `old_ben`;
 		else if (this.lanternWentOut && o < .18) a = `crawler`;
 		else if (this.wave >= 4 && o < .2) a = `bloater_spitter`;
 		else if (this.wave >= 3 && o < .3) a = `bomber`;
@@ -3916,17 +3957,24 @@ export class GameEngine {
 		// Batch 5: Behemoth stats come from the BOSSES table (constants.ts); the
 		// engine still adds +wave*250 HP and keeps the legacy wave-5 spawn rule.
 		const beh = e === `behemoth` ? bossFor(`behemoth`)?.bossOverrides : null;
-		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `bomber` ? (r = 45, i = 2.7, a = 12, o = 15, s = `#b45309`, l = 120, u = 18) : e === `riot` ? (r = 520, i = 0.85, a = 30, o = 24, s = `#3f3f46`, c = true, l = 300, u = 60) : e === `riot_shield` ? (r = 420, i = 0.95, a = 26, o = 23, s = `#52525b`, c = false, l = 350, u = 70) : e === `behemoth` && beh && (r = beh.health + this.wave * 250, i = beh.speed, a = beh.damage, o = beh.radius, s = beh.color, l = beh.scoreValue, u = beh.scrapValue);
+		// Batch 13 (Lane 1): Old Ben stats come from the same BOSSES table;
+		// the engine adds +wave*250 HP and keeps the wave-%5==3 spawn rule.
+		const ob = e === `old_ben` ? bossFor(`old_ben`)?.bossOverrides : null;
+		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `bomber` ? (r = 45, i = 2.7, a = 12, o = 15, s = `#b45309`, l = 120, u = 18) : e === `riot` ? (r = 520, i = 0.85, a = 30, o = 24, s = `#3f3f46`, c = true, l = 300, u = 60) : e === `riot_shield` ? (r = 420, i = 0.95, a = 26, o = 23, s = `#52525b`, c = false, l = 350, u = 70) : e === `behemoth` && beh ? (r = beh.health + this.wave * 250, i = beh.speed, a = beh.damage, o = beh.radius, s = beh.color, l = beh.scoreValue, u = beh.scrapValue) : e === `old_ben` && ob ? (r = ob.health + this.wave * 250, i = ob.speed, a = ob.damage, o = ob.radius, s = ob.color, l = ob.scoreValue, u = ob.scrapValue) : 0;
 		// Batch 7: Haint illusionist — pale drifter that multiplies itself.
 		if (e === `haint`) { r = 90; i = 2.6; a = 12; o = 16; s = `#7c8db0`; l = 120; u = 22; }
 		// Batch 10 (Lane 1): Illusionist — trickster archetype; base stats from the ILLUSIONIST data table.
 		if (e === `illusionist`) { r = ILLUSIONIST.hp; i = ILLUSIONIST.speed; a = ILLUSIONIST.damage; o = ILLUSIONIST.radius; s = ILLUSIONIST.color; l = ILLUSIONIST.scoreValue; u = ILLUSIONIST.scrapValue; }
+		// Batch 13 (Lane 1): boss-fight adds — summoned by the Briar Call,
+		// never by the wave director (no pool references these types).
+		if (e === `splinter`) { r = 40; i = 3.6; a = 10; o = 14; s = `#8a7a3a`; l = 60; u = 12; }
+		if (e === `mound`) { r = 700; i = 0.7; a = 28; o = 28; s = `#5b4a2f`; l = 200; u = 45; }
 		const em = this.eventMods();
 		// Batch 6: smooth time-based HP scaling replaces the old per-wave HP step.
 		// scalingAt(simTime) in constants.ts: hp = 1+gt/120. The speed/damage
 		// columns stay available for future tuning passes (not wired yet).
 		const sc = scalingAt(this.simTime);
-		if (e !== `behemoth`) r = Math.round(r * sc.hp);
+		if (e !== `behemoth` && e !== `old_ben`) r = Math.round(r * sc.hp);
 		let d = {
 			id: Math.random().toString(),
 			type: e,
@@ -3965,7 +4013,7 @@ export class GameEngine {
 			chewEvalT: 0, chewAtkT: 0, chewKind: ``, chewX: 0, chewY: 0,
 			chewAggroT: -99, driftEvalT: 0, driftKind: ``, driftX: 0, driftY: 0
 		};
-		if (this.wave >= 2 && e !== `behemoth` && Math.random() < Math.min(.25, .08 + this.wave * .015)) {
+		if (this.wave >= 2 && e !== `behemoth` && e !== `old_ben` && e !== `splinter` && e !== `mound` && Math.random() < Math.min(.25, .08 + this.wave * .015)) {
 			d.elite = true;
 			d.maxHealth = Math.round(d.maxHealth * 2.2);
 			d.health = d.maxHealth;
@@ -3979,6 +4027,8 @@ export class GameEngine {
 		this.zombies.push(d), soundEngine.playZombieGroan(e === `crawler` ? `shambler` : e === `bomber` ? `bloater_spitter` : e === `riot` || e === `riot_shield` ? `miner_brute` : e);
 		// Batch 2: boss entrance — Behemoth gets a banner and a warning motif.
 		if (e === `behemoth`) this.bossEntrance(d);
+		// Batch 13 (Lane 1): Old Ben gets its own entrance ceremony.
+		if (e === `old_ben`) this.oldBenEntrance(d);
 		return d;
 	}
 	// Batch 3: flanking director — peels a fraction of the horde wide to punish turtling.
@@ -4086,6 +4136,8 @@ export class GameEngine {
 			let i = this.player.x - r.x, a = this.player.y - r.y, o = Math.hypot(i, a);
 			// Batch 7 (Lane 1): boss phases + haint illusionist tick.
 			r.type === `behemoth` && this.tickBehemoth(r, o, e);
+			// Batch 13 (Lane 1): Old Ben (boss #2) attack tick.
+			r.type === `old_ben` && this.tickOldBen(r, o, e);
 			r.type === `haint` && this.tickHaint(r, e);
 			r.type === `illusionist` && this.tickIllusionist(r, e);
 			// Batch 6 (Lane A): bomber fuse runs before state logic — a lit bomber can't re-chase.
@@ -4164,7 +4216,7 @@ export class GameEngine {
 			}
 			r.type === `bloater_spitter` && this.tickSpitter(r, i, a, o, e);
 			let u = r.speed;
-			r.type === `behemoth` && r.health < r.maxHealth * .4 && (u *= 1.4), r.type === `behemoth` && r.enraged && (u *= this.behemothPhases.enrageSpeedMul), r.bossPhase === `charge` && (r.chargeWindupT > 0) && (u = 0), r.ai === `wander` && (u *= .35), r.ai === `idle` && (u *= .15), r.ai === `investigate` && (u *= .7), r.ai === `spotted` && (u = 0), r.type === `bloater_spitter` && (r.ai === `chase` || r.ai === `attack`) && o <= 420 && o >= 260 && (u *= .5), (r.frenzyUntil || 0) > this.simTime && (u *= 1.35);
+			r.type === `behemoth` && r.health < r.maxHealth * .4 && (u *= 1.4), r.type === `behemoth` && r.enraged && (u *= this.behemothPhases.enrageSpeedMul), r.bossPhase === `charge` && (r.chargeWindupT > 0) && (u = 0), r.type === `old_ben` && ((r.benWindupT || 0) > 0 || r.benDashing) && (u = 0), r.ai === `wander` && (u *= .35), r.ai === `idle` && (u *= .15), r.ai === `investigate` && (u *= .7), r.ai === `spotted` && (u = 0), r.type === `bloater_spitter` && (r.ai === `chase` || r.ai === `attack`) && o <= 420 && o >= 260 && (u *= .5), (r.frenzyUntil || 0) > this.simTime && (u *= 1.35);
 			// Batch 8: arrive steering — damps approach speed within ~60u of the
 			// target so the horde eases in instead of pile-driving at full speed.
 			const stopD = r.radius + this.player.radius;
@@ -4193,7 +4245,7 @@ export class GameEngine {
 					dx = dx * (1 - pb) + (vx / vl) * pb;
 					dy = dy * (1 - pb) + (vy / vl) * pb;
 				}
-				if (o < 240 && o > 8 && r.type !== `behemoth` && r.type !== `miner_brute`) {
+				if (o < 240 && o > 8 && r.type !== `behemoth` && r.type !== `old_ben` && r.type !== `miner_brute`) {
 					const slot = ((r.id.charCodeAt(0) || 1) % 5) - 2;
 					const px = -a / o, py = i / o;
 					dx += px * slot * 0.2;
@@ -4450,6 +4502,9 @@ export class GameEngine {
 			soundEngine.playPowerup();
 		}
 		this.spawnGrit(e);
+		// Batch 13 (Lane 1): Old Ben death — grit shower, guaranteed boon
+		// draft, boss codex entry, WJPS callout.
+		if (e.type === `old_ben`) this.oldBenDeath(e);
 		// Batch 4: elites sometimes cough up a Dust Devil.
 		if (e.elite && Math.random() < .3) this.dropVacuumAt(e.x, e.y);
 		if (e.type === `bomber`) {
@@ -4783,7 +4838,7 @@ export class GameEngine {
 	}
 	feelKill(z) {
 		if (!this.hitFeel) return;
-		const big = z.elite || z.type === `behemoth` || z.type === `miner_brute`;
+		const big = z.elite || z.type === `behemoth` || z.type === `old_ben` || z.type === `miner_brute`;
 		this.spendHitstop(big ? .09 : .035);
 		if (big) {
 			// Slow-motion aftertaste.
@@ -4840,7 +4895,7 @@ export class GameEngine {
 	setHitFeel(on) { this.hitFeel = !!on; }
 	// Batch 2: mass-based knockback — sprinters fly, behemoths barely budge.
 	zombieMass(type) {
-		return type === `behemoth` ? 4.2 : type === `miner_brute` ? 2.6 : type === `riot_shield` ? 2.8 : type === `bloater_spitter` ? 1.8 : type === `crawler` ? 0.7 : 1;
+		return type === `behemoth` ? 4.2 : type === `old_ben` ? 4.0 : type === `mound` ? 3.0 : type === `miner_brute` ? 2.6 : type === `riot_shield` ? 2.8 : type === `bloater_spitter` ? 1.8 : type === `crawler` ? 0.7 : type === `splinter` ? 0.6 : 1;
 	}
 	knockbackFor(weaponType, zombieType) {
 		const force = weaponType === `shotgun` ? 7 : 3;
@@ -5154,7 +5209,10 @@ export class GameEngine {
 			r.bossPhase = `summon`;
 			for (let k = 0; k < 4; k++) {
 				const a = (k / 4) * Math.PI * 2 + Math.random() * .6;
-				const c = this.pushZombie(`crawler`, r.x + Math.cos(a) * (r.radius + 40), r.y + Math.sin(a) * (r.radius + 40));
+				// Batch 13 (Lane 1): the Behemoth's call stirs up Old Ben's
+				// brood too — splinters and a mound alongside the crawlers.
+				const type = k === 1 ? `splinter` : k === 3 ? `mound` : `crawler`;
+				const c = this.pushZombie(type, r.x + Math.cos(a) * (r.radius + 40), r.y + Math.sin(a) * (r.radius + 40));
 				c.ai = `chase`;
 			}
 			this.spawnFloater(r.x, r.y - r.radius - 24, `THE GROUND STIRS`, `#a78bfa`);
@@ -5195,7 +5253,222 @@ export class GameEngine {
 		}
 		r.bossPhase = `fight`;
 	}
-	// Batch 7: Haint illusionist — every cloneCooldown seconds, if the player is near,
+	// Batch 13 (Lane 1): Boss #2 — Old Ben. Three telegraphed attack patterns
+	// (Tremor Slam / Briar Call / Bull Charge) plus a fury escalation below
+	// 50% HP (shorter cooldowns, Tremor Slam gains a staggered second ring) —
+	// the same phase pattern the Behemoth uses via bossPhase.
+	tickOldBen(r, o, dt) {
+		const cfg = this.oldBenCfg;
+		if (!r.benInit) {
+			r.benInit = true; r.bossPhase = `fight`; r.benAtk = null;
+			r.slamCd = 3; r.callCd = 5; r.chargeCd = 4;
+			r.fury = false;
+		}
+		const frac = r.maxHealth > 0 ? r.health / r.maxHealth : 1;
+		if (!r.fury && frac < cfg.furyAt) {
+			r.fury = true;
+			this.spawnFloater(r.x, r.y - r.radius - 24, `OLD BEN IS FURIOUS`, `#ef4444`);
+			soundEngine.tone({ f: 120, f2: 55, type: `sawtooth`, dur: .6, vol: .3 });
+		}
+		// Mid-attack state machines.
+		if (r.benAtk === `slam`) { this.tickBenSlam(r, dt); return; }
+		if (r.benAtk === `call`) { this.tickBenCall(r, dt); return; }
+		if (r.benAtk === `charge`) { this.tickBenCharge(r, dt); return; }
+		r.bossPhase = `fight`;
+		// Staggered second slam ring (fury escalation) ticks between attacks.
+		if ((r.slamRing2T || 0) > 0) {
+			r.slamRing2T -= dt;
+			if (r.slamRing2T <= 0) this.benSlamStrike(r, cfg.slamR2, true);
+		}
+		r.slamCd -= dt; r.callCd -= dt; r.chargeCd -= dt;
+		// Probe-forced attack (oldBenAttack) takes priority over the cadence.
+		const forced = r.forceAtk; r.forceAtk = null;
+		if (forced === `slam` || forced === `call` || forced === `charge`) { this.benStart(forced, r); return; }
+		if (r.slamCd <= 0 && o < 700) { this.benStart(`slam`, r); return; }
+		if (r.callCd <= 0) { this.benStart(`call`, r); return; }
+		if (r.chargeCd <= 0 && o > 150 && o < 900) { this.benStart(`charge`, r); return; }
+	}
+	benStart(atk, r) {
+		const cfg = this.oldBenCfg;
+		const cdMul = r.fury ? cfg.furyCdMul : 1;
+		r.benAtk = atk;
+		if (atk === `slam`) {
+			// Tremor Slam: leaps to the player's current spot and slams — a
+			// growing red ring marks the blast zone (renderer `ranged` kind).
+			r.benWindupT = cfg.slamWindup;
+			r.slamX = this.player.x; r.slamY = this.player.y;
+			r.bossPhase = `slam`;
+			this.pushTelegraph(`ranged`, r.slamX, r.slamY, cfg.slamR, cfg.slamWindup);
+			this.spawnFloater(r.x, r.y - r.radius - 24, `TREMOR SLAM`, `#fbbf24`);
+			soundEngine.tone({ f: 70, f2: 40, type: `sine`, dur: .8, vol: .3 });
+			r.slamCd = cfg.slamCd * (0.8 + Math.random() * 0.4) * cdMul;
+		} else if (atk === `call`) {
+			// Briar Call: channel tell — red rings on the nearest cellar
+			// holes — then 4-6 boss-fight adds pour out of the ground.
+			r.benWindupT = cfg.callWindup;
+			r.bossPhase = `call`;
+			const open = this.holes.filter((h) => !h.boarded);
+			for (const h of open.slice(0, 3)) this.pushTelegraph(`ranged`, h.x, h.y, 90, cfg.callWindup);
+			this.spawnFloater(r.x, r.y - r.radius - 24, `THE BRIAR CALLS`, `#a3e635`);
+			soundEngine.tone({ f: 200, f2: 420, type: `triangle`, dur: .9, vol: .22 });
+			r.callCd = cfg.callCd * (0.8 + Math.random() * 0.4) * cdMul;
+		} else {
+			// Bull Charge: the renderer draws the `charge` telegraph as a
+			// direction lane from the boss toward the player — the charge path.
+			r.benWindupT = cfg.chargeWindup;
+			r.bossPhase = `charge`;
+			const a = Math.atan2(this.player.y - r.y, this.player.x - r.x);
+			r.chargeVx = Math.cos(a); r.chargeVy = Math.sin(a);
+			this.pushTelegraph(`charge`, r.x, r.y, cfg.chargeLaneR, cfg.chargeWindup);
+			this.spawnFloater(r.x, r.y - r.radius - 24, `!`, `#fbbf24`);
+			soundEngine.tone({ f: 150, f2: 600, type: `sawtooth`, dur: .5, vol: .2 });
+			r.chargeCd = cfg.chargeCd * (0.8 + Math.random() * 0.4) * cdMul;
+		}
+	}
+	tickBenSlam(r, dt) {
+		const cfg = this.oldBenCfg;
+		r.benWindupT -= dt;
+		r.bossPhase = `slam`;
+		if (r.benWindupT > 0) return;
+		// Strike: leap to the locked target, then slam.
+		r.x = r.slamX; r.y = r.slamY;
+		this.benSlamStrike(r, cfg.slamR, false);
+		if (r.fury) {
+			// Furious second ring: staggered strike + its own visible telegraph.
+			r.slamRing2T = 0.45;
+			this.pushTelegraph(`ranged`, r.slamX, r.slamY, cfg.slamR2, 0.45);
+		}
+		r.benAtk = null; r.bossPhase = `fight`;
+	}
+	benSlamStrike(r, radius, isSecond) {
+		const cfg = this.oldBenCfg;
+		const dmg = Math.round(cfg.slamDmg * (r.fury ? 1.2 : 1));
+		if (Math.hypot(this.player.x - r.slamX, this.player.y - r.slamY) <= radius + this.player.radius) this.damagePlayer(dmg, r);
+		// Knock the horde out of the crater (never the boss itself).
+		for (const z of this.zombies) {
+			if (z === r || z.health <= 0) continue;
+			const zd = Math.hypot(z.x - r.slamX, z.y - r.slamY);
+			if (zd > radius + z.radius) continue;
+			const a = Math.atan2(z.y - r.slamY, z.x - r.slamX) || 0;
+			const kb = 160 * (1 - zd / (radius + z.radius + 1));
+			const nx = z.x + Math.cos(a) * kb, ny = z.y + Math.sin(a) * kb;
+			if (!this.checkObstacleCollision(nx, ny, z.radius)) { z.x = nx; z.y = ny; }
+		}
+		this.shockwaves.push({ x: r.slamX, y: r.slamY, r: 10, maxR: radius, life: .5, maxLife: .5, color: `#b45309` });
+		this.screenShake = Math.max(this.screenShake, 10 * this.tune('shake'));
+		this.trauma = Math.min(1, this.trauma + .35 * this.tune('shake') * this.motionScale());
+		soundEngine.tone({ f: 60, f2: 28, type: `sine`, dur: .5, vol: .5 });
+		if (isSecond) this.spawnFloater(r.slamX, r.slamY - 60, `SECOND RING`, `#ef4444`);
+	}
+	tickBenCall(r, dt) {
+		const cfg = this.oldBenCfg;
+		r.benWindupT -= dt;
+		r.bossPhase = `call`;
+		if (r.benWindupT > 0) return;
+		const open = this.holes.filter((h) => !h.boarded);
+		// Strictly 4-6 adds even when furious (no fury bonus to the count).
+		const n = cfg.callMin + Math.floor(Math.random() * (cfg.callMax - cfg.callMin + 1));
+		for (let k = 0; k < n; k++) {
+			const type = k % 3 === 2 ? `mound` : `splinter`;
+			const h = open.length ? open[(Math.random() * open.length) | 0] : null;
+			const a = Math.random() * Math.PI * 2, rr = h ? (h.radius || 30) + 8 : r.radius + 30;
+			const hx = (h ? h.x : r.x) + Math.cos(a) * rr, hy = (h ? h.y : r.y) + Math.sin(a) * rr;
+			const z = this.pushZombie(type, hx, hy);
+			z.ai = `chase`;
+		}
+		this.spawnFloater(r.x, r.y - r.radius - 24, `THE BRIAR RISES`, `#a3e635`);
+		soundEngine.tone({ f: 90, f2: 300, type: `sawtooth`, dur: .4, vol: .25 });
+		r.benAtk = null; r.bossPhase = `fight`;
+	}
+	tickBenCharge(r, dt) {
+		const cfg = this.oldBenCfg;
+		if ((r.chargeDashT || 0) > 0) {
+			// Dashing: straight line. Generic movement is frozen by benDashing.
+			const nx = r.x + r.chargeVx * cfg.chargeDashSpeed * dt;
+			const ny = r.y + r.chargeVy * cfg.chargeDashSpeed * dt;
+			const w = this.currentLocation.mapWidth, h = this.currentLocation.mapHeight;
+			const blocked = nx < r.radius || nx > w - r.radius || ny < r.radius || ny > h - r.radius
+				|| this.checkObstacleCollision(nx, ny, r.radius * .7);
+			if (blocked) {
+				r.chargeDashT = 0;
+				this.benWallImpact(r);
+			} else {
+				r.x = nx; r.y = ny;
+				r.chargeDashT -= dt;
+				this.benTrample(r);
+				// Dash ran its full course without hitting a wall: the endpoint
+				// still erupts in the impact shockwave (never a quiet fizzle).
+				if (r.chargeDashT <= 0) this.benWallImpact(r);
+			}
+			return;
+		}
+		r.benWindupT -= dt;
+		r.bossPhase = `charge`;
+		if (r.benWindupT > 0) return;
+		// Launch along the locked windup direction.
+		r.chargeDashT = cfg.chargeDashT;
+		r.benDashing = true; r.chargeHitPlayer = false;
+		r.trampled = new Set();
+		this.screenShake = Math.max(this.screenShake, 6 * this.tune('shake'));
+		soundEngine.tone({ f: 200, f2: 900, type: `sawtooth`, dur: .3, vol: .2 });
+	}
+	benTrample(r) {
+		// Trample the horde in the charge path; one player hit per charge.
+		for (const z of this.zombies) {
+			if (z === r || z.health <= 0 || r.trampled.has(z)) continue;
+			if (Math.hypot(z.x - r.x, z.y - r.y) > r.radius + z.radius + 24) continue;
+			r.trampled.add(z);
+			z.health -= 150;
+			const a = Math.atan2(z.y - r.y, z.x - r.x) || 0;
+			const nx = z.x + Math.cos(a) * 120, ny = z.y + Math.sin(a) * 120;
+			if (!this.checkObstacleCollision(nx, ny, z.radius)) { z.x = nx; z.y = ny; }
+			this.createBloodParticles(z.x, z.y, a);
+			if (z.health <= 0) this.killZombie(z, this.zombies.indexOf(z));
+		}
+		if (!r.chargeHitPlayer && Math.hypot(this.player.x - r.x, this.player.y - r.y) <= r.radius + this.player.radius + 10) {
+			r.chargeHitPlayer = true;
+			this.damagePlayer(45, r);
+		}
+	}
+	benWallImpact(r) {
+		// Bull Charge ended in a wall: shockwave around the impact point.
+		const cfg = this.oldBenCfg;
+		if (Math.hypot(this.player.x - r.x, this.player.y - r.y) <= cfg.wallShockR + this.player.radius) this.damagePlayer(cfg.wallShockDmg, r);
+		for (const z of this.zombies) {
+			if (z === r || z.health <= 0) continue;
+			const zd = Math.hypot(z.x - r.x, z.y - r.y);
+			if (zd > cfg.wallShockR) continue;
+			z.health -= 60;
+			if (z.health <= 0) this.killZombie(z, this.zombies.indexOf(z));
+		}
+		this.shockwaves.push({ x: r.x, y: r.y, r: 10, maxR: cfg.wallShockR, life: .55, maxLife: .55, color: `#b45309` });
+		this.screenShake = Math.max(this.screenShake, 12 * this.tune('shake'));
+		this.trauma = Math.min(1, this.trauma + .4 * this.tune('shake') * this.motionScale());
+		this.spawnFloater(r.x, r.y - r.radius - 24, `THE WALL REMEMBERS`, `#fbbf24`);
+		soundEngine.tone({ f: 55, f2: 25, type: `sine`, dur: .6, vol: .5 });
+		r.benDashing = false; r.benAtk = null; r.bossPhase = `fight`;
+	}
+	// Batch 13 (Lane 1): Old Ben death — big grit shower, guaranteed boon
+	// draft, boss codex entry, WJPS callout. Called from killZombie.
+	oldBenDeath(e) {
+		for (let i = 0; i < 24; i++) {
+			const an = Math.random() * Math.PI * 2;
+			this.dropGritOrb(e.x, e.y, Math.cos(an) * 160, Math.sin(an) * 160, 3 + (i % 3));
+		}
+		this.spawnFloater(e.x, e.y - 64, `OLD BEN FELLED`, `#ffd700`);
+		this.codexSeen?.add(`boss_old_ben`);
+		this.callbacks.onRadio?.(`WJPS`, `Old Ben's down! The briars are settling — somebody get a crew out to the company store and make sure he stays down.`);
+		if (!this.draft) this.offerDraft();
+	}
+	// Batch 13 (Lane 1): mound shield aura — the boss-fight tank add shields
+	// nearby non-boss adds (damage reduced by OLD_BEN_TUNING.moundShieldMul).
+	moundShielding(z) {
+		for (const m of this.zombies) {
+			if (m.type !== `mound` || m.health <= 0 || m === z) continue;
+			if (Math.hypot(m.x - z.x, m.y - z.y) <= this.oldBenCfg.moundShieldR) return true;
+		}
+		return false;
+	}
 	// up to cloneCount identical 1-HP clones that deal no damage (they eat auto-fire).
 	tickHaint(r, dt) {
 		if (r.isClone) return;
@@ -5619,7 +5892,21 @@ export class GameEngine {
 		// replaces the old descending sawtooth sequence — one alert, not two.
 		soundEngine.bossMotif();
 	}
+	oldBenEntrance(z) {
+		// Batch 13 (Lane 1): boss #2 entrance — banner copy from the BOSSES
+		// table; trauma/radio/motif stay engine-side like the Behemoth's.
+		const bdef = bossFor(`old_ben`)?.bossOverrides;
+		this.bannerText = bdef?.bannerText ?? `OLD BEN`;
+		this.bannerSub = bdef?.bannerSub ?? `Old Ben don't sleep no more`;
+		this.bannerUntil = Date.now() + 2600;
+		this.trauma = Math.min(1, this.trauma + .45 * this.tune('shake') * this.motionScale());
+		this.callbacks.onRadio?.(`WJPS`, `Folks... Old Ben just woke up out on the Trace. The briars are moving — keep to high ground or keep moving.`);
+		soundEngine.bossMotif();
+	}
 	applyAffixDefense(z, dmg) {
+		// Batch 13 (Lane 1): mound shield aura — boss-fight tank adds shield
+		// nearby non-boss adds. Old Ben and the Behemoth are never shielded.
+		if (z.type !== `old_ben` && z.type !== `behemoth` && z.type !== `mound` && this.moundShielding(z)) dmg *= this.oldBenCfg.moundShieldMul;
 		// Batch 5: riot_shield type shares the shield mechanic — shield pool absorbs,
 		// damage is reduced 60% while it holds, break is a visible/audio event.
 		if ((z.affix === `shielded` || z.type === `riot_shield`) && z.shieldHp > 0) {
@@ -6640,6 +6927,7 @@ export class GameEngine {
 		const m = this.mutators.includes(`rich`) ? 2 : 1;
 		const em = this.eventMods().gritMult;
 		if (type === `behemoth`) return 8 * m * em;
+		if (type === `old_ben`) return 10 * m * em;
 		if (type === `riot` || type === `riot_shield`) return 4 * m * em;
 		if (type === `miner_brute` || type === `bloater_spitter`) return 3 * m * em;
 		if (type === `sprinter` || type === `bomber`) return 2 * m * em;

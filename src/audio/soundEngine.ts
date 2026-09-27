@@ -26,6 +26,14 @@ export interface MotifSpec {
 export const BOSS_MOTIF: MotifSpec = { freqs: [480, 360, 240], noteMs: 120, wave: 'square', bus: 'beast' };
 // County Record quest unlock: rising triangle arpeggio A5 D6 G6, 90ms per note.
 export const QUEST_ARP_SPEC: MotifSpec = { freqs: [880, 1174.66, 1567.98], noteMs: 90, wave: 'triangle', bus: 'impact' };
+// Batch 13 (Lane 2): Old Ben's dread bell — three low sine strikes (G2->E2->A1,
+// 260ms each) on the beast bus. Deliberately contrasts the Behemoth's
+// bossMotif (480->360->240Hz descending square alert): low vs high, bell vs
+// siren, slow dread vs urgent alarm.
+export const OLD_BEN_BELL: MotifSpec = { freqs: [98, 82.41, 55], noteMs: 260, wave: 'sine', bus: 'beast' };
+// Batch 13 (Lane 2): Old Ben's minor-arp figure — A3->C4->E4->A4 (A minor,
+// 100ms per note, triangle) trailing the bell strikes.
+export const OLD_BEN_ARP: MotifSpec = { freqs: [220, 261.63, 329.63, 440], noteMs: 100, wave: 'triangle', bus: 'beast' };
 // Combo-pitched kill sound: base 300Hz + min(combo,20)*30 Hz. Non-finite or
 // negative combos are treated as 0.
 export function killPitchHz(combo: number): number {
@@ -217,6 +225,8 @@ class SoundEngine {
       // Batch 9: motif/surge probes — motif trigger + last-played descriptor,
       // kill sound entry point, engine-driven surge setter.
       w.__controlsTest.audioBossMotif = () => this.bossMotif();
+      // Batch 13 (Lane 2): Old Ben motif probe — mirrors audioBossMotif.
+      w.__controlsTest.audioOldBenMotif = () => this.oldBenMotif();
       w.__controlsTest.audioQuestArp = () => this.questArp();
       w.__controlsTest.audioKillSound = (combo: number) => this.killSound(combo);
       w.__controlsTest.audioSetKillSurge = (x: number) => this.setKillSurge(x);
@@ -1301,6 +1311,22 @@ class SoundEngine {
     this.playMotif(BOSS_MOTIF);
   }
 
+  // Batch 13 (Lane 2): Old Ben motif — low dread bell (OLD_BEN_BELL) followed
+  // by a minor-arp figure (OLD_BEN_ARP). Exposed as a named method so both the
+  // React intro ceremony (routes/index.tsx fireBossIntro) and the engine lane
+  // (engine.ts bossEntrance for old_ben) can trigger it. Rides the same
+  // probe/lastMotif contract as bossMotif: audioOldBenMotif plays it,
+  // audioLastMotif reports it as 'oldBenMotif'.
+  public oldBenMotif() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.sfxGate('oldbenmotif')) return;
+    if (!this.ctx || !this.sfxGain) return;
+    this.lastMotifDesc = { name: 'oldBenMotif', freqs: [...OLD_BEN_BELL.freqs, ...OLD_BEN_ARP.freqs], wave: OLD_BEN_BELL.wave, noteMs: OLD_BEN_BELL.noteMs };
+    this.playMotif(OLD_BEN_BELL);
+    this.playMotif(OLD_BEN_ARP, OLD_BEN_BELL.noteMs * OLD_BEN_BELL.freqs.length);
+  }
+
   // Batch 9 (Lane 3): achievement arpeggio — rising triangle arpeggio
   // (880→1174.66→1567.98Hz, 90ms each) for County Record quest unlock.
   // This upgrades the old Batch 4 playAchievement() sound (same pitches,
@@ -1322,8 +1348,10 @@ class SoundEngine {
 
   // Shared motif player: raw oscillators (not sfxOsc) so intervals stay
   // pitch-true; each note staggered by spec.noteMs with a short tail.
-  private playMotif(spec: MotifSpec) {
-    const t = this.ctx!.currentTime;
+  // Batch 13 (Lane 2): optional delayMs so a second figure (Old Ben's arp)
+  // can trail the first without setTimeout bookkeeping.
+  private playMotif(spec: MotifSpec, delayMs = 0) {
+    const t = this.ctx!.currentTime + Math.max(0, delayMs) / 1000;
     const step = spec.noteMs / 1000;
     spec.freqs.forEach((f, i) => {
       const osc = this.ctx!.createOscillator();

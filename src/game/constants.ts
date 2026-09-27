@@ -1553,6 +1553,29 @@ export const BOSSES: BossDef[] = [
     },
   },
   {
+    // Batch 13 (Lane 1): Boss #2 — Old Ben. Pike County coal-country flavor
+    // (the Old Ben company store shows up in meta.ts). Scheduled on waves
+    // 13, 18, 23, ... — the "Old Ben Wakes" window opens at wave 13 and the
+    // Behemoth owns every 5th wave, so wave % 5 == 3 never collides.
+    id: "old_ben",
+    type: "old_ben",
+    name: "Old Ben",
+    spawnAt: 0, // legacy wave rule, not a timer: see spawnRule
+    signatureAbility: "tremor_slam",
+    spawnRule: "wave >= 13 && wave % 5 == 3 && zombiesToSpawn === 1 (spawnRandomZombie picker)",
+    bossOverrides: {
+      health: 2000, // engine adds +wave*250 on top (excluded from smooth HP scaling)
+      speed: 1.35,
+      damage: 55,
+      radius: 42,
+      color: "#4d3325",
+      scoreValue: 2500,
+      scrapValue: 400,
+      bannerText: "OLD BEN",
+      bannerSub: "Old Ben don't sleep no more",
+    },
+  },
+  {
     // Future boss 1: coal-country flavor — a "tipple" is the coal-loading
     // structure that dotted Indiana mining towns. Never wired to the engine.
     id: "tipple",
@@ -1601,6 +1624,38 @@ export function bossFor(id: string): BossDef | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Batch 13 (Lane 1) — Old Ben (boss #2) attack tuning. Data-driven like the
+// ILLUSIONIST / MORTAR_TUNING tables; the engine's tickOldBen reads this.
+// ---------------------------------------------------------------------------
+
+export interface OldBenTuning {
+  /** Fury threshold: fraction of max HP below which Old Ben escalates. */
+  furyAt: number;
+  /** Attack-cooldown multiplier while furious. */
+  furyCdMul: number;
+  /** Tremor Slam. */
+  slamCd: number; slamWindup: number; slamR: number; slamR2: number; slamDmg: number;
+  /** Briar Call (channel summon). */
+  callCd: number; callWindup: number; callMin: number; callMax: number;
+  /** Bull Charge (telegraphed line dash). */
+  chargeCd: number; chargeWindup: number; chargeDashSpeed: number; chargeDashT: number; chargeLaneR: number;
+  /** Wall-impact shockwave after a Bull Charge hits an obstacle. */
+  wallShockR: number; wallShockDmg: number;
+  /** Mound (boss-fight tank add): damage-shield aura. */
+  moundShieldR: number; moundShieldMul: number;
+}
+
+export const OLD_BEN_TUNING: OldBenTuning = {
+  furyAt: 0.5,
+  furyCdMul: 0.65,
+  slamCd: 6, slamWindup: 1.2, slamR: 150, slamR2: 230, slamDmg: 60,
+  callCd: 10, callWindup: 1.5, callMin: 4, callMax: 6,
+  chargeCd: 9, chargeWindup: 1.0, chargeDashSpeed: 560, chargeDashT: 0.7, chargeLaneR: 100,
+  wallShockR: 190, wallShockDmg: 50,
+  moundShieldR: 260, moundShieldMul: 0.6,
+};
+
+// ---------------------------------------------------------------------------
 // Batch 11 — Lane 3 (data/content): ENEMY_REGISTRY.
 //
 // Documentation-grade data for every zombie type the engine can push into the
@@ -1621,7 +1676,7 @@ export interface EnemyRegistryEntry {
   behavior: string;
   /** True when the engine can assign an elite affix to this type (elites only). */
   affixEligible: boolean;
-  /** Indiana-flavored flavor line. Pike County only — never Bayville/Griggsville/Illinois. */
+  /** Indiana-flavored flavor line. Pike County canon only — see the naming authority. */
   description: string;
 }
 
@@ -1638,6 +1693,9 @@ export const ENGINE_SPAWNED_TYPES: string[] = [
   "behemoth",
   "haint",
   "illusionist",
+  "old_ben",
+  "splinter",
+  "mound",
 ];
 
 export const ENEMY_REGISTRY: Record<string, EnemyRegistryEntry> = {
@@ -1717,6 +1775,30 @@ export const ENEMY_REGISTRY: Record<string, EnemyRegistryEntry> = {
     behavior: "Trickster archetype; clone tricks per the ILLUSIONIST data table.",
     affixEligible: true,
     description: "The fog learned a new trick. Don't trust the second one you see.",
+  },
+  // Batch 13 (Lane 1): boss #2 + its boss-fight adds. Old Ben is scheduled
+  // on waves 13/18/23/...; splinter + mound spawn ONLY via boss summons
+  // (Briar Call), never from the wave director or cellar holes.
+  old_ben: {
+    name: "Old Ben",
+    hp: 2000, speed: 1.35, damage: 55,
+    behavior: "Boss #2 — three telegraphed attacks (Tremor Slam, Briar Call, Bull Charge); furious below 50% HP. Engine adds +wave*250 HP on top.",
+    affixEligible: false,
+    description: "The old coal-company foreman of the Pike County pits. He woke up, and the briars woke up with him.",
+  },
+  splinter: {
+    name: "Splinter",
+    hp: 40, speed: 3.6, damage: 10,
+    behavior: "Fast weak dasher; Boss-fight add only — bursts out of cellar holes on the Briar Call.",
+    affixEligible: false,
+    description: "Briar-root and bad temper. Fast, fragile, and it comes out of the ground in handfuls.",
+  },
+  mound: {
+    name: "Mound",
+    hp: 700, speed: 0.7, damage: 28,
+    behavior: "Slow tank add; boss-fight only. Shields nearby adds — damage to adds within 260u is reduced 40%.",
+    affixEligible: false,
+    description: "A walking spoil-pile from the old strip cuts. Kill it first or the little ones barely bleed.",
   },
   // --- future bosses: rows exist in the BOSSES table but are not wired to the
   // --- engine yet. Documented here so content lanes have the full set.

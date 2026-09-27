@@ -24,6 +24,21 @@ import { TuningPanel, applyStoredTuning } from "@/components/game/TuningPanel";
 import { AccessibilityPanel, applyStoredA11y } from "@/components/game/AccessibilityPanel";
 import { CodexPanel } from "@/components/game/CodexPanel";
 import { EventBanners } from "@/components/game/EventBanners";
+import {
+  AttackCallouts,
+  BossHpBar,
+  BossIntro,
+  type AttackCallout,
+} from "@/components/game/BossIntro";
+import {
+  BOSS_ZOMBIE_TYPES,
+  attackNameFromRadio,
+  bossIntroMatch,
+  bossNameFor,
+  bossSubFor,
+  bossTitleFor,
+  type BossIntroData,
+} from "@/components/game/bossIntroData";
 import { KNOWN_EVENT_META } from "@/components/game/eventMeta";
 import { MutatorChips } from "@/components/game/MutatorChips";
 import type { BoonOffer } from "@/game/boons";
@@ -82,6 +97,16 @@ function GameApp() {
   // daily run threads through), rendered as in-run HUD chips.
   const [runMutators, setRunMutators] = useState<string[]>([]);
   const trackedEventRef = useRef<string | null>(null);
+  // Batch 13 (Lane 2): boss presentation — Old Ben intro ceremony,
+  // generalized boss HP bar, attack-name callouts. All null-gated: no boss
+  // data -> hidden UI, never an error.
+  const [bossIntro, setBossIntro] = useState<BossIntroData | null>(null);
+  const [bossBar, setBossBar] = useState<{ id: string; name: string; frac: number } | null>(null);
+  const [attackCallouts, setAttackCallouts] = useState<AttackCallout[]>([]);
+  const bossBarForcedRef = useRef<{ id: string; name: string; frac: number } | null | undefined>(undefined);
+  const attackIdRef = useRef(0);
+  const lastAttackPollRef = useRef(0);
+  const lastAttackKeyRef = useRef<string | number | null>(null);
 
   const [selectedLocationIdx, setSelectedLocationIdx] = useState(0);
   const [weapons, setWeapons] = useState<Weapon[]>(INITIAL_WEAPONS);
@@ -242,6 +267,30 @@ function GameApp() {
     }
   }, []);
 
+  // Batch 13 (Lane 2): boss intro entry point. Fired from the onRadio path
+  // below (the same callback path bossEntrance uses for the Behemoth) and
+  // from the __pzLane2 test hook. Old Ben's motif plays on his intro; the
+  // engine already plays bossMotif() for the Behemoth in bossEntrance().
+  const fireBossIntro = useCallback((id: string, call = `WJPS`, body = ``) => {
+    setBossIntro({ id, title: bossTitleFor(id), sub: bossSubFor(id), call, body, key: Date.now() });
+    try {
+      if (id === `old_ben`) soundEngine.oldBenMotif();
+      else soundEngine.bossMotif();
+    } catch {
+      // Audio must never break the intro path.
+    }
+  }, []);
+
+  // Batch 13 (Lane 2): attack-name callout. Self-expiring (2.4s); at most
+  // the last 3 are kept so overlapping patterns don't stack off-screen.
+  const fireAttackCallout = useCallback((name: string) => {
+    const clean = String(name ?? ``).toUpperCase().slice(0, 48);
+    if (!clean) return;
+    const cid = ++attackIdRef.current;
+    setAttackCallouts((c) => [...c.slice(-2), { id: cid, name: clean }]);
+    window.setTimeout(() => setAttackCallouts((c) => c.filter((x) => x.id !== cid)), 2400);
+  }, []);
+
   const handleStartGame = (locationIndex: number, difficultyMultiplier: number, nextMode: GameMode = "survival", mutators: string[] = [], seed?: number) => {
     soundEngine.init();
     modeRef.current = nextMode;
@@ -259,6 +308,12 @@ function GameApp() {
     setEventBanner(null);
     setEventTracker(null);
     trackedEventRef.current = null;
+    // Batch 13 (Lane 2): clear stale boss-presentation state on run start.
+    setBossIntro(null);
+    setBossBar(null);
+    bossBarForcedRef.current = undefined;
+    setAttackCallouts([]);
+    lastAttackKeyRef.current = null;
     setFoundNotes([]);
     carryRef.current = null;
     const idx = nextMode === "outbreak" ? locationIndexById(OUTBREAK_ORDER[0]) : locationIndex;
@@ -376,6 +431,69 @@ function GameApp() {
             tracker = null;
           }
           setEventTracker(tracker);
+          // Batch 13 (Lane 2): generalized boss HP bar. Contract, in
+          // priority order: (1) the engine lane's window.__controlsTest
+          // .bossState() probe returning { id, name, hp, maxHp } | null;
+          // (2) a direct scan of live zombies for known boss types (works
+          // today for the Behemoth, and for Old Ben the moment the engine
+          // lane spawns it). No boss -> null -> the bar hides. Test-forced
+          // state (via __pzLane2) wins over both.
+          let bar: { id: string; name: string; frac: number } | null = null;
+          try {
+            if (bossBarForcedRef.current !== undefined) {
+              bar = bossBarForcedRef.current;
+            } else {
+              const bprobe = window.__controlsTest?.bossState;
+              if (typeof bprobe === "function") {
+                const s = bprobe();
+                if (s && typeof s === "object" && Number.isFinite(s.hp) && Number.isFinite(s.maxHp) && s.maxHp > 0) {
+                  bar = {
+                    id: String(s.id ?? "boss"),
+                    name: String(s.name ?? bossNameFor(String(s.id ?? ""))),
+                    frac: Math.max(0, Math.min(1, s.hp / s.maxHp)),
+                  };
+                }
+              }
+              if (!bar) {
+                const zs = (engineRef.current as unknown as { zombies?: Array<{ type?: string; health?: number; maxHealth?: number }> } | null)?.zombies;
+                if (Array.isArray(zs)) {
+                  for (const z of zs) {
+                    if (z && BOSS_ZOMBIE_TYPES.has(String(z.type)) && Number.isFinite(z.health) && Number.isFinite(z.maxHealth) && (z.maxHealth as number) > 0 && (z.health as number) > 0) {
+                      const t = String(z.type);
+                      bar = { id: t, name: bossNameFor(t), frac: Math.max(0, Math.min(1, (z.health as number) / (z.maxHealth as number))) };
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          } catch {
+            bar = null;
+          }
+          setBossBar(bar);
+          // Batch 13 (Lane 2): attack-name callouts from the engine lane's
+          // probe, polled at low frequency (<= 1 check per 400ms).
+          // Contract: window.__controlsTest.bossAttack() ->
+          // { name, key } | null; a new key fires a callout. Probe absent
+          // -> nothing renders, zero errors.
+          try {
+            const nowMs = Date.now();
+            if (nowMs - lastAttackPollRef.current >= 400) {
+              lastAttackPollRef.current = nowMs;
+              const aprobe = window.__controlsTest?.bossAttack;
+              if (typeof aprobe === "function") {
+                const a = aprobe();
+                if (a && typeof a === "object" && typeof a.name === "string" && a.name.length > 0 && a.key !== lastAttackKeyRef.current) {
+                  lastAttackKeyRef.current = a.key ?? a.name;
+                  fireAttackCallout(a.name);
+                } else if (!a) {
+                  lastAttackKeyRef.current = null;
+                }
+              }
+            }
+          } catch {
+            // Probe absent or malformed: no callouts.
+          }
           setHudStats({ ...stats, scoreMul, signature });
         },
         onLoreNoteFound: (note: LoreNote) => {
@@ -391,6 +509,18 @@ function GameApp() {
           // (Unknown, WJPS, extract) matches nothing and stays bannerless.
           const def = RUN_EVENTS.find((e) => e.radio === body);
           if (def) fireEventBanner(def.id);
+          // Batch 13 (Lane 2): boss presentation rides the same onRadio
+          // callback the Behemoth's bossEntrance uses. Old Ben's intro
+          // ceremony and attack-name callouts are matched here; anything
+          // else stays bannerless.
+          try {
+            const introId = bossIntroMatch(call, body);
+            if (introId === `old_ben`) fireBossIntro(introId, call, body);
+            const atk = attackNameFromRadio(body);
+            if (atk) fireAttackCallout(atk);
+          } catch {
+            // Matcher must never break the radio path.
+          }
         },
         onCache: (symbols: string[] | null) => setCacheSymbols(symbols),
         onExtractReady: () => {
@@ -592,6 +722,13 @@ function GameApp() {
     return () => clearTimeout(t);
   }, [eventBanner]);
 
+  // Batch 13 (Lane 2): the boss intro ceremony auto-dismisses into the fight.
+  useEffect(() => {
+    if (!bossIntro) return;
+    const t = window.setTimeout(() => setBossIntro(null), 4500);
+    return () => window.clearTimeout(t);
+  }, [bossIntro]);
+
   // Batch 12 (Lane 3): test hook so Playwright can force an event banner
   // through the same fireEventBanner path the engine's onRadio callback
   // uses, without depending on the engine lane's event timing. Exposes
@@ -602,6 +739,31 @@ function GameApp() {
       delete (window as unknown as { __pzLane3?: unknown }).__pzLane3;
     };
   }, [fireEventBanner]);
+
+  // Batch 13 (Lane 2): test hook so Playwright can drive the boss
+  // presentation without depending on the engine lane's boss timing:
+  // fireBossIntro(id) forces the letterboxed ceremony, setBossBar /
+  // clearBossBar force or release the generalized HP bar, fireAttack
+  // forces an attack-name callout. Exposes soundEngine so the Old Ben
+  // motif can be played directly in tests.
+  useEffect(() => {
+    (window as unknown as { __pzLane2?: unknown }).__pzLane2 = {
+      fireBossIntro: (id: string) => fireBossIntro(id),
+      setBossBar: (b: { id: string; name: string; frac: number } | null) => {
+        bossBarForcedRef.current = b;
+        setBossBar(b);
+      },
+      clearBossBar: () => {
+        bossBarForcedRef.current = undefined;
+        setBossBar(null);
+      },
+      fireAttack: (name: string) => fireAttackCallout(name),
+      sound: soundEngine,
+    };
+    return () => {
+      delete (window as unknown as { __pzLane2?: unknown }).__pzLane2;
+    };
+  }, [fireBossIntro, fireAttackCallout]);
 
   const handleUnlockWeapon = (index: number) => {
     const engine = engineRef.current;
@@ -731,6 +893,9 @@ function GameApp() {
           <div className="pointer-events-none absolute left-1/2 top-2 z-30 flex -translate-x-1/2 flex-col items-center gap-2">
             <MutatorChips mutators={runMutators} testId="run-mutator-chips" />
             <EventBanners banner={eventBanner} tracker={eventTracker} />
+            {/* Batch 13 (Lane 2): generalized boss HP bar + attack callouts. */}
+            <BossHpBar boss={bossBar} />
+            <AttackCallouts items={attackCallouts} />
           </div>
           <HUD
             health={hudStats.health}
@@ -953,6 +1118,11 @@ function GameApp() {
       )}
 
       {activeLoreNote && screen === "playing" && <LoreNoteModal note={activeLoreNote} onClose={handleCloseLoreNote} />}
+
+      {/* Batch 13 (Lane 2): Old Ben intro ceremony — fullscreen letterbox,
+          auto-dismisses into the fight. Null-gated, never blocks the
+          title screen. */}
+      <BossIntro intro={bossIntro} />
 
       {screen === "game_over" && (
         <GameOverModal
