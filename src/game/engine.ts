@@ -22,7 +22,7 @@ import {
   NoisePulse,
 } from "../types/game";
 import { rollBoons, BoonOffer } from "./boons";
-import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST } from "./constants";
+import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS } from "./constants";
 import { soundEngine } from "../audio/soundEngine";
 import { renderEnvironment } from "./mapRenderer";
 import { DynamicLighting } from "./lighting";
@@ -83,11 +83,18 @@ export class GameEngine {
 	level = 1;
 	xp = 0;
 	queuedLevels = 0;
+	draftGraceUntil = 0;
 	rerolls = 1;
 	levelHold = false;
 	evolved: string | null = null;
+	evolutionDone: Record<string, boolean> = {};
 	grit: { x: number; y: number; vx: number; vy: number; value: number }[] = [];
 	gritBonus = 0;
+	gritBag = 0;
+	bombCharges = 1;
+	bombLastRegen = 0;
+	firedEvents: string[] = [];
+	activeEvents: { id: string; endsAt: number }[] = [];
 	posts = 1;
 	pipes = 1;
 	traps: { kind: string; x: number; y: number; angle: number; shot: number; left: number; arm: number; live: boolean; blown: boolean }[] = [];
@@ -296,6 +303,21 @@ export class GameEngine {
 				this.posts += posts;
 				this.pipes += pipes;
 			},
+			sys: () => ({
+				bomb: { charges: this.bombCharges, max: BOMB_MAX_CHARGES },
+				grit: { bag: Math.round(this.gritBag), ground: this.grit.length },
+				events: { fired: [...this.firedEvents], active: this.activeEvents.map((a) => a.id) },
+				mods: this.eventMods(),
+				evoHints: this.evolutionHints(),
+				revolver: (() => { const w = this.weapons.find((x) => x.id === `revolver`); return w ? { name: w.name, dmg: w.damage, fireRate: w.fireRate, pierce: w.pierce } : null; })(),
+				zombies: () => this.zombies.slice(0, 8).map((z) => ({ id: String(z.id).slice(-6), t: z.type, h: Math.round(z.health), d: Math.round(Math.hypot(z.x - this.player.x, z.y - this.player.y)) })),
+			}),
+			detonate: () => this.detonateBomb(),
+			giveBoon: (id, n = 1) => { this.boonStacks[id] = (this.boonStacks[id] || 0) + n; },
+			openChest: () => this.openChest(),
+			sweepGrit: () => this.sweepGritToBag(),
+			spawnGritAt: (x, y, v) => this.dropGritOrb(x, y, 0, 0, v),
+			fireEvent: (id) => { const ev = RUN_EVENTS.find((e) => e.id === id); if (ev && !this.firedEvents.includes(id)) this.fireEvent(ev); },
 		};
 		let e = window.__controlsTest;
 		e.teleport = (e, t) => {
@@ -611,7 +633,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -641,6 +663,7 @@ export class GameEngine {
 			if (e.code === `KeyG`) this.throwFlare();
 			if (e.code === `KeyC`) this.plantPost();
 			if (e.code === `KeyX`) this.dropPipe();
+			if (e.code === `KeyB`) this.detonateBomb();
 			if (e.code === `Space`) this.tryDodge();
 			if (e.code === `KeyF` || e.code === `KeyV`) this.tryBash();
 		}
@@ -1180,7 +1203,12 @@ export class GameEngine {
 		this.startNextWave();
 	}
 	loop = (e) => {
-		if (!this.isRunning || this.isPaused) return;
+		if (!this.isRunning) return;
+		// Fire a pending queued draft once its grace period of live play has elapsed.
+		if (!this.isPaused && !this.draft && this.queuedLevels > 0 && this.draftGraceUntil > 0 && Date.now() >= this.draftGraceUntil) {
+			this.openQueuedDraft();
+		}
+		if (this.isPaused) return;
 		let t = Math.min((e - this.lastTimestamp) / 1e3, .1);
 		this.lastTimestamp = e, this.update(t), this.render(), this.animationFrameId = requestAnimationFrame(this.loop);
 	};
@@ -1195,7 +1223,7 @@ export class GameEngine {
 			let n = this.floaters[t];
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && this.floaters.splice(t, 1);
 		}
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e);
 		this.dodgeCd = Math.max(0, this.dodgeCd - e);
 		this.bashCd = Math.max(0, this.bashCd - e);
 		this.bashSwing = Math.max(0, this.bashSwing - e);
@@ -1266,6 +1294,11 @@ export class GameEngine {
 			xp: this.xp,
 			xpNeed: this.xpToNext(),
 			evolved: this.evolved,
+			evolutionHints: this.evolutionHints(),
+			gritBag: Math.round(this.gritBag),
+			bombCharges: this.bombCharges,
+			bombMax: BOMB_MAX_CHARGES,
+			activeEvents: this.activeEvents.map((a) => a.id),
 			rerolls: this.rerolls,
 			weaponIndex: this.currentWeaponIndex,
 			loadout: this.weapons.map((w) => ({
@@ -1832,7 +1865,7 @@ export class GameEngine {
 			this.lastZombieSpawnTime = e;
 		}
 		if (this.zombiesToSpawn === 0 && this.zombies.length === 0) {
-			this.packBetweenWaves();
+			this.packBetweenWaves(); this.sweepGritToBag();
 			if (this.waveState = `break`, this.waveBreakCountdown = 6, this.stats.wavesCompleted++, this.endlessMilestone(), this.scrap += 120 + this.wave * 25, soundEngine.playWaveHorn(), this.callbacks.onWaveComplete(this.wave), this.outbreakWaves > 0 && this.stats.wavesCompleted >= this.outbreakWaves) this.currentLocation.bell && !this.bellRung ? (this.bellReady = true, this.callbacks.onRadio?.(`WJPS Petersburg`, `The square is yours if you can ring it. Get to the tower before they take the steps.`)) : (this.extractActive = true, this.callbacks.onExtractReady?.());
 			else {
 				let e = radioFor(this.currentLocation.id, this.wave);
@@ -1846,6 +1879,100 @@ export class GameEngine {
 		this.player.health = Math.min(this.player.maxHealth, this.player.health + 30);
 		this.spawnFloater(this.player.x, this.player.y - 56, `WAVE ${this.wave} — THE COUNTY PROVIDES`, "#ffd700");
 		soundEngine.playPowerup();
+	}
+	eventMods() {
+		const m = { gritMult: 1, enemySpeedMult: 1, enemyHpMult: 1, xpMult: 1 };
+		for (const a of this.activeEvents) {
+			const def = RUN_EVENTS.find((e) => e.id === a.id);
+			if (!def) continue;
+			for (const k of Object.keys(def.modifiers)) m[k] *= def.modifiers[k];
+		}
+		return m;
+	}
+	fireEvent(ev) {
+		this.firedEvents.push(ev.id);
+		this.activeEvents.push({ id: ev.id, endsAt: Date.now() + ev.durationSec * 1000 });
+		this.spawnFloater(this.player.x, this.player.y - 72, ev.banner, "#ffd700");
+		this.callbacks.onRadio?.(`WJPS Petersburg`, ev.radio);
+		soundEngine.playWaveHorn();
+		this.screenShake = Math.max(this.screenShake, 6);
+	}
+	updateEvents() {
+		for (const ev of RUN_EVENTS) {
+			if (this.firedEvents.includes(ev.id)) continue;
+			const hit = ev.trigger.type === `wave` ? this.wave >= ev.trigger.wave : this.simTime >= ev.trigger.seconds;
+			if (hit) this.fireEvent(ev);
+		}
+		const now = Date.now();
+		for (let i = this.activeEvents.length - 1; i >= 0; i--) {
+			if (now >= this.activeEvents[i].endsAt) this.activeEvents.splice(i, 1);
+		}
+	}
+	updateBomb() {
+		if (this.bombCharges < BOMB_MAX_CHARGES && Date.now() - this.bombLastRegen >= BOMB_REGEN_MS) {
+			this.bombCharges++;
+			this.bombLastRegen = Date.now();
+			this.spawnFloater(this.player.x, this.player.y - 48, `BOMB READY`, "#fde68a");
+			soundEngine.playPickup();
+		}
+	}
+	detonateBomb() {
+		if (!this.isRunning || this.isPaused || this.draft) return false;
+		if (this.bombCharges <= 0) return false;
+		this.bombCharges--;
+		for (const z of this.zombies) {
+			const dx = z.x - this.player.x, dy = z.y - this.player.y;
+			const d = Math.hypot(dx, dy) || 1;
+			if (d > BOMB_RADIUS + z.radius) continue;
+			const mass = z.type === `behemoth` ? 4.2 : z.type === `miner_brute` ? 2.6 : z.type === `bloater_spitter` ? 1.8 : z.type === `crawler` ? 0.7 : 1;
+			const imp = 20 / mass;
+			z.vx += (dx / d) * imp;
+			z.vy += (dy / d) * imp;
+			z.health -= BOMB_DMG;
+			z.hitFlash = .3;
+			this.stats.damageDealt += BOMB_DMG;
+			this.createBloodParticles(z.x, z.y, Math.atan2(dy, dx));
+		}
+		this.screenShake = Math.max(this.screenShake, 12);
+		this.hitstop = Math.max(this.hitstop, .12);
+		for (let k = 0; k < 28; k++) {
+			const a = (Math.PI * 2 * k) / 28;
+			this.particles.push({ x: this.player.x, y: this.player.y, vx: Math.cos(a) * 9, vy: Math.sin(a) * 9, size: 5, life: .5, maxLife: .5, alpha: 1, color: `#fde68a` });
+		}
+		this.spawnFloater(this.player.x, this.player.y - 64, `BOMB`, "#f97316");
+		soundEngine.playNuke();
+		return true;
+	}
+	checkEvolutions() {
+		for (const r of EVOLUTIONS) {
+			if (this.evolutionDone[r.baseWeapon]) continue;
+			const w = this.weapons.find((x) => x.id === r.baseWeapon && x.unlocked);
+			if (!w || this.boon(r.requiredBoon) < r.requiredStacks) continue;
+			this.evolutionDone[r.baseWeapon] = true;
+			w.name = r.evolvedName;
+			w.damage = Math.round(w.damage * 1.7);
+			w.fireRate = +(w.fireRate * 1.35).toFixed(2);
+			w.pierce = Math.max(w.pierce, 3);
+			w.description = r.evolvedDescription;
+			this.hitstop = Math.max(this.hitstop, .35);
+			this.screenShake = Math.max(this.screenShake, 8);
+			this.spawnFloater(this.player.x, this.player.y - 36, `${r.evolvedName.toUpperCase()} EVOLVED`, "#f6c453");
+			this.callbacks.onRadio?.(`Unknown`, r.evolvedRadio);
+			soundEngine.playPowerup();
+			return r;
+		}
+		return null;
+	}
+	evolutionHints() {
+		const out = [];
+		for (const r of EVOLUTIONS) {
+			if (this.evolutionDone[r.baseWeapon]) continue;
+			const w = this.weapons.find((x) => x.id === r.baseWeapon && x.unlocked);
+			if (!w) continue;
+			const have = this.boon(r.requiredBoon);
+			out.push(`${w.name} + ${r.requiredBoonName} (${have}/${r.requiredStacks}) → ${r.evolvedName}`);
+		}
+		return out;
 	}
 	startNextWave() {
 		this.wave++, this.waveState = `active`;
@@ -1915,6 +2042,7 @@ export class GameEngine {
 	pushZombie(e, t, n) {
 		let r = 58, i = 2.15, a = 14, o = 17, s = `#475569`, c = false, l = 100, u = 15;
 		e === `crawler` ? (r = 32, i = 2.4, a = 8, o = 12, s = `#3f2e22`, l = 80, u = 8) : e === `sprinter` ? (r = 45, i = 3.45, a = 12, o = 15, s = `#991b1b`, l = 140, u = 20) : e === `miner_brute` ? (r = 220, i = 1.2, a = 25, o = 23, s = `#1e293b`, c = true, l = 250, u = 40) : e === `bloater_spitter` ? (r = 130, i = 1.05, a = 18, o = 21, s = `#65a30d`, l = 220, u = 35) : e === `bomber` ? (r = 45, i = 2.7, a = 12, o = 15, s = `#b45309`, l = 120, u = 18) : e === `riot` ? (r = 520, i = 0.85, a = 30, o = 24, s = `#3f3f46`, c = true, l = 300, u = 60) : e === `behemoth` && (r = 1400 + this.wave * 250, i = 1.55, a = 45, o = 38, s = `#581c87`, l = 1500, u = 250);
+		const em = this.eventMods();
 		let d = {
 			id: Math.random().toString(),
 			type: e,
@@ -1923,9 +2051,9 @@ export class GameEngine {
 			vx: 0,
 			vy: 0,
 			angle: 0,
-			speed: i * (.9 + Math.random() * .2),
-			maxHealth: r,
-			health: r,
+			speed: i * (.9 + Math.random() * .2) * em.enemySpeedMult,
+			maxHealth: Math.round(r * em.enemyHpMult),
+			health: Math.round(r * em.enemyHpMult),
 			damage: a,
 			attackCooldown: 900,
 			lastAttackTime: 0,
@@ -2183,7 +2311,8 @@ export class GameEngine {
 		const comboAfter = Math.floor(this.comboMultiplier);
 		if (comboAfter > comboBefore && comboAfter >= 2) {
 			this.spawnFloater(this.player.x, this.player.y - 56, `STREAK x${comboAfter}`, "#ffd700");
-			for (let i = 0; i < 4; i++) {
+			// Balance: halved streak payout (2 orbs, was 4) — early XP economy ran too hot
+			for (let i = 0; i < 2; i++) {
 				const a = Math.random() * Math.PI * 2;
 				this.grit.push({ x: this.player.x, y: this.player.y, vx: Math.cos(a) * 160, vy: Math.sin(a) * 160, value: comboAfter });
 			}
@@ -2576,8 +2705,10 @@ export class GameEngine {
 		soundEngine.playPowerup();
 		if (this.queuedLevels > 0) {
 			this.queuedLevels--;
-			this.offerDraft();
-			return;
+			// Balance: ~3s of live play before the next queued draft opens,
+			// instead of chain-pausing back-to-back drafts. No grace needed
+			// when nothing remains queued — a stale grace would block drafts.
+			if (this.queuedLevels > 0) this.draftGraceUntil = Date.now() + 3000;
 		}
 		if (this.levelHold) {
 			this.levelHold = false;
@@ -2597,36 +2728,55 @@ export class GameEngine {
 	}
 	gritValue(type) {
 		const m = this.mutators.includes(`rich`) ? 2 : 1;
-		if (type === `behemoth`) return 8 * m;
-		if (type === `riot`) return 4 * m;
-		if (type === `miner_brute` || type === `bloater_spitter`) return 3 * m;
-		if (type === `sprinter` || type === `bomber`) return 2 * m;
-		return 1 * m;
+		const em = this.eventMods().gritMult;
+		if (type === `behemoth`) return 8 * m * em;
+		if (type === `riot`) return 4 * m * em;
+		if (type === `miner_brute` || type === `bloater_spitter`) return 3 * m * em;
+		if (type === `sprinter` || type === `bomber`) return 2 * m * em;
+		return 1 * m * em;
+	}
+	dropGritOrb(x, y, vx, vy, value, lucky = false) {
+		if (this.grit.length >= GRIT_GROUND_CAP) {
+			this.grit[(Math.random() * this.grit.length) | 0].value += value;  // merge, don't spawn
+			return;
+		}
+		this.grit.push({ x, y, vx, vy, value, lucky });
 	}
 	spawnGrit(z) {
-		const value = this.gritValue(z.type);
+		let value = this.gritValue(z.type);
+		if (this.gritBag > 0) { value += 1; this.gritBag--; }  // bag pays out into fresh drops
 		const bits = value > 3 ? 4 : value > 1 ? 2 : 1;
 		for (let i = 0; i < bits; i++) {
 			const a = Math.random() * Math.PI * 2;
 			const lucky = Math.random() < 0.06;
-			this.grit.push({
-				x: z.x,
-				y: z.y,
-				vx: Math.cos(a) * (40 + Math.random() * 50),
-				vy: Math.sin(a) * (40 + Math.random() * 50),
-				value: (value / bits) * (lucky ? 5 : 1),
-				lucky
-			});
+			this.dropGritOrb(z.x, z.y, Math.cos(a) * (40 + Math.random() * 50), Math.sin(a) * (40 + Math.random() * 50), (value / bits) * (lucky ? 5 : 1), lucky);
 		}
 		if (z.elite) {
 			for (let i = 0; i < 6; i++) {
 				const a = Math.random() * Math.PI * 2;
-				this.grit.push({ x: z.x, y: z.y, vx: Math.cos(a) * 120, vy: Math.sin(a) * 120, value: 2 });
+				this.dropGritOrb(z.x, z.y, Math.cos(a) * 120, Math.sin(a) * 120, 2);
 			}
 		}
 	}
+	sweepGritToBag() {
+		if (!this.grit.length) return;
+		let n = 0;
+		for (const g of this.grit) { this.gritBag += g.value; n += g.value; }
+		this.grit = [];
+		this.spawnFloater(this.player.x, this.player.y - 56, `GRIT BAGGED +${Math.round(n)}`, "#f6c453");
+	}
+	openQueuedDraft() {
+		if (this.grit.length) this.wantVacuum = true;
+		this.queuedLevels--;
+		this.draftGraceUntil = 0;
+		this.levelHold = true;
+		this.isPaused = true;
+		soundEngine.playLevel();
+		this.spawnFloater(this.player.x, this.player.y - 56, `LEVEL ${this.level}`, "#f6c453");
+		this.offerDraft();
+	}
 	addXp(n) {
-		this.xp += n;
+		this.xp += n * this.eventMods().xpMult;
 		let gained = 0;
 		while (this.xp >= this.xpToNext()) {
 			this.xp -= this.xpToNext();
@@ -2634,14 +2784,9 @@ export class GameEngine {
 			this.queuedLevels++;
 			gained++;
 		}
-		if (!gained || this.draft) return;
-		if (this.grit.length) this.wantVacuum = true;
-		this.queuedLevels--;
-		this.levelHold = true;
-		this.isPaused = true;
-		soundEngine.playLevel();
-		this.spawnFloater(this.player.x, this.player.y - 56, `LEVEL ${this.level}`, "#f6c453");
-		this.offerDraft();
+		// A pending draft grace counts as a draft in flight — the loop opens it when the grace expires.
+		if (!gained || this.draft || this.draftGraceUntil > 0) return;
+		this.openQueuedDraft();
 	}
 	updateGrit(dt) {
 		if (this.jars) {
@@ -2701,6 +2846,7 @@ export class GameEngine {
 			soundEngine.playPowerup();
 			return;
 		}
+		if (this.checkEvolutions()) return;  // weapon evolution consumed this chest
 		this.scrap += 80;
 		this.stats.scrapCollected += 80;
 		this.player.health = Math.min(this.player.maxHealth, this.player.health + 25);

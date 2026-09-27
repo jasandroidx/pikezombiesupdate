@@ -702,3 +702,59 @@ export function locationIndexById(id: string): number {
   const i = GAME_LOCATIONS.findIndex((l) => l.id === id);
   return i < 0 ? 0 : i;
 }
+
+export interface EvolutionRecipe {
+  baseWeapon: string;
+  requiredBoon: string;
+  requiredBoonName: string;
+  requiredStacks: number;
+  evolvedName: string;
+  evolvedDescription: string;
+  evolvedRadio: string;
+}
+
+export const EVOLUTIONS: EvolutionRecipe[] = [
+  {
+    baseWeapon: "revolver",
+    requiredBoon: "storm",
+    requiredBoonName: "Storm jar",
+    requiredStacks: 1,
+    evolvedName: ".357 Deadeye",
+    evolvedDescription: "Evolved in a chest: storm-forged .357. Hits 70% harder, cycles faster, punches through three deep.",
+    evolvedRadio: "That hand-cannon drank the lightning. Deadeye now — and it don't miss twice.",
+  },
+];
+
+export interface RunEventDef {
+  id: string;
+  trigger: { type: "wave"; wave: number } | { type: "time"; seconds: number };
+  durationSec: number;
+  modifiers: { gritMult?: number; enemySpeedMult?: number; enemyHpMult?: number; xpMult?: number };
+  banner: string;
+  radio: string;
+}
+
+export const RUN_EVENTS: RunEventDef[] = [
+  {
+    id: "golden_swarm",
+    trigger: { type: "wave", wave: 3 },
+    durationSec: 60,
+    modifiers: { gritMult: 2 },
+    banner: "GOLDEN SWARM",
+    radio: "The creek bed's glittering, friend. Every husk drops double grit for a minute.",
+  },
+  {
+    id: "blood_moon",
+    trigger: { type: "wave", wave: 6 },
+    durationSec: 90,
+    modifiers: { enemySpeedMult: 1.5, enemyHpMult: 1.5, xpMult: 2 },
+    banner: "BLOOD MOON",
+    radio: "Moon's gone red over the Trace. They're faster and meaner — but every kill feeds you double.",
+  },
+];
+
+export const GRIT_GROUND_CAP = 50;
+export const BOMB_RADIUS = 260;
+export const BOMB_DMG = 150;
+export const BOMB_MAX_CHARGES = 2;
+export const BOMB_REGEN_MS = 45000;

@@ -84,6 +84,11 @@ function GameApp() {
     xp: 0,
     xpNeed: 22,
     evolved: null as string | null,
+    evolutionHints: [] as string[],
+    gritBag: 0,
+    bombCharges: 1,
+    bombMax: 2,
+    activeEvents: [] as string[],
     waveCall: "",
     bounty: "",
     fresh: false,
@@ -470,6 +475,10 @@ function GameApp() {
             switchBanner={hudStats.switchBanner}
             helpVisible={hudStats.helpVisible !== false}
             onSelectWeapon={(i) => engineRef.current?.selectWeapon(i)}
+            bombCharges={hudStats.bombCharges}
+            bombMax={hudStats.bombMax}
+            gritBag={hudStats.gritBag}
+            activeEvents={hudStats.activeEvents}
             modeLabel={mode === "outbreak" ? `Outbreak ${outbreakStep + 1}/${OUTBREAK_ORDER.length}` : "Survival"}
           />
           {draft && draft.length > 0 && (
@@ -478,6 +487,7 @@ function GameApp() {
               stacks={boonStacks}
               level={hudStats.level ?? 1}
               rerolls={rerolls}
+              evolutionHints={hudStats.evolutionHints}
               onTake={(id) => engineRef.current?.takeBoon(id)}
               onReroll={() => engineRef.current?.rerollDraft()}
             />
@@ -509,6 +519,8 @@ function GameApp() {
             flares={hudStats.flares}
             posts={hudStats.posts}
             pipes={hudStats.pipes}
+            bombCharges={hudStats.bombCharges}
+            onDetonateBomb={() => engineRef.current?.detonateBomb()}
           />
         </>
       )}
