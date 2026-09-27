@@ -167,8 +167,19 @@ const inBreak = () => page.waitForFunction(
   () => window.__controlsTest && window.__controlsTest.waveInfo().state === "break",
   null, { timeout: 30000 });
 await T("god()");
+// toBreak() is a no-op during the initial wave-0 break; wait for wave 1 to be
+// actively spawning so the clear actually ends a live wave.
+await page.waitForFunction(
+  () => window.__controlsTest && window.__controlsTest.waveInfo().wave >= 1 && window.__controlsTest.waveInfo().state === "active",
+  null, { timeout: 30000 });
 await T("toBreak()");
 await T("settle()");
+await inBreak();
+// Fresh-break guarantee: inBreak() can catch a stale break's tail (the break
+// is only ~6s). Cycle once so the slot checks below run inside a new break.
+await T("skipBreak()");
+await page.waitForFunction(() => window.__controlsTest && window.__controlsTest.waveInfo().state === "active", null, { timeout: 30000 });
+await T("toBreak()");
 await inBreak();
 
 console.log("== 11a(g). slot machine: costs, escalation, graceful failures ==");

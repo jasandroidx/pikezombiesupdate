@@ -1,5 +1,7 @@
 import { Weapon, GameLocation, Perk, ZombieType } from "../types/game";
 
+// Naming guard: Pike County, Indiana flavor only — never any other town or state.
+
 export const INITIAL_WEAPONS: Weapon[] = [
   {
     id: "revolver",
@@ -1951,6 +1953,9 @@ export const CODEX: CodexEntry[] = [
   { id: "chainsaw", name: "Stihl Yard Saw", blurb: "Two-stroke from a barn loft. Eats fuel. Eats everything else faster.", hint: "Unlock it at the workbench or in a supply cache." },
   { id: "wompus_howler", name: "Wompus Howler", blurb: "A Winslow gunsmith's joke that stopped being funny: a carbine bored out and tuned to yowl like the Wompus cat on every pull.", hint: "Secret — enter the Konami code. It is never drafted." },
   { id: "mortar", name: "Stendal Pit Mortar", blurb: "Coal-country artillery off the Stendal Backbone. Lobs shells at the densest knot of the horde — don't stand in the ring.", hint: "Unlock it in the wave shop or the workbench." }, // Batch 10 (Lane 1)
+  { id: "arc_lance", name: "White River Arc Lance", blurb: "Snapped power-line core off the White River bridge, rewound around a corn-shocker frame. Locks the densest knot of the horde and sweeps it with heat.", hint: "Unlock it in the wave shop — Batch 11 special." }, // Batch 15: codex gap fill (was missing since Batch 11)
+  { id: "flamethrower", name: "Dugger Torch", blurb: "A coal-oil weed burner out of Dugger, souped up on a Petersburg workbench. Short, angry cone — the dead come out of it still burning.", hint: "Unlock it in the wave shop — Batch 12 special." }, // Batch 15: codex gap fill (was missing since Batch 12)
+  { id: "railgun", name: "Merom Railgun", blurb: "A transformer rail off the Merom station, rewound by a lineman who owed the county. Charges up with a rising whine, then deletes a whole file of the dead in one line.", hint: "Unlock it in the wave shop — Batch 12 heavy." }, // Batch 15: codex gap fill (was missing since Batch 12)
 
   // --- evolutions (id === "evolution_<baseWeapon>") ---
   { id: "evolution_revolver", name: ".357 Deadeye", blurb: "Storm-forged .357. Hits 70% harder, cycles faster, punches three deep — and the lightning taught it where to bite: +10% crit, +10% damage.", hint: "Max the revolver's level, take Storm jar, and draft 3 Hand-loaded lead picks." },
@@ -1975,6 +1980,7 @@ export const CODEX: CodexEntry[] = [
   // --- bosses (id === BossDef.id; behemoth shares its zombie row above) ---
   { id: "tipple", name: "Boss: The Tipple Brute", blurb: "Coal-country nightmare out of the old tipple. Ground slam: radial knockback and a dust ring.", hint: "Future boss. Not yet in the wild." },
   { id: "wompus", name: "Boss: The Wompus Stalker", blurb: "The Winslow Wompus cat, grown wrong. Its yowl drags a sprinter pack in with it.", hint: "Future boss. Not yet in the wild." },
+  { id: "old_ben", name: "Boss: Old Ben", blurb: "The shaft donkey that never came back up. Tremor slam shakes the whole county — Old Ben don't sleep no more.", hint: "Boss — wave 13, 18, 23, ... Attune shrines for +12% boss damage each." }, // Batch 15: codex gap fill (was missing since Batch 13)
 
   // --- secrets ---
   { id: "konami", name: "Secret: The Konami Howl", blurb: "Thirty years the Wompus cat yowled on the ridge. The old code still wakes it.", hint: "Enter ↑↑↓↓←→←→ B A on the title screen." },

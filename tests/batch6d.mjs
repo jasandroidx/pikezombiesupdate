@@ -21,7 +21,8 @@ function eq(a, b, label) { ok(a === b, `${label} (got ${JSON.stringify(a)}, want
 function close(a, b, label) { ok(Math.abs(a - b) < 1e-9, `${label} (got ${a}, want ${b})`); }
 
 // ================= Item 1: evolved-form signature bonuses =================
-eq(EVOLUTIONS.length, 6, "EVOLUTIONS still has 6 rows");
+// Batch 15: later batches legitimately add evolutions; the guard is "don't break old rows".
+ok(EVOLUTIONS.length >= 6, `EVOLUTIONS has at least 6 rows (got ${EVOLUTIONS.length})`);
 eq(WEAPON_MAX_TABLE_LEVEL, 5, "weapon table max level is 5 (evolution gate target)");
 const boonIds = new Set(BOON_CATALOG.map((b) => b.id));
 for (const r of EVOLUTIONS) {

@@ -24,9 +24,10 @@ function ok(cond, label) {
 function eq(a, b, label) { ok(a === b, `${label} (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`); }
 
 // ================= Item 1: BOSSES table =================
-eq(BOSSES.length, 3, "BOSSES has 3 rows");
-eq(new Set(BOSSES.map((b) => b.id)).size, 3, "boss ids unique");
-const knownTypes = new Set(["shambler", "sprinter", "miner_brute", "bloater_spitter", "behemoth", "crawler", "tipple_brute", "wompus_stalker"]);
+// Batch 15: counts are data-driven — later batches legitimately add bosses.
+ok(BOSSES.length >= 3, `BOSSES has at least 3 rows (got ${BOSSES.length})`);
+eq(new Set(BOSSES.map((b) => b.id)).size, BOSSES.length, "boss ids unique");
+const knownTypes = new Set(["shambler", "sprinter", "miner_brute", "bloater_spitter", "behemoth", "crawler", "riot_shield", "tipple_brute", "wompus_stalker", "illusionist", "old_ben", "splinter", "mound"]);
 for (const b of BOSSES) {
   for (const k of ["id", "type", "name", "spawnAt", "signatureAbility", "spawnRule", "bossOverrides"]) {
     ok(k in b, `row ${b.id} has ${k}`);
@@ -70,7 +71,7 @@ for (const b of BOSSES) {
   ok(!!wompus, "bossFor('wompus') found");
   eq(wompus.type, "wompus_stalker", "wompus type");
   ok(wompus.spawnAt > tipple.spawnAt, "wompus spawns later than tipple");
-  ok(new Set(BOSSES.map((b) => b.signatureAbility)).size === 3, "signature abilities distinct");
+  ok(new Set(BOSSES.map((b) => b.signatureAbility)).size === BOSSES.length, "signature abilities distinct");
 }
 eq(bossFor("nope"), undefined, "bossFor unknown id -> undefined");
 

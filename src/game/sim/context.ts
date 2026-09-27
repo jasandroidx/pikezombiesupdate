@@ -107,7 +107,7 @@ export interface SimContext {
 	bloodSplats: any[];
 	scorchDecals: any[];
 	corpseDecals: any[];
-	dmgFloaters: any[];
+	dmgFloaters: number; // engine owns this as a plain number (not an array)
 
 	// --- run/wave state ---
 	wave: number;
