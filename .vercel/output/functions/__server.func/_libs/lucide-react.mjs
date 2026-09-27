@@ -108,6 +108,26 @@ var BookOpen = createLucideIcon("book-open", [["path", {
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
+var Box = createLucideIcon("box", [
+	["path", {
+		d: "M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z",
+		key: "hh9hay"
+	}],
+	["path", {
+		d: "m3.3 7 8.7 5 8.7-5",
+		key: "g66t2b"
+	}],
+	["path", {
+		d: "M12 22V12",
+		key: "d0xqtd"
+	}]
+]);
+/**
+* @license lucide-react v0.510.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
 var Calendar = createLucideIcon("calendar", [
 	["path", {
 		d: "M8 2v4",
@@ -146,32 +166,29 @@ var Check = createLucideIcon("check", [["path", {
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
-var ChevronLeft = createLucideIcon("chevron-left", [["path", {
-	d: "m15 18-6-6 6-6",
-	key: "1wnfg3"
-}]]);
-/**
-* @license lucide-react v0.510.0 - ISC
-*
-* This source code is licensed under the ISC license.
-* See the LICENSE file in the root directory of this source tree.
-*/
-var ChevronRight = createLucideIcon("chevron-right", [["path", {
-	d: "m9 18 6-6-6-6",
-	key: "mthhwq"
-}]]);
-/**
-* @license lucide-react v0.510.0 - ISC
-*
-* This source code is licensed under the ISC license.
-* See the LICENSE file in the root directory of this source tree.
-*/
 var ChevronsRight = createLucideIcon("chevrons-right", [["path", {
 	d: "m6 17 5-5-5-5",
 	key: "xnjwq"
 }], ["path", {
 	d: "m13 17 5-5-5-5",
 	key: "17xmmf"
+}]]);
+/**
+* @license lucide-react v0.510.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var CircleDot = createLucideIcon("circle-dot", [["circle", {
+	cx: "12",
+	cy: "12",
+	r: "10",
+	key: "1mglay"
+}], ["circle", {
+	cx: "12",
+	cy: "12",
+	r: "1",
+	key: "41hilf"
 }]]);
 /**
 * @license lucide-react v0.510.0 - ISC
@@ -306,26 +323,6 @@ var Infinity$1 = createLucideIcon("infinity", [["path", {
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
-var Lamp = createLucideIcon("lamp", [
-	["path", {
-		d: "M12 12v6",
-		key: "3ahymv"
-	}],
-	["path", {
-		d: "M4.077 10.615A1 1 0 0 0 5 12h14a1 1 0 0 0 .923-1.385l-3.077-7.384A2 2 0 0 0 15 2H9a2 2 0 0 0-1.846 1.23Z",
-		key: "1l7kg2"
-	}],
-	["path", {
-		d: "M8 20a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v1a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1z",
-		key: "1mmzpi"
-	}]
-]);
-/**
-* @license lucide-react v0.510.0 - ISC
-*
-* This source code is licensed under the ISC license.
-* See the LICENSE file in the root directory of this source tree.
-*/
 var MapPin = createLucideIcon("map-pin", [["path", {
 	d: "M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0",
 	key: "1r0f0z"
@@ -397,6 +394,30 @@ var Radio = createLucideIcon("radio", [
 	["path", {
 		d: "M19.1 4.9C23 8.8 23 15.1 19.1 19",
 		key: "10b0cb"
+	}]
+]);
+/**
+* @license lucide-react v0.510.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var Repeat = createLucideIcon("repeat", [
+	["path", {
+		d: "m17 2 4 4-4 4",
+		key: "nntrym"
+	}],
+	["path", {
+		d: "M3 11v-1a4 4 0 0 1 4-4h14",
+		key: "84bu3i"
+	}],
+	["path", {
+		d: "m7 22-4-4 4-4",
+		key: "1wqhfi"
+	}],
+	["path", {
+		d: "M21 13v1a4 4 0 0 1-4 4H3",
+		key: "1rx37r"
 	}]
 ]);
 /**
@@ -661,4 +682,4 @@ var Zap = createLucideIcon("zap", [["path", {
 	key: "1xq2db"
 }]]);
 //#endregion
-export { Calendar as A, Flame as C, ChevronRight as D, ChevronsRight as E, Bell as M, ChevronLeft as O, Footprints as S, CircleHelp as T, MapPin as _, Volume2 as a, House as b, Target as c, ShoppingCart as d, Shield as f, Package as g, Play as h, VolumeX as i, BookOpen as j, Check as k, Sun as l, Radio as m, X as n, User as o, RotateCcw as p, Wrench as r, TriangleAlert as s, Zap as t, Skull as u, Lamp as v, FileText as w, Hammer as x, Infinity$1 as y };
+export { Box as A, Flame as C, ChevronsRight as D, CircleDot as E, Bell as M, Check as O, Footprints as S, CircleHelp as T, Package as _, Volume2 as a, House as b, Target as c, ShoppingCart as d, Shield as f, Play as g, Radio as h, VolumeX as i, BookOpen as j, Calendar as k, Sun as l, Repeat as m, X as n, User as o, RotateCcw as p, Wrench as r, TriangleAlert as s, Zap as t, Skull as u, MapPin as v, FileText as w, Hammer as x, Infinity$1 as y };

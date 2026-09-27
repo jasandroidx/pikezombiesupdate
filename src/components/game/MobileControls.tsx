@@ -1,5 +1,5 @@
-import { useRef, useState, useEffect } from "react";
-import { RotateCcw, Flame, ChevronLeft, ChevronRight, FileText, Footprints, ChevronsRight, Hammer, Sun } from "lucide-react";
+import { useRef, useState, useEffect, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { ChevronsRight, Hammer, Flame, Footprints, FileText, Repeat, Box, CircleDot } from "lucide-react";
 
 interface MobileControlsProps {
   onMoveChange: (vec: { x: number; y: number }) => void;
@@ -14,6 +14,92 @@ interface MobileControlsProps {
   onSneakToggle?: (on: boolean) => void;
   onDodge?: () => void;
   onBash?: () => void;
+  onPlantPost?: () => void;
+  onDropPipe?: () => void;
+  molotovs?: number;
+  flares?: number;
+  posts?: number;
+  pipes?: number;
+}
+
+function useStick(onChange: (vec: { x: number; y: number }) => void) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [knob, setKnob] = useState({ x: 0, y: 0 });
+  const live = useRef(false);
+
+  const apply = (e: ReactPointerEvent) => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const max = rect.width * 0.42;
+    const dx = e.clientX - (rect.left + rect.width / 2);
+    const dy = e.clientY - (rect.top + rect.height / 2);
+    const dist = Math.hypot(dx, dy) || 1;
+    const clamped = Math.min(dist, max);
+    const ux = dx / dist;
+    const uy = dy / dist;
+    setKnob({ x: ux * clamped, y: uy * clamped });
+    const mag = clamped / max;
+    if (mag < 0.22) onChange({ x: 0, y: 0 });
+    else {
+      const s = (mag - 0.22) / 0.78;
+      onChange({ x: ux * s, y: uy * s });
+    }
+  };
+
+  const down = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    live.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    apply(e);
+  };
+  const move = (e: ReactPointerEvent) => {
+    if (!live.current) return;
+    e.preventDefault();
+    apply(e);
+  };
+  const up = (e: ReactPointerEvent) => {
+    if (!live.current) return;
+    live.current = false;
+    setKnob({ x: 0, y: 0 });
+    onChange({ x: 0, y: 0 });
+  };
+
+  return { ref, knob, down, move, up };
+}
+
+function Act({
+  label,
+  onPress,
+  onRelease,
+  children,
+  hot = false,
+}: {
+  label: string;
+  onPress: () => void;
+  onRelease?: () => void;
+  children: ReactNode;
+  hot?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onPointerDown={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onPress();
+      }}
+      onPointerUp={() => onRelease?.()}
+      onPointerCancel={() => onRelease?.()}
+      className={`flex h-11 w-11 flex-col items-center justify-center rounded-full border text-[8px] font-mono uppercase tracking-wide ${
+        hot ? "border-accent bg-surface-2 text-accent" : "border-border bg-surface/85 text-fg"
+      }`}
+    >
+      {children}
+      <span className="mt-0.5 leading-none">{label}</span>
+    </button>
+  );
 }
 
 export function MobileControls({
@@ -21,147 +107,121 @@ export function MobileControls({
   onAimChange,
   onReload,
   onThrowMolotov,
-  onThrowFlare,
-  onPrevWeapon,
-  onNextWeapon,
   onInteract,
   onInteractHold,
   onSneakToggle,
   onDodge,
   onBash,
+  onPlantPost,
+  onDropPipe,
+  onNextWeapon,
+  molotovs = 0,
+  posts = 0,
+  pipes = 0,
 }: MobileControlsProps) {
-  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const [show, setShow] = useState(false);
   const [sneaking, setSneaking] = useState(false);
-  const moveStickRef = useRef<HTMLDivElement>(null);
-  const aimStickRef = useRef<HTMLDivElement>(null);
-  const [movePos, setMovePos] = useState({ x: 0, y: 0 });
-  const [aimPos, setAimPos] = useState({ x: 0, y: 0 });
+  const move = useStick(onMoveChange);
+  const aim = useStick(onAimChange);
 
   useEffect(() => {
-    setIsTouchDevice("ontouchstart" in window || navigator.maxTouchPoints > 0);
+    const touch = navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches;
+    const narrow = window.matchMedia("(max-width: 800px)").matches;
+    setShow(touch || narrow);
   }, []);
 
-  if (!isTouchDevice) return null;
-
-  const handleStickTouch = (
-    e: React.TouchEvent,
-    stickRef: React.RefObject<HTMLDivElement | null>,
-    setPos: (pos: { x: number; y: number }) => void,
-    onChange: (vec: { x: number; y: number }) => void,
-  ) => {
-    if (!stickRef.current) return;
-    const rect = stickRef.current.getBoundingClientRect();
-    const touch = e.targetTouches[0];
-    if (!touch) return;
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const dx = touch.clientX - centerX;
-    const dy = touch.clientY - centerY;
-    const maxDist = rect.width / 2;
-    const dist = Math.hypot(dx, dy);
-    const angle = Math.atan2(dy, dx);
-    const clampedDist = Math.min(dist, maxDist);
-    const nx = (Math.cos(angle) * clampedDist) / maxDist;
-    const ny = (Math.sin(angle) * clampedDist) / maxDist;
-    setPos({ x: Math.cos(angle) * clampedDist, y: Math.sin(angle) * clampedDist });
-    onChange({ x: nx, y: ny });
-  };
-
-  const handleStickEnd = (
-    setPos: (pos: { x: number; y: number }) => void,
-    onChange: (vec: { x: number; y: number }) => void,
-  ) => {
-    setPos({ x: 0, y: 0 });
-    onChange({ x: 0, y: 0 });
-  };
+  if (!show) return null;
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-30 flex items-end justify-between p-6 select-none">
+    <>
+      <div className="absolute inset-0 z-[15] touch-none" />
       <div
-        ref={moveStickRef}
-        onTouchMove={(e) => handleStickTouch(e, moveStickRef, setMovePos, onMoveChange)}
-        onTouchStart={(e) => handleStickTouch(e, moveStickRef, setMovePos, onMoveChange)}
-        onTouchEnd={() => handleStickEnd(setMovePos, onMoveChange)}
-        className="pointer-events-auto relative flex h-28 w-28 items-center justify-center rounded-full border-2 border-border bg-surface/70"
+        className="pointer-events-none absolute inset-0 z-30 touch-none select-none"
+        style={{ paddingBottom: "env(safe-area-inset-bottom)", paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)" }}
       >
         <div
-          className="h-12 w-12 rounded-full border border-accent bg-accent/80"
-          style={{ transform: `translate(${movePos.x}px, ${movePos.y}px)` }}
-        />
-        <span className="absolute bottom-2 font-mono text-[9px] uppercase text-muted">Move</span>
-      </div>
+          ref={move.ref}
+          onPointerDown={move.down}
+          onPointerMove={move.move}
+          onPointerUp={move.up}
+          onPointerCancel={move.up}
+          className="land-move pointer-events-auto absolute bottom-3 left-3 flex h-32 w-32 items-center justify-center rounded-full border-2 border-white/25 bg-black/35"
+        >
+          <div
+            className="h-12 w-12 rounded-full border border-accent bg-accent/90 shadow"
+            style={{ transform: `translate(${move.knob.x}px, ${move.knob.y}px)` }}
+          />
+          <span className="pointer-events-none absolute bottom-3 font-mono text-[10px] uppercase text-white/80">Move</span>
+        </div>
 
-      <div className="pointer-events-auto mb-2 flex items-center gap-2.5">
-        <button type="button" onClick={onPrevWeapon} className="rounded-full border border-border bg-surface/80 p-3 text-fg" title="Previous Weapon">
-          <ChevronLeft className="h-5 w-5" />
-        </button>
-        {onSneakToggle && (
-          <button
-            type="button"
-            onClick={() => {
-              const next = !sneaking;
-              setSneaking(next);
-              onSneakToggle(next);
-            }}
-            className={`rounded-full border p-3 ${sneaking ? "border-accent bg-surface-2 text-accent" : "border-border bg-surface/80 text-fg"}`}
-            title="Quiet step"
-          >
-            <Footprints className="h-5 w-5" />
-          </button>
-        )}
-        {onDodge && (
-          <button type="button" onClick={onDodge} className="rounded-full border border-accent bg-surface-2 p-3.5 text-accent" title="Roll">
-            <ChevronsRight className="h-5 w-5" />
-          </button>
-        )}
-        {onBash && (
-          <button type="button" onClick={onBash} className="rounded-full border border-border bg-surface/80 p-3.5 text-fg" title="Bash">
-            <Hammer className="h-5 w-5" />
-          </button>
-        )}
-        {onInteract && (
-          <button
-            type="button"
-            onClick={onInteract}
-            onTouchStart={() => onInteractHold?.(true)}
-            onTouchEnd={() => onInteractHold?.(false)}
-            onMouseDown={() => onInteractHold?.(true)}
-            onMouseUp={() => onInteractHold?.(false)}
-            className="rounded-full border border-accent bg-surface-2 p-3.5 text-accent"
-            title="Interact"
-          >
-            <FileText className="h-5 w-5" />
-          </button>
-        )}
-        <button type="button" onClick={onThrowMolotov} className="rounded-full border border-primary bg-surface-2 p-3.5 text-primary" title="Throw Molotov">
-          <Flame className="h-6 w-6" />
-        </button>
-        {onThrowFlare && (
-          <button type="button" onClick={onThrowFlare} className="rounded-full border border-accent bg-surface-2 p-3.5 text-accent" title="Road flare">
-            <Sun className="h-6 w-6" />
-          </button>
-        )}
-        <button type="button" onClick={onReload} className="rounded-full border border-border bg-surface/80 p-3.5 text-fg" title="Reload">
-          <RotateCcw className="h-5 w-5" />
-        </button>
-        <button type="button" onClick={onNextWeapon} className="rounded-full border border-border bg-surface/80 p-3 text-fg" title="Next Weapon">
-          <ChevronRight className="h-5 w-5" />
-        </button>
-      </div>
-
-      <div
-        ref={aimStickRef}
-        onTouchMove={(e) => handleStickTouch(e, aimStickRef, setAimPos, onAimChange)}
-        onTouchStart={(e) => handleStickTouch(e, aimStickRef, setAimPos, onAimChange)}
-        onTouchEnd={() => handleStickEnd(setAimPos, onAimChange)}
-        className="pointer-events-auto relative flex h-28 w-28 items-center justify-center rounded-full border-2 border-primary/60 bg-surface/70"
-      >
         <div
-          className="h-12 w-12 rounded-full border border-primary bg-primary/80"
-          style={{ transform: `translate(${aimPos.x}px, ${aimPos.y}px)` }}
-        />
-        <span className="absolute bottom-2 font-mono text-[9px] uppercase text-primary">Aim / Fire</span>
+          ref={aim.ref}
+          onPointerDown={aim.down}
+          onPointerMove={aim.move}
+          onPointerUp={aim.up}
+          onPointerCancel={aim.up}
+          className="land-aim pointer-events-auto absolute bottom-3 right-3 flex h-32 w-32 items-center justify-center rounded-full border-2 border-primary/70 bg-black/35"
+        >
+          <div
+            className="h-12 w-12 rounded-full border border-primary bg-primary/90 shadow"
+            style={{ transform: `translate(${aim.knob.x}px, ${aim.knob.y}px)` }}
+          />
+          <span className="pointer-events-none absolute bottom-3 font-mono text-[10px] uppercase text-primary">
+            {aim.knob.x === 0 && aim.knob.y === 0 ? "Auto" : "Aim"}
+          </span>
+        </div>
+
+        <div className="land-actions pointer-events-auto absolute bottom-4 left-1/2 grid -translate-x-1/2 grid-cols-2 gap-2">
+          {onDodge && (
+            <Act label="Roll" hot onPress={onDodge}>
+              <ChevronsRight className="h-4 w-4" />
+            </Act>
+          )}
+          {onBash && (
+            <Act label="Bash" onPress={onBash}>
+              <Hammer className="h-4 w-4" />
+            </Act>
+          )}
+          <Act label={`Mash ${molotovs}`} hot onPress={onThrowMolotov}>
+            <Flame className="h-4 w-4" />
+          </Act>
+          <Act label={`Post ${posts}`} onPress={() => onPlantPost?.()}>
+            <Box className="h-4 w-4" />
+          </Act>
+          <Act label={`Pipe ${pipes}`} hot onPress={() => onDropPipe?.()}>
+            <CircleDot className="h-4 w-4" />
+          </Act>
+          {onInteract && (
+            <Act
+              label="Use"
+              hot
+              onPress={() => {
+                onInteractHold?.(true);
+                onInteract();
+              }}
+              onRelease={() => onInteractHold?.(false)}
+            >
+              <FileText className="h-4 w-4" />
+            </Act>
+          )}
+          {onSneakToggle && (
+            <Act
+              label={sneaking ? "Quiet" : "Loud"}
+              hot={sneaking}
+              onPress={() => {
+                const next = !sneaking;
+                setSneaking(next);
+                onSneakToggle(next);
+              }}
+            >
+              <Footprints className="h-4 w-4" />
+            </Act>
+          )}
+          <Act label="Gun" onPress={onNextWeapon}>
+            <Repeat className="h-4 w-4" />
+          </Act>
+        </div>
       </div>
-    </div>
+    </>
   );
 }

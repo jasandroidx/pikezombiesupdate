@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { PlayerStats } from "@/types/game";
 import { deathLine } from "@/game/radio";
-import { loadSave, recordRun } from "@/game/save";
+import { loadSave, payForRun, recordRun, stubsEarned } from "@/game/save";
 import { Skull, RotateCcw, Home } from "lucide-react";
 
 interface GameOverModalProps {
@@ -33,6 +33,9 @@ export function GameOverModal({
   onRestart,
   onHome,
 }: GameOverModalProps) {
+  const earned = stubsEarned(stats.kills, wave, Boolean(won));
+  const payKey = `${mapId}:${score}:${wave}:${stats.kills}:${stats.survivalTime}:${won ? 1 : 0}`;
+
   useEffect(() => {
     recordRun({
       score,
@@ -42,7 +45,8 @@ export function GameOverModal({
       mapId,
       outbreakWon: Boolean(won && mode === "outbreak"),
     });
-  }, [score, wave, unlocked, notes, mapId, won, mode]);
+    payForRun(payKey, stats.kills, wave, Boolean(won));
+  }, [score, wave, unlocked, notes, mapId, won, mode, payKey, stats.kills, stats.survivalTime]);
 
   const save = loadSave();
   const isRecord = score >= save.highScore;
@@ -79,6 +83,7 @@ export function GameOverModal({
           <div className="font-mono text-[10px] uppercase tracking-widest text-muted">Final score</div>
           <div className="font-heading text-5xl font-bold text-fg">{score.toLocaleString()}</div>
           {isRecord && <div className="mt-1 font-mono text-xs uppercase text-accent">County record</div>}
+          <div className="mt-2 font-mono text-sm text-accent">This night paid {earned} stubs</div>
           <div className="mt-1 font-mono text-xs text-muted">
             {locationName} · Wave {wave} · {mode}
           </div>

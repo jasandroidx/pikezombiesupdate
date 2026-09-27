@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { GAME_LOCATIONS, OUTBREAK_ORDER } from "@/game/constants";
-import { loadSave } from "@/game/save";
+import { buyRank, loadSave, rankCost } from "@/game/save";
 import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield } from "lucide-react";
 
 interface StartScreenProps {
@@ -14,14 +14,21 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
   const [difficulty, setDifficulty] = useState(1);
   const [showHelp, setShowHelp] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
-  const save = loadSave();
+  const [save, setSave] = useState(() => loadSave());
 
   return (
-    <div className="absolute inset-0 z-40 flex flex-col justify-between overflow-y-auto bg-bg/95 p-5 md:p-8">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(194,59,34,0.12),_transparent_55%)]" />
+    <div className="absolute inset-0 z-40 overflow-y-auto">
+      <img
+        src="/title-night.jpg"
+        alt=""
+        className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+      />
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/85 via-black/55 to-black/20" />
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/15 to-black/50" />
       <div className="vignette-overlay absolute inset-0" />
 
-      <div className="relative z-10 mx-auto flex w-full max-w-6xl items-center justify-between">
+      <div className="relative z-10 flex min-h-full flex-col justify-between p-5 md:p-8">
+      <div className="mx-auto flex w-full max-w-6xl items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-primary" />
           <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted">
@@ -46,17 +53,17 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
         </div>
       </div>
 
-      <div className="relative z-10 mx-auto my-4 w-full max-w-5xl text-center md:my-6">
-        <p className="font-mono text-xs uppercase tracking-[0.35em] text-accent">Patoka River · Yellow Banks Trace</p>
-        <h1 className="mt-2 font-display text-4xl font-bold tracking-[0.12em] text-fg md:text-6xl">PIKE COUNTY</h1>
-        <div className="wild-title mx-auto mt-1 mb-3 w-fit font-drip text-4xl md:text-7xl">Zombies</div>
-        <p className="mx-auto mt-3 hidden max-w-xl font-lore text-sm leading-relaxed text-muted md:block">
+      <div className="relative z-10 mx-auto my-4 w-full max-w-6xl md:my-2">
+        <p className="font-mono text-xs uppercase tracking-[0.35em] text-accent drop-shadow">Patoka River · Yellow Banks Trace</p>
+        <h1 className="mt-2 font-display text-5xl font-bold tracking-[0.14em] text-fg drop-shadow-[0_4px_18px_rgba(0,0,0,0.85)] md:text-7xl">PIKE COUNTY</h1>
+        <div className="wild-title mt-1 mb-3 w-fit font-drip text-5xl md:text-8xl">Zombies</div>
+        <p className="max-w-md font-lore text-sm leading-relaxed text-fg/80 md:text-base">
           The mines exhaled. The springs went to iron. Fog on the Patoka, and the dead walking the traces Lincoln used.
         </p>
       </div>
 
       <div className="relative z-10 mx-auto grid w-full max-w-6xl gap-6 md:grid-cols-[1.1fr_0.9fr]">
-        <div className="rounded border border-border bg-surface/90 p-4">
+        <div className="rounded border border-[#6b5428]/80 bg-black/55 p-4 backdrop-blur-[2px]">
           <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.22em] text-accent">County map</div>
           <CountyMap selected={GAME_LOCATIONS[selectedLocation]?.id} cleared={save.mapsCleared} onPick={(id) => {
             const i = GAME_LOCATIONS.findIndex((l) => l.id === id);
@@ -65,7 +72,7 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
         </div>
 
         <div className="flex flex-col gap-3">
-          <div className="rounded border border-border bg-surface/90 p-4 text-left">
+          <div className="rounded border border-[#6b5428]/80 bg-black/55 p-4 text-left backdrop-blur-[2px]">
             <div className="font-heading text-xl text-fg">{GAME_LOCATIONS[selectedLocation].name}</div>
             <div className="font-mono text-[11px] uppercase tracking-widest text-accent">
               {GAME_LOCATIONS[selectedLocation].township}
@@ -94,6 +101,36 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
             ))}
           </div>
 
+          <div className="rounded border border-[#6b5428]/80 bg-black/55 p-3 text-left backdrop-blur-[2px]">
+            <div className="mb-2 flex items-baseline justify-between">
+              <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-accent">Pay stubs</span>
+              <span className="font-heading text-lg text-fg">{save.stubs}</span>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <RankRow
+                label="Boots"
+                detail="Start a step quicker"
+                rank={save.ranks.boots}
+                stubs={save.stubs}
+                onBuy={() => setSave(buyRank("boots"))}
+              />
+              <RankRow
+                label="Hide"
+                detail="Start with more blood"
+                rank={save.ranks.hide}
+                stubs={save.stubs}
+                onBuy={() => setSave(buyRank("hide"))}
+              />
+              <RankRow
+                label="Magnet"
+                detail="Grit pulls from farther"
+                rank={save.ranks.magnet}
+                stubs={save.stubs}
+                onBuy={() => setSave(buyRank("magnet"))}
+              />
+            </div>
+          </div>
+
           <button
             id="start-outbreak"
             type="button"
@@ -120,8 +157,8 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
             {[
               { icon: Zap, title: "Roll", body: "Space. I-frames. Costs wind." },
               { icon: Shield, title: "Bash", body: "F or right-click. Stun them." },
-              { icon: Skull, title: "Blood rush", body: "Four kills. They go slow." },
-              { icon: Bell, title: "Last stand", body: "Die once. Get back up." },
+              { icon: Skull, title: "Stovepipe", body: "X. A pipe bomb. They step on it." },
+              { icon: Bell, title: "Cedar post", body: "C. A deer rifle on a fence post." },
             ].map((item) => (
               <div key={item.title} className="rounded border border-border bg-surface px-2 py-2 text-left">
                 <div className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-accent">
@@ -137,8 +174,8 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
 
       {showHelp && (
         <div className="relative z-20 mx-auto mt-4 max-w-xl rounded border border-border bg-surface p-4 font-mono text-xs leading-relaxed text-muted">
-          WASD move · mouse aim and fire · 1 magnum · 2 pump · 3–6 bought guns · mousewheel swap · Space roll · F bash · Q mash · G road flare (pulls the horde, especially if you go quiet) · R reload · Ctrl quiet step · E lantern, boards, notes, shed, truck, bell · Tab workbench · Esc pause · M mute.
-          The dead drop grit. Fill the bar and the night stops — three offers, take one, one reroll. A boss chest plus hand-loaded lead turns the .357 into Lincoln's Load. Outbreak still runs White Oak → McCord's Ford → Stendal → the square → the still-yard.
+          WASD move. The gun aims and fires by itself. Hold the mouse button when you want to point it. C plants a cedar-post rifle. X lays a stovepipe — black powder in a capped pipe, and they are the ones who step on it. Ctrl makes the walk quiet. 1 magnum · 2 pump · Q mash · G road flare · E for notes, the bench, the bell · Tab workbench · Esc pause.
+          The dead drop grit. The bar fills slower now. One card after a real piece of the night, not after two shamblers.
         </div>
       )}
 
@@ -156,6 +193,7 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -179,8 +217,9 @@ function CountyMap({
   ];
   return (
     <svg viewBox="0 0 100 100" className="h-44 w-full md:h-80">
-      <rect width="100" height="100" fill="#0c0b09" />
-      <path d="M8 40 C 22 48, 40 55, 70 58 C 82 60, 90 72, 94 88" fill="none" stroke="#3a3228" strokeWidth="2" />
+      <rect width="100" height="100" fill="#100e0c" />
+      <path d="M8 40 C 22 48, 40 55, 70 58 C 82 60, 90 72, 94 88" fill="none" stroke="#6b5428" strokeWidth="1.4" />
+      <path d="M8 40 C 22 48, 40 55, 70 58 C 82 60, 90 72, 94 88" fill="none" stroke="#1e3a5f" strokeWidth="3.2" opacity="0.45" />
       <text x="70" y="54" fill="#8a8175" fontSize="3.2" fontFamily="IBM Plex Mono">
         Patoka
       </text>
@@ -224,5 +263,41 @@ function CountyMap({
         );
       })}
     </svg>
+  );
+}
+
+function RankRow({
+  label,
+  detail,
+  rank,
+  stubs,
+  onBuy,
+}: {
+  label: string;
+  detail: string;
+  rank: number;
+  stubs: number;
+  onBuy: () => void;
+}) {
+  const maxed = rank >= 3;
+  const cost = rankCost(rank);
+  const afford = !maxed && stubs >= cost;
+  return (
+    <button
+      type="button"
+      disabled={!afford}
+      onClick={onBuy}
+      className={`flex items-center justify-between gap-2 rounded border px-2 py-1.5 text-left ${
+        afford ? "border-accent/70 bg-surface-2" : "border-border bg-surface"
+      }`}
+    >
+      <span>
+        <span className="font-mono text-[11px] uppercase tracking-widest text-fg">{label}</span>
+        <span className="mt-0.5 block font-lore text-[11px] text-muted">{detail}</span>
+      </span>
+      <span className="font-mono text-[10px] uppercase text-accent">
+        {maxed ? "Full" : `${cost} · ${"●".repeat(rank)}${"○".repeat(3 - rank)}`}
+      </span>
+    </button>
   );
 }

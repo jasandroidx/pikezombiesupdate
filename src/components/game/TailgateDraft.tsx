@@ -16,10 +16,10 @@ export function TailgateDraft({
   onReroll: () => void;
 }) {
   return (
-    <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center px-3">
+    <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center px-3">
       <div className="pointer-events-auto w-full max-w-3xl rounded-lg bg-bg/80 px-3 py-3 backdrop-blur-sm">
         <div className="mb-2 text-center font-mono text-[10px] uppercase tracking-[0.28em] text-accent">
-          Level {level} · the night stops · take one · 1 2 3
+          Level {level} · the night stops · tap one
         </div>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           {offers.map((b, i) => {

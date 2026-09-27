@@ -62,11 +62,28 @@ function paintPlate(ctx: CanvasRenderingContext2D, location: GameLocation) {
   ctx.fillRect(0, 0, 40, h);
   ctx.fillRect(w - 40, 0, 40, h);
 
+  for (let i = 0; i < 90; i++) {
+    const x = rand() * w;
+    const y = rand() * h;
+    ctx.strokeStyle = rand() > 0.5 ? "rgba(28, 36, 22, 0.55)" : "rgba(90, 74, 48, 0.35)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + 2 + rand() * 4, y - 5 - rand() * 6);
+    ctx.stroke();
+  }
+  for (let i = 0; i < 18; i++) {
+    ctx.fillStyle = "rgba(40, 36, 30, 0.55)";
+    ctx.beginPath();
+    ctx.ellipse(rand() * w, rand() * h, 3 + rand() * 5, 2 + rand() * 2, rand() * 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   for (const obs of location.obstacles) renderObstacle(ctx, obs);
 }
 
 function plateFor(location: GameLocation) {
-  const cached = plates.get(location.id + ':2');
+  const cached = plates.get(location.id + ':3');
   if (cached && cached.width === location.mapWidth && cached.height === location.mapHeight) return cached;
   if (cached && cached.width === location.mapWidth && cached.height === location.mapHeight) return cached;
   const canvas = document.createElement('canvas');
@@ -74,7 +91,7 @@ function plateFor(location: GameLocation) {
   canvas.height = location.mapHeight;
   const g = canvas.getContext('2d');
   if (g) paintPlate(g, location);
-  plates.set(location.id + ':2', canvas);
+  plates.set(location.id + ':3', canvas);
   return canvas;
 }
 
@@ -93,6 +110,7 @@ export function renderEnvironment(
   loreNotes: LoreNote[] = [],
   barricades: Barricade[] = [],
   extractActive = false,
+  zoom = 1,
 ) {
   ctx.fillStyle = location.ground || '#1c1f19';
   ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
@@ -167,14 +185,26 @@ export function renderEnvironment(
     renderExplosiveBarrel(ctx, barrel, now);
   }
 
+  const pickup = Math.max(1, 1.15 / Math.max(0.2, zoom));
+
   for (const drop of drops) {
-    if (!sees(viewport, drop.x, drop.y, 28)) continue;
+    if (!sees(viewport, drop.x, drop.y, 28 * pickup)) continue;
+    ctx.save();
+    ctx.translate(drop.x, drop.y);
+    ctx.scale(pickup, pickup);
+    ctx.translate(-drop.x, -drop.y);
     renderDrop(ctx, drop, now);
+    ctx.restore();
   }
 
   for (const note of loreNotes) {
-    if (note.collected || !sees(viewport, note.x, note.y, 36)) continue;
+    if (note.collected || !sees(viewport, note.x, note.y, 36 * pickup)) continue;
+    ctx.save();
+    ctx.translate(note.x, note.y);
+    ctx.scale(pickup, pickup);
+    ctx.translate(-note.x, -note.y);
     renderLoreNote(ctx, note, now);
+    ctx.restore();
   }
 }
 

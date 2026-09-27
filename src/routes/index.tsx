@@ -55,6 +55,8 @@ function GameApp() {
     weapon: INITIAL_WEAPONS[0],
     molotovs: 3,
     flares: 2,
+    posts: 1,
+    pipes: 1,
     score: 0,
     scrap: 150,
     combo: 1,
@@ -80,8 +82,11 @@ function GameApp() {
     fog: false,
     level: 1,
     xp: 0,
-    xpNeed: 4,
+    xpNeed: 22,
     evolved: null as string | null,
+    waveCall: "",
+    bounty: "",
+    fresh: false,
     weaponIndex: 0,
     loadout: [] as { id: string; name: string; unlocked: boolean; mag: number; reserve: number }[],
     switchBanner: 0,
@@ -136,6 +141,13 @@ function GameApp() {
     for (const w of engine.weapons) {
       if (save.unlockedWeapons.includes(w.id)) w.unlocked = true;
     }
+    const hide = save.ranks?.hide ?? 0;
+    const boots = save.ranks?.boots ?? 0;
+    const magnet = save.ranks?.magnet ?? 0;
+    engine.player.maxHealth += hide * 14;
+    engine.player.health = engine.player.maxHealth;
+    engine.player.speed *= 1 + boots * 0.05;
+    engine.gritBonus = magnet;
   };
 
   const handleStartGame = (locationIndex: number, difficultyMultiplier: number, nextMode: GameMode = "survival") => {
@@ -412,6 +424,8 @@ function GameApp() {
             weapon={hudStats.weapon}
             molotovs={hudStats.molotovs}
             flares={hudStats.flares}
+            posts={hudStats.posts}
+            pipes={hudStats.pipes}
             score={hudStats.score}
             scrap={hudStats.scrap}
             combo={hudStats.combo}
@@ -446,6 +460,9 @@ function GameApp() {
             xp={hudStats.xp}
             xpNeed={hudStats.xpNeed}
             evolved={hudStats.evolved}
+            waveCall={hudStats.waveCall}
+            bounty={hudStats.bounty}
+            fresh={hudStats.fresh}
             weaponIndex={hudStats.weaponIndex}
             loadout={hudStats.loadout}
             switchBanner={hudStats.switchBanner}
@@ -484,6 +501,12 @@ function GameApp() {
             }}
             onDodge={() => engineRef.current?.tryDodge()}
             onBash={() => engineRef.current?.tryBash()}
+            onPlantPost={() => engineRef.current?.plantPost()}
+            onDropPipe={() => engineRef.current?.dropPipe()}
+            molotovs={hudStats.molotovs}
+            flares={hudStats.flares}
+            posts={hudStats.posts}
+            pipes={hudStats.pipes}
           />
         </>
       )}

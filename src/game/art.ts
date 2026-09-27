@@ -8,25 +8,64 @@ export const ZOMBIE_LABELS: Record<string, string> = {
 };
 
 const PATHS: Record<string, string> = {
-  player: "/sprites/player.png",
-  shambler: "/sprites/shambler.png",
-  sprinter: "/sprites/sprinter.png",
-  miner_brute: "/sprites/miner_brute.png",
-  bloater_spitter: "/sprites/bloater_spitter.png",
-  behemoth: "/sprites/behemoth.png",
-  crawler: "/sprites/crawler.png",
+  player: "/sprites/cast/player.jpg",
+  shambler: "/sprites/cast/shambler.jpg",
+  sprinter: "/sprites/cast/sprinter.jpg",
+  miner_brute: "/sprites/cast/miner_brute.jpg",
+  bloater_spitter: "/sprites/cast/bloater_spitter.jpg",
+  behemoth: "/sprites/cast/behemoth.jpg",
+  crawler: "/sprites/cast/crawler.jpg",
 };
 
-const cache = new Map<string, HTMLImageElement>();
+const cache = new Map<string, HTMLCanvasElement>();
 let loaded = false;
 
 export function isArtReady() {
   return loaded;
 }
 
-export function getSprite(id: string): HTMLImageElement | null {
-  const img = cache.get(id);
-  return img && img.complete && img.naturalWidth > 0 ? img : null;
+export function getSprite(id: string): HTMLCanvasElement | null {
+  return cache.get(id) ?? null;
+}
+
+function keyGreen(img: HTMLImageElement) {
+  const src = document.createElement("canvas");
+  src.width = img.naturalWidth;
+  src.height = img.naturalHeight;
+  const g = src.getContext("2d");
+  if (!g) return src;
+  g.drawImage(img, 0, 0);
+  const frame = g.getImageData(0, 0, src.width, src.height);
+  const d = frame.data;
+  let minX = src.width, minY = src.height, maxX = 0, maxY = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], gr = d[i + 1], b = d[i + 2];
+    const spill = gr - Math.max(r, b);
+    if (gr > 150 && spill > 70) {
+      d[i + 3] = 0;
+    } else {
+      if (spill > 18 && gr > r) d[i + 1] = Math.max(r, b);
+      const p = i / 4;
+      const x = p % src.width;
+      const y = (p / src.width) | 0;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  g.putImageData(frame, 0, 0);
+  if (maxX <= minX || maxY <= minY) return src;
+  const pad = 4;
+  const sx = Math.max(0, minX - pad);
+  const sy = Math.max(0, minY - pad);
+  const sw = Math.min(src.width - sx, maxX - minX + pad * 2);
+  const sh = Math.min(src.height - sy, maxY - minY + pad * 2);
+  const out = document.createElement("canvas");
+  out.width = sw;
+  out.height = sh;
+  out.getContext("2d")?.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
+  return out;
 }
 
 export async function loadArt() {
@@ -43,7 +82,7 @@ export async function loadArt() {
           const img = new Image();
           img.decoding = "async";
           img.onload = () => {
-            cache.set(key, img);
+            cache.set(key, keyGreen(img));
             resolve();
           };
           img.onerror = () => resolve();
@@ -63,13 +102,16 @@ export function drawSprite(
 ) {
   const img = getSprite(id);
   if (!img) return false;
+  const aspect = img.width / Math.max(1, img.height);
+  const h = size;
+  const w = size * aspect;
   ctx.save();
   if (flipX) ctx.scale(-1, 1);
-  ctx.drawImage(img, -size / 2, -size / 2, size, size);
+  ctx.drawImage(img, -w / 2, -h + size * 0.28, w, h);
   if (hitFlash > 0) {
     ctx.globalCompositeOperation = "lighter";
-    ctx.globalAlpha = Math.min(0.65, hitFlash);
-    ctx.drawImage(img, -size / 2, -size / 2, size, size);
+    ctx.globalAlpha = Math.min(0.55, hitFlash);
+    ctx.drawImage(img, -w / 2, -h + size * 0.28, w, h);
   }
   ctx.restore();
   return true;

@@ -60,7 +60,7 @@ export class DynamicLighting {
     dCtx.clearRect(0, 0, width, height);
 
     // Fill with dirty-olive darkness — never a black sheet
-    const darknessAlpha = Math.max(0.38, 0.72 - ambientLight - (muzzleFlashTimer > 0 ? 0.28 : 0));
+    const darknessAlpha = Math.max(0.04, 0.12 - ambientLight * 0.25 - (muzzleFlashTimer > 0 ? 0.04 : 0));
     dCtx.fillStyle = `rgba(16, 20, 14, ${darknessAlpha})`;
     dCtx.fillRect(0, 0, width, height);
 
@@ -68,13 +68,13 @@ export class DynamicLighting {
     dCtx.globalCompositeOperation = 'destination-out';
 
     // 1. Belt lantern — always-on disc so the hunter never vanishes
-    const auraGrad = dCtx.createRadialGradient(player.x, player.y, 8, player.x, player.y, 128);
+    const auraGrad = dCtx.createRadialGradient(player.x, player.y, 10, player.x, player.y, 210);
     auraGrad.addColorStop(0, "rgba(0, 0, 0, 1.0)");
     auraGrad.addColorStop(0.45, "rgba(0, 0, 0, 0.82)");
     auraGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
     dCtx.fillStyle = auraGrad;
     dCtx.beginPath();
-    dCtx.arc(player.x, player.y, 128, 0, Math.PI * 2);
+    dCtx.arc(player.x, player.y, 210, 0, Math.PI * 2);
     dCtx.fill();
 
     // 2. High-Beam Flashlight Cone
@@ -182,7 +182,7 @@ export class DynamicLighting {
       p.y += p.vy;
       if (p.x > width + p.radius) p.x = -p.radius;
       if (p.y > height + p.radius) p.y = -p.radius;
-      ctx.globalAlpha = p.alpha;
+      ctx.globalAlpha = p.alpha * 0.28;
       ctx.drawImage(this.fogSprite, p.x - p.radius, p.y - p.radius, p.radius * 2, p.radius * 2);
     }
     ctx.globalAlpha = 1;

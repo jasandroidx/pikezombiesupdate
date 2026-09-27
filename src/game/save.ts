@@ -1,5 +1,11 @@
 const KEY = "pcz_save_v2";
-const SAVE_VERSION = 2;
+const SAVE_VERSION = 3;
+
+export interface CountyRanks {
+  boots: number;
+  hide: number;
+  magnet: number;
+}
 
 export interface GameSave {
   version: number;
@@ -10,6 +16,9 @@ export interface GameSave {
   mapsCleared: string[];
   outbreakBeaten: boolean;
   lastRadio: string;
+  stubs: number;
+  ranks: CountyRanks;
+  lastPaid: string;
 }
 
 const defaults: GameSave = {
@@ -21,15 +30,19 @@ const defaults: GameSave = {
   mapsCleared: [],
   outbreakBeaten: false,
   lastRadio: "",
+  stubs: 0,
+  ranks: { boots: 0, hide: 0, magnet: 0 },
+  lastPaid: "",
 };
 
+const RANK_COST = [6, 12, 20];
+
 function migrate(raw: Partial<GameSave> & { version?: number }): GameSave {
-  const s: GameSave = { ...defaults, ...raw, version: raw.version ?? 1 };
-  if (s.version < 2) {
-    s.unlockedWeapons = s.unlockedWeapons?.length ? s.unlockedWeapons : defaults.unlockedWeapons;
-    s.version = 2;
-  }
-  return { ...defaults, ...s, version: SAVE_VERSION };
+  const s: GameSave = { ...defaults, ...raw, version: raw.version ?? 1, ranks: { ...defaults.ranks, ...(raw.ranks ?? {}) } };
+  if (!s.unlockedWeapons?.length) s.unlockedWeapons = defaults.unlockedWeapons;
+  if (typeof s.stubs !== "number") s.stubs = 0;
+  s.version = SAVE_VERSION;
+  return s;
 }
 
 export function loadSave(): GameSave {
@@ -54,6 +67,33 @@ export function writeSave(patch: Partial<GameSave>) {
   } catch {
     return loadSave();
   }
+}
+
+export function stubsEarned(kills: number, wave: number, won: boolean) {
+  return Math.max(1, Math.round(kills * 0.35 + wave * 1.5 + (won ? 8 : 0)));
+}
+
+export function payForRun(key: string, kills: number, wave: number, won: boolean) {
+  const cur = loadSave();
+  if (cur.lastPaid === key) return cur;
+  const paid = stubsEarned(kills, wave, won);
+  return writeSave({ stubs: cur.stubs + paid, lastPaid: key });
+}
+
+export function rankCost(rank: number) {
+  return RANK_COST[rank] ?? 0;
+}
+
+export function buyRank(id: keyof CountyRanks) {
+  const cur = loadSave();
+  const rank = cur.ranks[id] ?? 0;
+  if (rank >= 3) return cur;
+  const cost = RANK_COST[rank];
+  if (cur.stubs < cost) return cur;
+  return writeSave({
+    stubs: cur.stubs - cost,
+    ranks: { ...cur.ranks, [id]: rank + 1 },
+  });
 }
 
 export function recordRun(opts: {

@@ -13,6 +13,12 @@ class SoundEngine {
   private musicPlaying: boolean = false;
   private musicInterval: number | null = null;
   private noiseBuffer: AudioBuffer | null = null;
+  private heat = 0;
+  private gritAt = 0;
+  private gritStep = 0;
+  private droneFilter: BiquadFilterNode | null = null;
+  private droneGain: GainNode | null = null;
+  private pulseGain: GainNode | null = null;
 
   constructor() {
     // AudioContext will be initialized on first user interaction
@@ -711,8 +717,61 @@ class SoundEngine {
     osc.stop(t + 0.05);
   }
 
-  // --- County night atmospheric bed ---
-  // Pentatonic minor banjo plucks & haunting low mountain drone
+  public playGrit() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx || !this.sfxGain) return;
+    const now = this.ctx.currentTime;
+    if (now - this.gritAt > 0.16) this.gritStep = 0;
+    else this.gritStep = Math.min(12, this.gritStep + 1);
+    this.gritAt = now;
+    const freq = 640 * Math.pow(1.059, this.gritStep);
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, now);
+    osc.frequency.exponentialRampToValueAtTime(freq * 1.45, now + 0.045);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+    osc.start(now);
+    osc.stop(now + 0.09);
+  }
+
+  public playLevel() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx || !this.sfxGain) return;
+    const now = this.ctx.currentTime;
+    [523.25, 659.25, 783.99].forEach((freq, i) => {
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+      const t = now + i * 0.07;
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+      osc.connect(gain);
+      gain.connect(this.sfxGain!);
+      osc.start(t);
+      osc.stop(t + 0.24);
+    });
+  }
+
+  public setHeat(amount: number) {
+    const next = Math.max(0, Math.min(1, amount));
+    if (Math.abs(next - this.heat) < 0.04) return;
+    this.heat = next;
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.droneFilter?.frequency.linearRampToValueAtTime(150 + this.heat * 520, t + 0.45);
+    this.droneGain?.gain.linearRampToValueAtTime(0.1 + this.heat * 0.06, t + 0.45);
+    this.pulseGain?.gain.linearRampToValueAtTime(this.heat * 0.075, t + 0.45);
+    this.musicGain?.gain.linearRampToValueAtTime(0.3 + this.heat * 0.22, t + 0.45);
+  }
 
   public startAtmosphericMusic() {
     if (this.musicPlaying) return;
@@ -725,17 +784,16 @@ class SoundEngine {
 
     // Start background eerie drone
     this.playDroneNote();
+    this.playPulse();
 
     this.musicInterval = window.setInterval(() => {
       if (!this.musicPlaying || this.isMuted || !this.ctx || !this.musicGain) return;
-
-      // Occasional rustic banjo pluck
-      if (Math.random() > 0.35) {
-        const note = banjoNotes[noteIdx % banjoNotes.length];
-        noteIdx = (noteIdx + Math.floor(Math.random() * 3) + 1) % banjoNotes.length;
-        this.playBanjoPluck(note);
-      }
-    }, 450);
+      const chance = 0.22 + this.heat * 0.72;
+      if (Math.random() > chance) return;
+      const note = banjoNotes[noteIdx % banjoNotes.length];
+      noteIdx = (noteIdx + Math.floor(Math.random() * 3) + 1) % banjoNotes.length;
+      this.playBanjoPluck(this.heat > 0.45 && Math.random() < this.heat ? note * 2 : note);
+    }, 260);
   }
 
   private playDroneNote() {
@@ -756,8 +814,24 @@ class SoundEngine {
     drone.connect(filter);
     filter.connect(gain);
     gain.connect(this.musicGain);
+    this.droneFilter = filter;
+    this.droneGain = gain;
 
     drone.start(t);
+  }
+
+  private playPulse() {
+    if (!this.ctx || !this.musicGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(110, t);
+    gain.gain.setValueAtTime(0.0001, t);
+    osc.connect(gain);
+    gain.connect(this.musicGain);
+    this.pulseGain = gain;
+    osc.start(t);
   }
 
   private playBanjoPluck(freq: number) {
