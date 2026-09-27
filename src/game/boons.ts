@@ -1,4 +1,4 @@
-export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt" | "fork" | "ricochet" | "seeker" | "aura";
+export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt" | "fork" | "ricochet" | "seeker" | "aura" | "wompus" | "nova" | "missiles";
 
 export type BoonRarity = "common" | "uncommon" | "rare";
 
@@ -7,6 +7,8 @@ export interface BoonOffer {
   name: string;
   blurb: string;
   rarity: BoonRarity;
+  // Batch 4: hidden offers are never drafted (e.g. Konami-code secrets).
+  hidden?: boolean;
 }
 
 export const RARITY_WEIGHT: Record<BoonRarity, number> = { common: 60, uncommon: 30, rare: 10 };
@@ -31,6 +33,10 @@ export const BOON_CATALOG: BoonOffer[] = [
   { id: "ricochet", name: "Bank shots", blurb: "Rounds bounce to another dead man, losing 25% damage per bounce.", rarity: "uncommon" },
   { id: "seeker", name: "Heatseeker node", blurb: "Your rounds hunt. Every trigger pull curves toward the dead.", rarity: "rare" },
   { id: "aura", name: "Volatile aura", blurb: "A burning plasma field around your boots. Wider and hotter per rank. Locks out Orbiting Blades.", rarity: "rare" },
+  // Batch 4: hidden — never offered in drafts. Granted by the Konami code only.
+  { id: "wompus", name: "Wompus Howler", blurb: "The Winslow Wompus cat yowls through a bored-out carbine. Not offered. Earned.", rarity: "rare", hidden: true },
+  { id: "nova", name: "Still-Yard Burst", blurb: "Every few seconds the still-yard answers: a radial burst of burning rounds.", rarity: "rare" },
+  { id: "missiles", name: "Canary Rockets", blurb: "Slow, heavy rockets that hunt the dead and bloom on impact. Long reload.", rarity: "rare" },
 ];
 
 // Batch 3: ability forks with lockout — some picks close off alternatives.
@@ -41,6 +47,7 @@ export const LOCKOUTS: Record<string, string[]> = {
 
 export function rollBoons(stacks: Record<string, number>, molotovs: number, maxMolotovs: number, posts = 0, pipes = 0, banished: Set<string> = new Set()): BoonOffer[] {
   const pool = BOON_CATALOG.filter((b) => {
+    if (b.hidden) return false; // Batch 4: secrets are never drafted.
     if (banished.has(b.id)) return false;
     if ((stacks[b.id] ?? 0) >= (b.id === "hide" ? 8 : b.id === "storm" || b.id === "salt" ? 6 : b.id === "fork" ? 3 : b.id === "seeker" ? 2 : b.id === "ricochet" ? 4 : b.id === "aura" ? 6 : 99)) return false;
     if (b.id === "jug" && molotovs >= maxMolotovs) return false;
@@ -48,7 +55,7 @@ export function rollBoons(stacks: Record<string, number>, molotovs: number, maxM
     if (b.id === "pipe" && pipes >= 4) return false;
     return true;
   });
-  const bag = pool.length >= 3 ? pool : BOON_CATALOG.filter((b) => !banished.has(b.id));
+  const bag = pool.length >= 3 ? pool : BOON_CATALOG.filter((b) => !b.hidden && !banished.has(b.id));
   // Rarity-weighted pick: 60/30/10 common/uncommon/rare, without replacement.
   const picks: BoonOffer[] = [];
   const remaining = bag.slice();

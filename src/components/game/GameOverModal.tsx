@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { PlayerStats } from "@/types/game";
 import { deathLine } from "@/game/radio";
 import { loadSave, payForRun, recordRun, stubsEarned } from "@/game/save";
+import { topRuns } from "@/game/meta";
 import { Skull, RotateCcw, Home } from "lucide-react";
 
 interface GameOverModalProps {
@@ -102,6 +103,8 @@ export function GameOverModal({
           <Stat label="Best harvest streak" value={`x${stats.maxStreak ?? 0}`} />
         </div>
 
+        <HallOfRecords />
+
         <div className="flex gap-2 p-4">
           <button
             id="restart-run"
@@ -132,6 +135,32 @@ function Stat({ label, value }: { label: string; value: string | number }) {
     <div className="bg-surface px-3 py-3">
       <div className="text-[10px] uppercase tracking-widest text-muted">{label}</div>
       <div className="text-lg text-fg">{value}</div>
+    </div>
+  );
+}
+
+// Batch 4: Hall of Records — local top-5 runs, kept in the meta save.
+function HallOfRecords() {
+  const runs = topRuns();
+  if (runs.length === 0) return null;
+  return (
+    <div className="border-b border-border bg-bg p-4">
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-accent">
+        Hall of Records
+      </div>
+      <ol className="space-y-1 font-mono text-xs text-muted">
+        {runs.map((r, i) => (
+          <li key={i} className="flex items-baseline justify-between gap-2">
+            <span className="truncate">
+              <span className="mr-2 text-fg">#{i + 1}</span>
+              {r.score.toLocaleString()} pts · {r.kills} kills · Lvl {r.level}
+            </span>
+            <span className="shrink-0 text-[10px]">
+              {Math.floor(r.time / 60)}:{(r.time % 60).toString().padStart(2, "0")}
+            </span>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

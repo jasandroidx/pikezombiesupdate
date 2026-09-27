@@ -19,6 +19,13 @@ class SoundEngine {
   private droneFilter: BiquadFilterNode | null = null;
   private droneGain: GainNode | null = null;
   private pulseGain: GainNode | null = null;
+  private intensity = 0;
+  // Batch 4: adaptive music intensity layers (arp shimmer, low bass, drums).
+  private arpGain: GainNode | null = null;
+  private bassGain: GainNode | null = null;
+  private drumGain: GainNode | null = null;
+  // Batch 4: long-tail echo bus for the screen-clear bomb.
+  private echoIn: GainNode | null = null;
 
   constructor() {
     // AudioContext will be initialized on first user interaction
@@ -680,6 +687,117 @@ class SoundEngine {
     noiseGain.connect(this.sfxGain);
     noise.start(t);
     noise.stop(t + 1.6);
+
+    // Batch 4: long-tail echo — taps of the blast feed the feedback delay bus.
+    this.ensureEchoBus();
+    if (this.echoIn) {
+      const tap1 = this.ctx.createGain();
+      tap1.gain.value = 0.5;
+      oscGain.connect(tap1);
+      tap1.connect(this.echoIn);
+      const tap2 = this.ctx.createGain();
+      tap2.gain.value = 0.65;
+      noiseGain.connect(tap2);
+      tap2.connect(this.echoIn);
+    }
+  }
+
+  // Batch 4: lazily-built feedback delay (0.34s, lowpassed, ~44% feedback)
+  // that gives the screen-clear bomb its long canyon tail.
+  private ensureEchoBus() {
+    if (this.echoIn || !this.ctx || !this.sfxGain) return;
+    const delay = this.ctx.createDelay(2.0);
+    delay.delayTime.value = 0.34;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 850;
+    const fb = this.ctx.createGain();
+    fb.gain.value = 0.44;
+    const wet = this.ctx.createGain();
+    wet.gain.value = 0.55;
+    this.echoIn = this.ctx.createGain();
+    this.echoIn.gain.value = 1;
+    this.echoIn.connect(delay);
+    delay.connect(lp);
+    lp.connect(fb);
+    fb.connect(delay);
+    delay.connect(wet);
+    wet.connect(this.sfxGain);
+  }
+
+  // Batch 4: screen-clear bomb treatment — ground-zero thump + shockwave noise
+  // straight into the long-tail echo bus. Biggest button, biggest sound.
+  public playBombEcho() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx || !this.sfxGain || !this.noiseBuffer) return;
+    this.ensureEchoBus();
+    const t = this.ctx.currentTime;
+
+    // Ground-zero thump: pitched-down sine.
+    const osc = this.ctx.createOscillator();
+    const og = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(70, t);
+    osc.frequency.exponentialRampToValueAtTime(24, t + 0.7);
+    og.gain.setValueAtTime(1.0, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+    osc.connect(og);
+    og.connect(this.sfxGain);
+    if (this.echoIn) {
+      const tap = this.ctx.createGain();
+      tap.gain.value = 0.6;
+      og.connect(tap);
+      tap.connect(this.echoIn);
+    }
+    osc.start(t);
+    osc.stop(t + 0.95);
+
+    // Shockwave noise with a long tail that feeds the echo.
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const nf = this.ctx.createBiquadFilter();
+    nf.type = 'lowpass';
+    nf.frequency.setValueAtTime(1600, t);
+    nf.frequency.exponentialRampToValueAtTime(120, t + 1.4);
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.85, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 1.5);
+    noise.connect(nf);
+    nf.connect(ng);
+    ng.connect(this.sfxGain);
+    if (this.echoIn) {
+      const tap = this.ctx.createGain();
+      tap.gain.value = 0.7;
+      ng.connect(tap);
+      tap.connect(this.echoIn);
+    }
+    noise.start(t);
+    noise.stop(t + 1.55);
+  }
+
+  // Batch 4: County Record quest unlock — rising triangle arpeggio A5 D6 G6.
+  // Raw oscillators (not sfxOsc) so the intervals stay pitch-true.
+  public playAchievement() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    const freqs = [880, 1174.66, 1567.98]; // A5 D6 G6
+    freqs.forEach((f, i) => {
+      const osc = this.ctx!.createOscillator();
+      const g = this.ctx!.createGain();
+      const st = t + i * 0.11;
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(f, st);
+      g.gain.setValueAtTime(0.0001, st);
+      g.gain.exponentialRampToValueAtTime(0.26, st + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + 0.5);
+      osc.connect(g);
+      g.connect(this.sfxGain!);
+      osc.start(st);
+      osc.stop(st + 0.55);
+    });
   }
 
   public playPlayerHurt() {
@@ -906,12 +1024,32 @@ class SoundEngine {
     const next = Math.max(0, Math.min(1, amount));
     if (Math.abs(next - this.heat) < 0.04) return;
     this.heat = next;
+    // Batch 4: engine-facing state update — heat drives music intensity.
+    this.setIntensity(next);
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     this.droneFilter?.frequency.linearRampToValueAtTime(150 + this.heat * 520, t + 0.45);
     this.droneGain?.gain.linearRampToValueAtTime(0.1 + this.heat * 0.06, t + 0.45);
     this.pulseGain?.gain.linearRampToValueAtTime(this.heat * 0.075, t + 0.45);
     this.musicGain?.gain.linearRampToValueAtTime(0.3 + this.heat * 0.22, t + 0.45);
+  }
+
+  // Batch 4: adaptive music intensity (0..1). Layers fade in with the run:
+  // subtle arp shimmer + low bass at low intensity, driving drums on top at high.
+  public setIntensity(x: number) {
+    const next = Math.max(0, Math.min(1, x));
+    if (Math.abs(next - this.intensity) < 0.02) return;
+    this.intensity = next;
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.arpGain?.gain.linearRampToValueAtTime(next * 0.16, t + 0.6);
+    this.bassGain?.gain.linearRampToValueAtTime(next * 0.14, t + 0.6);
+    // Drums stay quiet until it matters — quadratic fade keeps them driving at high intensity.
+    this.drumGain?.gain.linearRampToValueAtTime(next * next * 0.18, t + 0.6);
+  }
+
+  public getIntensity(): number {
+    return this.intensity;
   }
 
   public startAtmosphericMusic() {
@@ -926,6 +1064,7 @@ class SoundEngine {
     // Start background eerie drone
     this.playDroneNote();
     this.playPulse();
+    this.playBassNote(); // Batch 4: low D2 pulse that scales with intensity.
 
     this.musicInterval = window.setInterval(() => {
       if (!this.musicPlaying || this.isMuted || !this.ctx || !this.musicGain) return;
@@ -934,6 +1073,12 @@ class SoundEngine {
       const note = banjoNotes[noteIdx % banjoNotes.length];
       noteIdx = (noteIdx + Math.floor(Math.random() * 3) + 1) % banjoNotes.length;
       this.playBanjoPluck(this.heat > 0.45 && Math.random() < this.heat ? note * 2 : note);
+      // Batch 4: intensity layers — arp shimmer and drums fade in with the run.
+      if (this.intensity > 0.12 && Math.random() < this.intensity * 0.6) {
+        const arp = [587.33, 698.46, 880.0, 1046.5]; // D5 F5 A5 C6
+        this.playArpPluck(arp[(noteIdx * 2 + ((Math.random() * 4) | 0)) % arp.length]);
+      }
+      if (Math.random() < this.intensity * this.intensity * 0.8) this.playDrum();
     }, 260);
   }
 
@@ -1001,6 +1146,90 @@ class SoundEngine {
     harmonic.start(t);
     osc.stop(t + 0.7);
     harmonic.stop(t + 0.7);
+  }
+
+  // Batch 4: adaptive music intensity layers. Buses initialize at the
+  // current intensity so late starts don't sit silent until the next setIntensity.
+  private ensureArpBus(): GainNode {
+    if (!this.arpGain) {
+      this.arpGain = this.ctx!.createGain();
+      this.arpGain.gain.value = this.intensity * 0.16;
+      this.arpGain.connect(this.musicGain!);
+    }
+    return this.arpGain;
+  }
+
+  private ensureDrumBus(): GainNode {
+    if (!this.drumGain) {
+      this.drumGain = this.ctx!.createGain();
+      this.drumGain.gain.value = this.intensity * this.intensity * 0.18;
+      this.drumGain.connect(this.musicGain!);
+    }
+    return this.drumGain;
+  }
+
+  private playBassNote() {
+    if (!this.ctx || !this.musicGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(73.42, t); // D2 — Pike County low end
+    gain.gain.value = this.intensity * 0.14;
+    osc.connect(gain);
+    gain.connect(this.musicGain);
+    this.bassGain = gain;
+    osc.start(t);
+  }
+
+  private playArpPluck(freq: number) {
+    if (!this.ctx || !this.musicGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.1, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    osc.connect(g);
+    g.connect(this.ensureArpBus());
+    osc.start(t);
+    osc.stop(t + 0.35);
+  }
+
+  private playDrum() {
+    if (!this.ctx || !this.musicGain || !this.noiseBuffer) return;
+    const t = this.ctx.currentTime;
+    const bus = this.ensureDrumBus();
+    // Kick: sine drop 90 -> 32 Hz.
+    const osc = this.ctx.createOscillator();
+    const og = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(90, t);
+    osc.frequency.exponentialRampToValueAtTime(32, t + 0.12);
+    og.gain.setValueAtTime(0.0001, t);
+    og.gain.exponentialRampToValueAtTime(0.5, t + 0.008);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    osc.connect(og);
+    og.connect(bus);
+    osc.start(t);
+    osc.stop(t + 0.18);
+    // Shaker tick on some hits.
+    if (Math.random() < 0.6) {
+      const n = this.ctx.createBufferSource();
+      n.buffer = this.noiseBuffer;
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 6000;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.12, t);
+      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+      n.connect(hp);
+      hp.connect(ng);
+      ng.connect(bus);
+      n.start(t);
+      n.stop(t + 0.06);
+    }
   }
 
   public stopAtmosphericMusic() {

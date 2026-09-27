@@ -5,7 +5,8 @@ export type WeaponType =
   | "carbine"
   | "crossbow"
   | "chainsaw"
-  | "molotov";
+  | "molotov"
+  | "wompus_howler"; // Batch 4: Konami-code secret weapon (see constants.ts)
 
 export interface Weapon {
   id: WeaponType;
@@ -28,6 +29,13 @@ export interface Weapon {
   unlocked: boolean;
   cost: number;
   upgradeLevel: number;
+  // Batch 4: evolution multipliers, stashed so data-driven level-ups (WEAPON_LEVELS)
+  // can re-apply them instead of wiping the evolution bonus.
+  evoDmgMul?: number;
+  evoFireMul?: number;
+  evoPelletsAdd?: number;
+  evoRangeMul?: number;
+  evoProjSpeedMul?: number;
 }
 
 export type ZombieType = "shambler" | "sprinter" | "miner_brute" | "bloater_spitter" | "behemoth" | "crawler";

@@ -887,3 +887,116 @@ export const SHOP_POOL: ShopOfferDef[] = [
 
 export const SHOP_OFFER_COUNT = 4;
 export const SHOP_REROLL_BASE = 15;
+
+// ---------------------------------------------------------------------------
+// Batch 4 (Lane B): per-level weapon stat tables + Konami secret weapon.
+//
+// WEAPON_LEVELS: 5-level stat arrays per weapon id, neon-swarm WDEFS style.
+//   dmg -> Weapon.damage, cnt -> Weapon.pellets, rad -> Weapon.range,
+//   spd -> Weapon.bulletSpeed, cd -> 1 / Weapon.fireRate (seconds per shot).
+// Level 1 of each row matches that weapon's INITIAL_WEAPONS base stats.
+//
+// ENGINE INTEGRATION POINT (coordinator): the buried level-up math lives in
+//   upgradeWeaponOnce(w) in src/game/engine.ts (~line 3520, Batch-3 block):
+//     if (!w || w.upgradeLevel >= 8) return false;
+//     w.upgradeLevel++;
+//     w.damage = Math.round(w.damage * 1.2);
+//     w.magazineSize = Math.round(w.magazineSize * 1.15);
+//     w.currentMag = w.magazineSize;
+// Replace the body so a level-up applies statsForLevel(w.id, w.upgradeLevel)
+// (dmg->damage, cnt->pellets, rad->range, spd->bulletSpeed, fireRate=1/cd).
+// NOTE: the engine currently caps at level 8 but this table has 5 levels —
+// either lower the >= 8 guard to >= 5 or extend the rows below to 8.
+// ---------------------------------------------------------------------------
+
+export interface WeaponLevelStats {
+  dmg: number;
+  cnt: number;
+  rad: number;
+  spd: number;
+  cd: number;
+}
+
+interface WeaponLevelRow {
+  dmg: number[];
+  cnt: number[];
+  rad: number[];
+  spd: number[];
+  cd: number[];
+}
+
+export const WEAPON_LEVELS: Record<string, WeaponLevelRow> = {
+  revolver:    { dmg: [65, 78, 92, 108, 128],  cnt: [1, 1, 1, 1, 1],   rad: [650, 650, 680, 700, 720], spd: [16, 16.5, 17, 17.5, 18], cd: [0.45, 0.42, 0.39, 0.36, 0.33] },
+  shotgun:     { dmg: [26, 30, 35, 40, 46],    cnt: [8, 8, 9, 10, 12], rad: [420, 430, 440, 450, 460], spd: [13, 13.5, 14, 14.5, 15], cd: [0.95, 0.9, 0.85, 0.8, 0.75] },
+  lever_rifle: { dmg: [140, 165, 195, 230, 275], cnt: [1, 1, 1, 1, 2], rad: [900, 920, 940, 960, 980], spd: [22, 23, 24, 25, 26],     cd: [0.71, 0.67, 0.63, 0.59, 0.55] },
+  carbine:     { dmg: [42, 48, 55, 63, 72],    cnt: [1, 1, 1, 2, 2],   rad: [750, 760, 770, 780, 800], spd: [19, 19.5, 20, 20.5, 21], cd: [0.13, 0.125, 0.12, 0.115, 0.11] },
+  crossbow:    { dmg: [180, 215, 255, 300, 360], cnt: [1, 1, 1, 1, 2], rad: [850, 870, 890, 910, 940], spd: [18, 18.5, 19, 19.5, 20], cd: [1.11, 1.05, 1.0, 0.95, 0.9] },
+  chainsaw:    { dmg: [35, 40, 46, 53, 62],    cnt: [1, 1, 1, 1, 1],   rad: [95, 100, 105, 110, 120],  spd: [12, 12, 12, 12, 12],     cd: [0.083, 0.08, 0.077, 0.074, 0.07] },
+  wompus_howler: { dmg: [120, 140, 165, 195, 230], cnt: [3, 3, 4, 4, 5], rad: [700, 720, 740, 760, 780], spd: [20, 20.5, 21, 21.5, 22], cd: [0.167, 0.158, 0.15, 0.142, 0.133] },
+};
+
+export const WEAPON_MAX_TABLE_LEVEL = 5;
+
+export function statsForLevel(id: string, level: number): WeaponLevelStats | null {
+  const row = WEAPON_LEVELS[id];
+  if (!row) return null;
+  const i = Math.max(0, Math.min(WEAPON_MAX_TABLE_LEVEL - 1, Math.floor(level) - 1));
+  return { dmg: row.dmg[i], cnt: row.cnt[i], rad: row.rad[i], spd: row.spd[i], cd: row.cd[i] };
+}
+
+// ---------------------------------------------------------------------------
+// Konami-code secret weapon: the Wompus Howler.
+//
+// Pike County reskin of the "retro blaster" trope: a Winslow gunsmith bored
+// out a carbine and tuned the report to yowl like the Winslow Wompus Cat.
+// Hidden from every draft — earned only via the Konami code.
+//
+// ENGINE INTEGRATION POINT (coordinator): the key handler is
+//   handleKeyDown = (e) => {...} in src/game/engine.ts (line 871).
+// Add, at the TOP of the handler (before the draft Digit1-3 early return so
+// the code also works on the title / game-over screens):
+//   this.konamiBuf = [...(this.konamiBuf ?? []), e.code].slice(-10);
+//   if (matchKonami(this.konamiBuf) && !this.weapons.some((w) => w.id === "wompus_howler")) {
+//     this.weapons.push(JSON.parse(JSON.stringify(SECRET_WEAPON)));
+//     this.konamiBuf = [];
+//     this.spawnFloater(this.player.x, this.player.y - 56, "WOMPUS HOWLER UNLOCKED", "#c77dff");
+//     this.callbacks.onRadio?.("Unknown", "Thirty years the Wompus cat yowled on the ridge. Now it yowls through your barrel.");
+//   }
+// e.code values are the DOM KeyboardEvent codes (ArrowUp, KeyB, KeyA, ...).
+// ---------------------------------------------------------------------------
+
+export const KONAMI_SEQUENCE: string[] = [
+  "ArrowUp", "ArrowUp", "ArrowDown", "ArrowDown",
+  "ArrowLeft", "ArrowRight", "ArrowLeft", "ArrowRight",
+  "KeyB", "KeyA",
+];
+
+// True when the tail of the recent-key buffer equals the Konami sequence.
+export function matchKonami(recentKeys: string[]): boolean {
+  if (recentKeys.length < KONAMI_SEQUENCE.length) return false;
+  const tail = recentKeys.slice(recentKeys.length - KONAMI_SEQUENCE.length);
+  return KONAMI_SEQUENCE.every((code, i) => tail[i] === code);
+}
+
+export const SECRET_WEAPON: Weapon = {
+  id: "wompus_howler",
+  name: "Wompus Howler",
+  category: "Secret",
+  description: "A Winslow gunsmith's joke that stopped being funny: a carbine bored out and tuned to yowl like the Wompus cat on every pull. The dead hear it coming and come anyway.",
+  damage: 120,
+  fireRate: 6,
+  pellets: 3,
+  spread: 0.18,
+  range: 700,
+  bulletSpeed: 20,
+  magazineSize: 24,
+  currentMag: 24,
+  reserveAmmo: 60,
+  maxReserveAmmo: 120,
+  reloadTime: 1700,
+  pierce: 2,
+  soundType: "carbine",
+  unlocked: true,
+  cost: 0,
+  upgradeLevel: 1,
+};
