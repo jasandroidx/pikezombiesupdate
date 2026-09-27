@@ -21,9 +21,9 @@ import {
   CellarHole,
   NoisePulse,
 } from "../types/game";
-import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG } from "./boons";
+import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG, supportApplies } from "./boons";
 import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVES, windowAt, WEAPON_MAX_TABLE_LEVEL, statsForLevel, KONAMI_SEQUENCE, matchKonami, SECRET_WEAPON, mulberry32, bossFor, evolutionReady, scalingAt, SPECIAL_WEAPON_DEFS } from "./constants";
-import { loadMeta, saveMeta, recordRun, topRuns } from "./meta";
+import { loadMeta, saveMeta, recordRun, topRuns, characterDef, stageDef, selectedCharacterId, selectedStageId } from "./meta";
 import * as metaNS from "./meta";
 import { soundEngine } from "../audio/soundEngine";
 import { renderEnvironment, drawBlobShadow, registerZombieHit, zombieFlashIntensity, applyZombieTint, clearZombieTint, drawZombieHitFlash, render7, renderTelegraphs, drawGlowSprite, drawSparkSprite, drawSmokeSprite } from "./mapRenderer";
@@ -207,6 +207,18 @@ export class GameEngine {
 	_lastZombieBob = 0; // Batch 8 (Lane B): test probe — last applied zombie idle bob.
 	floaters = [];
 	simTime = 0;
+	// Batch 9 (Lane 1): affinity/stage/roster run state.
+	pristineLocation: any = null; // pre-stage-clone location (shared GAME_LOCATIONS row untouched).
+	nightLengthMult = 1;
+	gritValueMul = 1;
+	stageZombieSpeedMul = 1;
+	stageSpawnPackMul = 1;
+	eliteIntervalMul = 1;
+	runHeadshotMul = 1;
+	pickupRadiusMul = 1;
+	nextScoreMulAt = 25; // Batch 9: dedicated score-multiplier drop schedule.
+	_charMaxHpAdd = 0; // Batch 9: current character's flat max-HP slice (divided out on re-run).
+	_charSpeedMul = 1; // Batch 9: current character's speed slice (divided out on re-run).
 	lastMoveSpeed = 0;
 	walkPhase = 0;
 	moveVX = 0;
@@ -243,6 +255,9 @@ export class GameEngine {
 	// VS-1: Harvest Streak — kill-chain counter with a 3s window.
 	streak = 0;
 	streakTimer = 0;
+	// Batch 9: kill surge 0..1 — +0.18 per kill (in killZombie), decays ~0.25/s.
+	// Drives soundEngine.setKillSurge (Lane 3) via driveKillSurge.
+	killSurge = 0;
 	maxStreak = 0;
 	lastStreakKill = -99;
 	// VS-1: "Run Out of the County" banish — 2 charges per run.
@@ -358,7 +373,7 @@ export class GameEngine {
 	animationFrameId = null;
 	lastTimestamp = 0;
 	constructor(e, t, n = 0, opts) {
-		this.canvas = e, this.ctx = e.getContext(`2d`), this.callbacks = t, this.currentLocation = GAME_LOCATIONS[n] || GAME_LOCATIONS[0], this.lighting = new DynamicLighting(), this.placePlayerSafely(), this.camX = this.player.x, this.camY = this.player.y, this.initExplosiveBarrels(), this.initLoreNotes(), this.initBarricades(), this.initHoles(), this.rebuildFlow(true), this.setupListeners(), this.installControlsProbe();
+		this.canvas = e, this.ctx = e.getContext(`2d`), this.callbacks = t, this.currentLocation = GAME_LOCATIONS[n] || GAME_LOCATIONS[0], this.pristineLocation = this.currentLocation, this.lighting = new DynamicLighting(), this.placePlayerSafely(), this.camX = this.player.x, this.camY = this.player.y, this.initExplosiveBarrels(), this.initLoreNotes(), this.initBarricades(), this.initHoles(), this.rebuildFlow(true), this.setupListeners(), this.installControlsProbe();
 		// Batch 5: daily-challenge seed — seeded RNG for gameplay rolls (cosmetic
 		// jitter stays on Math.random). Lane D passes { seed } as the 4th arg.
 		this.runSeed = opts?.seed ?? ((Math.random() * 2 ** 32) | 0);
@@ -623,6 +638,18 @@ export class GameEngine {
 			fuseState: () => { const z = [...this.zombies].reverse().find((z) => z.type === `bomber`); return z ? { fuseT: +z.fuseT.toFixed(3), beepT: +z.fuseBeepT.toFixed(3), alive: this.zombies.includes(z) } : null; },
 			chewState: (i) => { const z = this.zombies[i]; return z ? { type: z.type, ai: z.ai, kind: z.chewKind || null, cx: Math.round(z.chewX), cy: Math.round(z.chewY) } : null; },
 			driftState: (i) => { const z = this.zombies[i]; return z ? { ai: z.ai, kind: z.driftKind || null, dx: Math.round(z.driftX), dy: Math.round(z.driftY) } : null; },
+			// Batch 9 (Lane 1): the objective list tickDrift seeks (open holes,
+			// shrines, workbench) — the deterministic twin of the drift target.
+			objectives9: () => [
+				...this.holes.filter((h) => !h.boarded).map((h) => ({ kind: `hole`, x: Math.round(h.x), y: Math.round(h.y) })),
+				...this.shrines.map((s) => ({ kind: `shrine`, x: Math.round(s.x), y: Math.round(s.y) })),
+				...(!this._wbHidden9 && this.currentLocation.workbench ? [{ kind: `workbench`, x: Math.round(this.currentLocation.workbench.x), y: Math.round(this.currentLocation.workbench.y) }] : []),
+			],
+			boardAll: (v = true) => { for (const h of this.holes) h.boarded = !!v; return this.holes.filter((h) => h.boarded).length; },
+			// Batch 9 (Lane 1): test-only stash of objectives for the empty-map
+			// center-fallback test. Restores via unstashObjectives9.
+			stashObjectives9: () => { this._stashedHoles9 = this.holes; this._stashedShrines9 = this.shrines; this.holes = []; this.shrines = []; this._wbHidden9 = true; return { holes: this._stashedHoles9.length, shrines: this._stashedShrines9.length }; },
+			unstashObjectives9: () => { if (this._stashedHoles9) this.holes = this._stashedHoles9; if (this._stashedShrines9) this.shrines = this._stashedShrines9; this._stashedHoles9 = null; this._stashedShrines9 = null; this._wbHidden9 = false; return { holes: this.holes.length, shrines: this.shrines.length }; },
 			postHp: () => this.traps.filter((t) => t.kind === `post`).map((t) => ({ live: t.live, hp: Math.round(t.hp ?? 70), x: Math.round(t.x), y: Math.round(t.y) })),
 			holeBoards: () => this.holes.filter((h) => h.boarded).map((h) => ({ x: Math.round(h.x), y: Math.round(h.y), hp: Math.round(h.boardHealth) })),
 			php: () => Math.round(this.player.health),
@@ -631,6 +658,43 @@ export class GameEngine {
 			// (Lane B audio probes live on soundEngine.__test; Lane C probes are node-side.)
 			b5Seed: () => this.runSeed,
 			b5Beast: () => soundEngine.getSurge(),
+			// Batch 9 (Lane 1): kill-surge state + deterministic decay hook.
+			killSurge: () => +this.killSurge.toFixed(3),
+			decaySurge: (dt) => { this.updateKillSurge(dt); return +this.killSurge.toFixed(3); },
+			// Batch 9 (Lane 1): affinity link truth — tagged support boons apply
+			// ONLY to weapons sharing at least one tag; untagged boons are universal.
+			affLink: (boonId, weaponId) => supportApplies(String(boonId), String(weaponId)),
+			// Batch 9 (Lane 1): score-multiplier state. timeLeft is in milliseconds.
+			scoreMulState: () => {
+				const p = this.activePowerups.find((x) => x.type === `score_surge`);
+				return { active: this.hasPowerup(`score_surge`), timeLeft: p ? Math.max(0, Math.round(p.durationRemaining)) : 0, mult: 2 };
+			},
+			stepPowerups: (n = 1) => { for (let i = 0; i < Math.max(0, n | 0); i++) this.updatePowerups(1 / 60); return this.hasPowerup(`score_surge`); },
+			// Batch 9 (Lane 1): deterministic score-multiplier schedule stepping.
+			scoreMulSched: () => ({ nextAt: +this.nextScoreMulAt.toFixed(2), drops: this.drops.filter((d) => d.type === `score_surge`).length }),
+			tickScoreMul: () => { this.updateScoreMulDrops(); return this.drops.filter((d) => d.type === `score_surge`).length; },
+			forceScoreMul: () => { this.nextScoreMulAt = 0; this.updateScoreMulDrops(); return this.drops.filter((d) => d.type === `score_surge`).length; },
+			setSneak: (v) => { this.forceSneak = !!v; this.player.isSneaking = !!v; return this.forceSneak; },
+			// Batch 9 (Lane 1): roster + stage-rule run state.
+			roster9: () => ({
+				char: selectedCharacterId(), stage: selectedStageId(),
+				dmgMul: +(this.runDamageMul || 1).toFixed(3),
+				hsMul: +(this.runHeadshotMul || 1).toFixed(3),
+				fireMul: +(this.shopFireRateMul || 1).toFixed(3),
+				maxHp: Math.round(this.player.maxHealth),
+				speed: +this.player.speed.toFixed(3),
+				pickupMul: +(this.pickupRadiusMul || 1).toFixed(3),
+				night: +(this.nightLengthMult || 1).toFixed(3),
+				trees: (this.currentLocation.obstacles || []).length,
+				treesBase: (this.pristineLocation?.obstacles || []).length,
+				treeBase: (this.pristineLocation?.obstacles || []).filter((o) => o.type === `tree`).length,
+				holes: this.holes.length, holesBase: this._holesBase9 ?? this.holes.length,
+				barrels: this.explosiveBarrels.length, barrelsBase: this._barrelsBase9 ?? this.explosiveBarrels.length,
+				gritMul: +(this.gritValueMul || 1).toFixed(3),
+				zSpdMul: +(this.stageZombieSpeedMul || 1).toFixed(3),
+				packMul: +(this.stageSpawnPackMul || 1).toFixed(3),
+				eliteMul: +(this.eliteIntervalMul || 1).toFixed(3),
+			}),
 			// Lane B probes: per-level weapon tables, Konami secret, Hall of Records.
 			b4Levels: (id, lv) => statsForLevel(id, lv),
 			b4LevelsAll: () => Object.keys(WEAPON_LEVELS).map((id) => ({ id, l1: statsForLevel(id, 1).dmg, l5: statsForLevel(id, 5).dmg })),
@@ -653,7 +717,7 @@ export class GameEngine {
 			spawnElite2: () => { const z = this.spawnGuaranteedElite(); return { affix: z.affix, type: z.type }; },
 			zombieMass: (t) => this.zombieMass(t),
 			knockbackFor: (w, z) => +this.knockbackFor(w, z).toFixed(2),
-			spawnBulletAt: (x, y, vx, vy, dmg = 50) => { const b = Object.assign(this.allocBullet(), { x, y, vx, vy, damage: dmg, pierce: 1, rangeRemaining: 600, weaponType: `revolver`, radius: 3, color: `#fff` }); this.bullets.push(b); return this.bullets.length; },
+			spawnBulletAt: (x, y, vx, vy, dmg = 50, wt = `revolver`) => { const b = Object.assign(this.allocBullet(), { x, y, vx, vy, damage: dmg, pierce: 1, rangeRemaining: 600, weaponType: wt, radius: 3, color: `#fff` }); this.bullets.push(b); return this.bullets.length; },
 			bulletCount: () => this.bullets.length,
 			clearBullets: () => { this.bullets.length = 0; },
 			takeBoonDirect: (id) => { this.boonStacks[id] = (this.boonStacks[id] || 0) + 1; this.checkBreakpoint(id); return this.boonStacks[id]; },
@@ -731,7 +795,7 @@ export class GameEngine {
 			telegraphInfo: () => this.telegraphs.map((t) => ({ kind: t.kind, t0: +t.t0.toFixed(3), dur: t.dur })),
 			isLitAt: (x, y) => this.isLit(x, y),
 			runMods: () => ({ dmg: this.runDamageMul || 1, hp: this.runHpMul || 1, spd: this.runSpeedMul || 1, xp: this.runXpMul || 1 }),
-			reapplyRunMods: () => { this.applyRunStatMods(); return { mods: { dmg: this.runDamageMul, hp: this.runHpMul, spd: this.runSpeedMul, xp: this.runXpMul }, hp: Math.round(this.player.maxHealth), spd: +this.player.speed.toFixed(4) }; },
+			reapplyRunMods: () => { this.applyRunStatMods(); this.applyRosterMods(); return { mods: { dmg: this.runDamageMul, hp: this.runHpMul, spd: this.runSpeedMul, xp: this.runXpMul }, hp: Math.round(this.player.maxHealth), spd: +this.player.speed.toFixed(4) }; },
 			// Batch 8 (Lane A) probes: accel/friction, AI LOD, separation, arrive.
 			stepPlayer: (n = 1) => { for (let k = 0; k < n; k++) this.updatePlayer(1 / 60); return { x: +this.player.x.toFixed(1), y: +this.player.y.toFixed(1) }; },
 			pvel: () => ({ x: +this.moveVX.toFixed(3), y: +this.moveVY.toFixed(3), sp: +this.lastMoveSpeed.toFixed(3) }),
@@ -824,7 +888,7 @@ export class GameEngine {
 			waveState: this.waveState,
 			waveWindow: this.windowFor(Math.max(1, this.wave)).name,
 			waveSchedule: this.waveSchedule(),
-			eliteIn: Math.max(0, Math.ceil(45 - (this.simTime - this.lastEliteAt))),
+			eliteIn: Math.max(0, Math.ceil(this.eliteIntervalSec() - (this.simTime - this.lastEliteAt))),
 			break: this.waveBreakCountdown,
 			kills: this.stats.kills,
 			hint: this.interactHint,
@@ -1060,7 +1124,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.codexSeen = new Set(), this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.bloodSplats = [], this.slashBursts = [], this.hitFlashes = [], this.muzzlePunch = 0, this.gunKick = 0, this.gunKickT = 0, this.camPunchX = 0, this.camPunchY = 0, this.camPunchT = 0, this.whiffSlowT = 0, this.lastWhiff = null, this.lastKillWord = null, this.killWordCount = 0, this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.r7camInit = false, this.lastPx = null, this.lastPy = null, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.resetB7State(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.ensureB7Weapons(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.deathCineT = 0, this.deathFlash = 0, this.player.atkT = 0, this.player.bobPhase = Math.random() * Math.PI * 2, this._lastGameOver = null, this._lastPlayerPulse = { sx: 1, sy: 1 }, this._lastZombiePulse = { sx: 1, sy: 1 }, this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.codexSeen = new Set(), this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.killSurge = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.bloodSplats = [], this.slashBursts = [], this.hitFlashes = [], this.muzzlePunch = 0, this.gunKick = 0, this.gunKickT = 0, this.camPunchX = 0, this.camPunchY = 0, this.camPunchT = 0, this.whiffSlowT = 0, this.lastWhiff = null, this.lastKillWord = null, this.killWordCount = 0, this.fuseTimer = 0, this.nextPowerupAt = 80, this.nextScoreMulAt = 25, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.novaCd = 0, this.novaFlash = 0, this.missileCd = 0, this.vacuumSurge = 0, this.nextVacuumAt = 55, this.miniBossFired = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.r7camInit = false, this.lastPx = null, this.lastPy = null, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyStageTerrain(), this.resetB7State(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.applyRosterMods(), this.ensureB7Weapons(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.deathCineT = 0, this.deathFlash = 0, this.player.atkT = 0, this.player.bobPhase = Math.random() * Math.PI * 2, this._lastGameOver = null, this._lastPlayerPulse = { sx: 1, sy: 1 }, this._lastZombiePulse = { sx: 1, sy: 1 }, this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -1855,6 +1919,84 @@ export class GameEngine {
 		// Batch 7: run-stat mods from the meta lane (guarded — defaults hold if absent).
 		this.applyRunStatMods();
 	}
+	// Batch 9 (Lane 1): stage terrain rules — tree density (location clone, never
+	// mutates the shared GAME_LOCATIONS row), hole count, barrel count. Runs
+	// early in start(), after initHoles() and before rebuildFlow(true) so the
+	// flow field sees the extra trees.
+	applyStageTerrain() {
+		const num = (v, d) => typeof v === `number` && isFinite(v) ? v : d;
+		let rules = {};
+		try { rules = stageDef(selectedStageId()).rules || {}; } catch (err) { /* defaults hold */ }
+		this.nightLengthMult = num(rules.nightLengthMult, 1);
+		// NOTE: the sim has no night-duration timer (dark is a static per-map
+		// flag), so nightLengthMult is stored on the run for the future night cycle.
+		this.gritValueMul = num(rules.gritMult, 1);
+		this.stageZombieSpeedMul = num(rules.zombieSpeedMult, 1);
+		this.stageSpawnPackMul = num(rules.spawnPackMult, 1);
+		this.eliteIntervalMul = num(rules.eliteIntervalMult, 1);
+		// Tree density — clone the location; the shared row stays pristine.
+		const treeMult = num(rules.treeDensityMult, 1);
+		const pristine = this.pristineLocation || this.currentLocation;
+		const base = pristine.obstacles || [];
+		const trees = base.filter((o) => o.type === `tree`);
+		const wantTrees = Math.round(trees.length * treeMult);
+		if (wantTrees > trees.length && trees.length > 0) {
+			const extra = [];
+			for (let k = trees.length; k < wantTrees; k++) {
+				const t = trees[k % trees.length];
+				extra.push({ ...t, x: Math.round(t.x + (this.rng() * 180 - 90)), y: Math.round(t.y + (this.rng() * 180 - 90)) });
+			}
+			this.currentLocation = { ...pristine, obstacles: [...base, ...extra] };
+		} else {
+			this.currentLocation = pristine;
+		}
+		// Hole count — initHoles() already ran in start(); top up with jittered copies.
+		const holeMult = num(rules.holeCountMult, 1);
+		this._holesBase9 = this.holes.length;
+		const wantHoles = Math.round(this.holes.length * holeMult);
+		for (let k = this.holes.length; k < wantHoles; k++) {
+			const src = this.holes[(this.rng() * this.holes.length) | 0];
+			if (!src) break;
+			this.holes.push({ id: `hole_x${k}`, x: Math.round(src.x + (this.rng() * 220 - 110)), y: Math.round(src.y + (this.rng() * 220 - 110)), radius: src.radius, boarded: false, boardHealth: 90, maxBoardHealth: 90, kind: src.kind });
+		}
+		// Barrels — re-init from the location data first so repeated starts stay idempotent.
+		this.initExplosiveBarrels();
+		const barrelMult = num(rules.barrelMult, 1);
+		const baseBarrels = this.explosiveBarrels.length;
+		this._barrelsBase9 = baseBarrels;
+		const wantBarrels = Math.round(baseBarrels * barrelMult);
+		for (let k = baseBarrels; k < wantBarrels; k++) {
+			const src = this.explosiveBarrels[(this.rng() * baseBarrels) | 0];
+			if (!src) break;
+			this.explosiveBarrels.push({ id: `barrel_x${k}`, x: Math.round(src.x + (this.rng() * 160 - 80)), y: Math.round(src.y + (this.rng() * 160 - 80)), radius: 18, health: 45, maxHealth: 45 });
+		}
+	}
+	// Batch 9 (Lane 1): character passive mods — applied in start() after
+	// initRunMeta/applyRunStatMods so the meta-lane math is already settled.
+	// Idempotent across repeated starts: the previous run's character slice is
+	// divided/subtracted out before the new one lands.
+	applyRosterMods() {
+		const num = (v, d) => typeof v === `number` && isFinite(v) ? v : d;
+		let mods = {};
+		try { mods = characterDef(selectedCharacterId()).mods || {}; } catch (err) { /* defaults hold */ }
+		this.runDamageMul = (this.runDamageMul || 1) * num(mods.damageMul, 1);
+		this.runHeadshotMul = num(mods.headshotMul, 1);
+		this.shopFireRateMul = (this.shopFireRateMul || 1) * num(mods.fireRateMul, 1);
+		this.pickupRadiusMul = num(mods.pickupRadiusMul, 1);
+		// Flat max-HP add: subtract the previous run's slice first.
+		this.player.maxHealth = Math.max(1, this.player.maxHealth - this._charMaxHpAdd);
+		this._charMaxHpAdd = Math.round(num(mods.maxHpAdd, 0));
+		this.player.maxHealth += this._charMaxHpAdd;
+		this.player.health = this.player.maxHealth;
+		// Speed mul: divide out the previous run's slice first.
+		if (this._charSpeedMul !== 1) this.player.speed = this.player.speed / this._charSpeedMul;
+		this._charSpeedMul = num(mods.speedMul, 1);
+		this.player.speed *= this._charSpeedMul;
+	}
+	// Batch 9 (Lane 1): stage elite-cadence rule (Honey Springs shortens it).
+	eliteIntervalSec() {
+		return 45 * (this.eliteIntervalMul || 1);
+	}
 	bumpLifetime(stat, n = 1) {
 		this.meta.lifetime[stat] += n;
 		for (const q of QUESTS) {
@@ -1872,7 +2014,13 @@ export class GameEngine {
 	playerDamageMul(z, weaponType = ``) {
 		// Batch 7: run-stat mods multiply base damage (defaults to 1 when the meta lane is absent).
 		let m = this.questDmgMul * this.shopDmgMul * (this.runDamageMul || 1);
-		if (weaponType) m *= this.familyAffinity(weaponType);
+		if (weaponType) {
+			m *= this.familyAffinity(weaponType);
+			// Batch 9 (Lane 1): affinity-tag damage wiring — the lead support boon
+			// applies ONLY to weapons sharing at least one tag (precise). Universal
+			// boons stay universal; see supportApplies in boons.ts.
+			if (supportApplies(`lead`, weaponType)) m *= 1 + this.boon(`lead`) * .08;
+		}
 			if (z.type === `behemoth` || z.type === `miner_brute` || z.elite) {
 				let attuned = 0;
 				for (const s of this.shrines) s.attuned && attuned++;
@@ -2099,7 +2247,7 @@ export class GameEngine {
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && (n.onFree?.(), n.onFree = null, this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
 		this._simFrames = (this._simFrames || 0) + 1,
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateTelegraphs(e), this.updateOrbiters(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateCacheTimer(), this.updateFuse(e), this.updateBeastAudio(e);
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateTelegraphs(e), this.updateOrbiters(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateNova(e), this.updateMissiles(e), this.updateVacuumDrops(), this.updateDirector(), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateScoreMulDrops(), this.updateCacheTimer(), this.updateFuse(e), this.updateKillSurge(e), this.updateBeastAudio(e);
 		// Batch 5: on-shoot micro-layer decays — muzzle punch 50ms, gun kick 40ms yoyo, camera punch 60ms.
 		this.muzzlePunch = Math.max(0, this.muzzlePunch - e);
 		if (this.gunKickT > 0) { this.gunKickT = Math.max(0, this.gunKickT - e); this.gunKick = 5 * Math.sin((1 - this.gunKickT / .04) * Math.PI); } else this.gunKick = 0;
@@ -2177,7 +2325,7 @@ export class GameEngine {
 			waveState: this.waveState,
 			waveWindow: this.windowFor(Math.max(1, this.wave)).name,
 			waveSchedule: this.waveSchedule(),
-			eliteIn: Math.max(0, Math.ceil(45 - (this.simTime - this.lastEliteAt))),
+			eliteIn: Math.max(0, Math.ceil(this.eliteIntervalSec() - (this.simTime - this.lastEliteAt))),
 			shopOffers: this.shopOffers.map((o) => {
 				const d = SHOP_POOL.find((x) => x.id === o.offerId);
 				return d ? { id: d.id, name: d.name, desc: d.desc, cost: this.shopCost(d), locked: o.locked, afford: this.scrap >= this.shopCost(d) } : null;
@@ -2510,7 +2658,7 @@ export class GameEngine {
 	updateWeapons(e) {
 		let t = this.weapons[this.currentWeaponIndex];
 		if (this.isReloading) {
-			let n = this.getPerkLevel(`quickdraw`) * .2 + this.boon(`trigger`) * .08;
+			let n = this.getPerkLevel(`quickdraw`) * .2 + (supportApplies(`trigger`, t.id) ? this.boon(`trigger`) : 0) * .08; // Batch 9: trigger quickens reload ONLY for linked weapons.
 			const hands = !this.isMouseDown && this.virtualJoystickAim.x === 0 && this.virtualJoystickAim.y === 0;
 			let r = t.reloadTime * (1 - Math.min(.65, n)) * (hands ? .38 : 1);
 			if (e - this.reloadStartTime >= r) {
@@ -2520,7 +2668,7 @@ export class GameEngine {
 			return;
 		}
 		const hunting = !this.isMouseDown && !this.player.isSneaking && !!this.nearestTarget(this.aimReach());
-		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + this.boon(`trigger`) * .1) * this.shopFireRateMul / this.bpFireMul * (1 + (this.comboMultiplier - 1) * .06) * r);
+		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + (supportApplies(`trigger`, t.id) ? this.boon(`trigger`) : 0) * .1) * this.shopFireRateMul / this.bpFireMul * (1 + (this.comboMultiplier - 1) * .06) * r); // Batch 9: trigger fire-rate is affinity-gated.
 		i && e - this.lastShotTime >= a && (t.currentMag > 0 || n ? (this.fireCurrentWeapon(), this.lastShotTime = e) : t.reserveAmmo > 0 ? this.reloadCurrentWeapon() : this.autoSwapFromDry());
 	}
 	nearestTarget(range) {
@@ -2578,7 +2726,7 @@ export class GameEngine {
 		else if (e.id === `chainsaw`) this.screenShake = 2 * this.tune('shake') * this.motionScale();
 		else this.screenShake = 2.5 * this.tune('shake') * this.motionScale();
 		if (e.id === `shotgun` || e.id === `revolver` || e.id === `lever_rifle`) this.hitstop = Math.max(this.hitstop, (e.id === `shotgun` ? .04 : .02) * this.tune('hitstop'));
-		const dmgMul = (1 + this.getPerkLevel(`hollowpoint`) * .2) * (1 + this.boon(`lead`) * .08) * this.bpDamageMul * (this.evolved === `lincoln` && e.id === `revolver` ? 1.35 : 1) * (this.simTime < this.freshUntil ? 1.45 : 1) * (this.simTime < this.bountyBoostUntil ? 1.18 : 1);
+		const dmgMul = (1 + this.getPerkLevel(`hollowpoint`) * .2) * this.bpDamageMul * (this.evolved === `lincoln` && e.id === `revolver` ? 1.35 : 1) * (this.simTime < this.freshUntil ? 1.45 : 1) * (this.simTime < this.bountyBoostUntil ? 1.18 : 1); // Batch 9: lead lives in playerDamageMul now (affinity-gated).
 		const choke = this.getPerkLevel(`choke`);
 		if (e.id === `chainsaw`) {
 			this.hitstop = Math.max(this.hitstop, (.03) * this.tune('hitstop'));
@@ -2704,7 +2852,8 @@ export class GameEngine {
 				}));
 			}
 			// Batch 2: heatseeker — rounds curve toward the nearest dead man.
-			if (this.boon(`seeker`) > 0 && !n.isFlare && !n.isMolotov && !n.isSplinter && !n.isMissile) {
+			// Batch 9: affinity-gated — only linked weapons' rounds hunt.
+			if (this.boon(`seeker`) > 0 && supportApplies(`seeker`, n.weaponType) && !n.isFlare && !n.isMolotov && !n.isSplinter && !n.isMissile) {
 				const tgt = this.nearestZombie(n.x, n.y, 300);
 				if (tgt) {
 					const want = Math.atan2(tgt.y - n.y, tgt.x - n.x);
@@ -2790,7 +2939,7 @@ export class GameEngine {
 							this.spawnFloater(r.x, r.y - r.radius, `CRIT`, `#fef08a`);
 							soundEngine.playZombieHit(true);
 						}
-						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4, this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r, n.weaponType), i = this.applyAffixDefense(r, i), r.health -= i, this.stats.damageDealt += i;
+						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4 * (this.runHeadshotMul || 1), this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r, n.weaponType), i = this.applyAffixDefense(r, i), r.health -= i, this.stats.damageDealt += i;
 						if (!n.isSplinter && r.health > 0 && r.health <= r.maxHealth * .2 && r.type !== `behemoth` && r.type !== `miner_brute`) r.health = 0;
 						if (e) this.tickBounty(`head`);
 						if (r.health <= 0 && !n.isSplinter) r.shatter = true;
@@ -2918,7 +3067,7 @@ export class GameEngine {
 			this.lastZombieSpawnTime = e;
 		}
 		// VS-2: guaranteed elite cadence — roughly every 45 seconds of run time.
-		if (this.simTime - this.lastEliteAt >= 45) {
+		if (this.simTime - this.lastEliteAt >= this.eliteIntervalSec()) { // Batch 9 (Lane 1): stage elite-cadence rule.
 			this.lastEliteAt = this.simTime;
 			this.spawnGuaranteedElite();
 		}
@@ -3067,6 +3216,7 @@ export class GameEngine {
 		// Batch 4: D(t) time-curve multiplies the wave-system spawn count.
 		let e = this.wave === 1 ? Math.floor(18 * this.difficultyMultiplier * this.timeCurve()) : Math.floor((16 + this.wave * 6 + Math.max(0, this.wave - 10) * 4) * this.difficultyMultiplier * this.timeCurve());
 		if (this.wave > 1) e += 4;
+		e = Math.floor(e * (this.stageSpawnPackMul || 1)); // Batch 9 (Lane 1): stage pack-size rule.
 		this.lanternWentOut && (e = Math.floor(e * 1.22)), this.zombiesToSpawn = e, soundEngine.playWaveHorn();
 		soundEngine.setHeat(Math.min(1, Math.max(0, this.wave - 1) / 7));
 		this.waveCall = this.wave === 1 ? "Shamblers on the trace" : this.wave % 5 === 0 ? "Something big is walking" : this.wave >= 4 ? "Bloaters in the mix" : this.wave >= 3 ? "A miner in the dark" : "Sprinters this time";
@@ -3189,7 +3339,7 @@ export class GameEngine {
 			vx: 0,
 			vy: 0,
 			angle: 0,
-			speed: i * (.9 + Math.random() * .2) * em.enemySpeedMult,
+			speed: i * (.9 + Math.random() * .2) * em.enemySpeedMult * (this.stageZombieSpeedMul || 1),
 			// Batch 4: D(t) time-curve multiplies with wave scaling + event mods.
 			maxHealth: Math.round(r * em.enemyHpMult * this.timeCurve()),
 			health: Math.round(r * em.enemyHpMult * this.timeCurve()),
@@ -3205,6 +3355,7 @@ export class GameEngine {
 			scrapValue: u,
 			spitCooldown: 2500,
 			ai: e === `crawler` ? `chase` : `wander`,
+			quietT: 6, spottedT: 0, // Batch 9 (Lane 1): stealth — seconds since last stimulus; spotted grace timer.
 			flank: Math.random() < .5 ? -1 : 1,
 			tx: t,
 			ty: n,
@@ -3349,19 +3500,45 @@ export class GameEngine {
 			if (think) {
 			let s = Math.hypot(r.hearX - r.x, r.hearY - r.y), c = this.simTime < this.bellLureUntil && this.currentLocation.bell;
 			const lantern = this.currentLocation.lantern;
-			if (this.lanternLit && lantern && r.type === `shambler` && r.ai === `wander`) r.wanderAngle = Math.atan2(lantern.y - r.y, lantern.x - r.x) + (Math.random() - .5) * .7;
+			if (this.lanternLit && lantern && r.type === `shambler` && (r.ai === `wander` || r.ai === `idle`)) r.wanderAngle = Math.atan2(lantern.y - r.y, lantern.x - r.x) + (Math.random() - .5) * .7;
+			// Batch 9 (Lane 1): stealth — quiet timer. Engaged/spotted zombies are
+			// stimulated; wanderers with no stimulus for 6s settle into idle.
+			if (r.ai === `chase` || r.ai === `attack` || r.ai === `chew` || r.ai === `spotted`) r.quietT = 6;
+			else {
+				r.quietT -= e;
+				if (r.ai === `wander` && r.quietT <= 0) r.ai = `idle`;
+			}
 			if (c && this.currentLocation.bell) {
 				r.hearX = this.currentLocation.bell.x;
 				r.hearY = this.currentLocation.bell.y;
+				r.quietT = 6;
 				r.ai = o <= r.radius + this.player.radius + 2 ? `attack` : `investigate`;
-			} else if (r.ai !== `chew` && this.zombieSees(r, o)) {
+			} else if (r.ai !== `chew` && r.ai !== `spotted` && this.zombieSees(r, o)) {
 				r.hearX = this.player.x;
 				r.hearY = this.player.y;
-				r.ai = o <= r.radius + this.player.radius + 2 ? `attack` : `chase`;
+				r.quietT = 6;
+				// Batch 9 (Lane 1): a sneaking player seen by an idle/wandering zombie
+				// SPOTS it instead of instantly aggroing — the grace resolves below.
+				if (o <= r.radius + this.player.radius + 2) r.ai = `attack`;
+				else if (this.player.isSneaking && (r.ai === `idle` || r.ai === `wander`)) { r.ai = `spotted`; r.spottedT = 1.6; }
+				else r.ai = `chase`;
 			} else if (r.ai === `chase` || r.ai === `attack`) r.ai = `investigate`;
-			else if (r.ai === `wander` && s > 40 && (r.hearX !== r.x || r.hearY !== r.y)) r.ai = `investigate`;
-			r.ai === `wander` ? (r.wanderAngle += (Math.random() - .5) * .8 * e, r.angle = r.wanderAngle, !(this.lanternLit && r.type === `shambler`) && this.tickDrift(r, e)) : r.ai === `investigate` ? (r.angle = Math.atan2(r.hearY - r.y, r.hearX - r.x), s < 28 && (r.ai = `wander`)) : r.angle = Math.atan2(a, i),
-			(r.ai === `investigate` || r.ai === `wander`) && (r.tx = r.ai === `investigate` ? r.hearX : r.x, r.ty = r.ai === `investigate` ? r.hearY : r.y), r.type === `bloater_spitter` && this.tickSpitter(r, i, a, o, e);
+			else if ((r.ai === `wander` || r.ai === `idle`) && s > 40 && (r.hearX !== r.x || r.hearY !== r.y)) r.ai = `investigate`;
+			// Batch 9 (Lane 1): spotted grace — the player has ~1.6s to break sight
+			// (stand the zombie back down to wander); un-sneaking, touching, or the
+			// timer expiring commits it to the chase.
+			if (r.ai === `spotted`) {
+				r.spottedT -= e;
+				r.quietT = 6;
+				const touch = o <= r.radius + this.player.radius + 2;
+				if (touch) r.ai = `attack`;
+				else if (!this.player.isSneaking) r.ai = `chase`;
+				else if (!this.zombieSees(r, o)) r.ai = `wander`;
+				else if (r.spottedT <= 0) r.ai = `chase`;
+				if (r.ai === `spotted`) { r.hearX = this.player.x; r.hearY = this.player.y; }
+			}
+			r.ai === `idle` ? (r.wanderAngle += (Math.random() - .5) * .4 * e, r.angle = r.wanderAngle, !(this.lanternLit && r.type === `shambler`) && this.tickDrift(r, e)) : r.ai === `wander` ? (r.wanderAngle += (Math.random() - .5) * .8 * e, r.angle = r.wanderAngle, !(this.lanternLit && r.type === `shambler`) && this.tickDrift(r, e)) : (r.ai === `investigate` || r.ai === `spotted`) ? (r.angle = Math.atan2(r.hearY - r.y, r.hearX - r.x), r.ai === `investigate` && s < 28 && (r.ai = `wander`)) : r.angle = Math.atan2(a, i),
+			(r.ai === `investigate` || r.ai === `spotted` || r.ai === `wander` || r.ai === `idle`) && (r.tx = (r.ai === `investigate` || r.ai === `spotted`) ? r.hearX : r.x, r.ty = (r.ai === `investigate` || r.ai === `spotted`) ? r.hearY : r.y), r.type === `bloater_spitter` && this.tickSpitter(r, i, a, o, e);
 			let flare = null, flareDist = 1e9;
 			for (const fl of this.flares) {
 				const fd = Math.hypot(fl.x - r.x, fl.y - r.y);
@@ -3371,6 +3548,7 @@ export class GameEngine {
 			if (r.ai !== `chew` && flare && !melee && flareDist < 640 && (this.player.isSneaking || flareDist + 36 < o)) {
 				r.hearX = flare.x;
 				r.hearY = flare.y;
+				r.quietT = 6; // Batch 9 (Lane 1): a fresh stimulus resets the quiet timer.
 				r.ai = flareDist < 48 ? `wander` : `investigate`;
 				r.angle = Math.atan2(flare.y - r.y, flare.x - r.x);
 			}
@@ -3378,7 +3556,7 @@ export class GameEngine {
 			}
 			r.type === `bloater_spitter` && this.tickSpitter(r, i, a, o, e);
 			let u = r.speed;
-			r.type === `behemoth` && r.health < r.maxHealth * .4 && (u *= 1.4), r.type === `behemoth` && r.enraged && (u *= this.behemothPhases.enrageSpeedMul), r.bossPhase === `charge` && (r.chargeWindupT > 0) && (u = 0), r.ai === `wander` && (u *= .35), r.ai === `investigate` && (u *= .7), r.type === `bloater_spitter` && (r.ai === `chase` || r.ai === `attack`) && o <= 420 && o >= 260 && (u *= .5);
+			r.type === `behemoth` && r.health < r.maxHealth * .4 && (u *= 1.4), r.type === `behemoth` && r.enraged && (u *= this.behemothPhases.enrageSpeedMul), r.bossPhase === `charge` && (r.chargeWindupT > 0) && (u = 0), r.ai === `wander` && (u *= .35), r.ai === `idle` && (u *= .15), r.ai === `investigate` && (u *= .7), r.ai === `spotted` && (u = 0), r.type === `bloater_spitter` && (r.ai === `chase` || r.ai === `attack`) && o <= 420 && o >= 260 && (u *= .5);
 			// Batch 8: arrive steering — damps approach speed within ~60u of the
 			// target so the horde eases in instead of pile-driving at full speed.
 			const stopD = r.radius + this.player.radius;
@@ -3609,12 +3787,16 @@ export class GameEngine {
 		this.lastStreakKill = this.simTime;
 		this.streakTimer = 3;
 		if (this.streak > this.maxStreak) this.maxStreak = this.streak;
+		// Batch 9: kill surge climbs +0.18 per kill, capped at 1.
+		this.killSurge = Math.min(1, this.killSurge + .18), this.driveKillSurge();
 		const streakBonus = Math.min(this.streak, 30);
 		this.addScore(streakBonus);
 		if (this.streak >= 10) this.spawnFloater(e.x, e.y - e.radius - 10, `HARVEST x${this.streak}`, this.streakColor());
 		soundEngine.playKillSub();
 		// Batch 5: combo-pitched kill SFX, kill surge, and beast/growl mix.
-		soundEngine.playKillPitched(this.streak);
+		// Batch 9 (Lane 3): combo-pitched kill SFX now routes through the pure
+		// killPitchHz(combo) = 300 + min(combo,20)*30 Hz formula.
+		soundEngine.killSound(this.streak);
 		soundEngine.bumpSurge();
 		soundEngine.setBeastMix(Math.min(1, (this.beastDmgAcc || 0) / 600), this.streak);
 		this.feelKill(e);
@@ -4057,6 +4239,18 @@ export class GameEngine {
 			o.hearX = this.player.x; o.hearY = this.player.y;
 		}
 	}
+	// Batch 9: kill-surge audio drive — Lane 3 owns setKillSurge; the typeof
+	// guard keeps this a no-op if the audio lane's method is ever absent.
+	driveKillSurge() {
+		typeof soundEngine.setKillSurge === `function` && soundEngine.setKillSurge(this.killSurge);
+	}
+	// Batch 9: kill surge decays ~0.25/s while it sits above 0; kills push it
+	// back up in killZombie, so it only falls when the killing stops.
+	updateKillSurge(e) {
+		if (this.killSurge <= 0) return;
+		this.killSurge = Math.max(0, this.killSurge - .25 * e);
+		this.driveKillSurge();
+	}
 	// Batch 5: per-frame audio state — heartbeat follows HP, beast damage accumulator decays.
 	updateBeastAudio(e) {
 		this.beastDmgAcc = (this.beastDmgAcc || 0) * Math.pow(.5, e);
@@ -4077,7 +4271,7 @@ export class GameEngine {
 		this.trauma = Math.min(1, this.trauma + .5 * this.tune(`shake`) * this.motionScale());
 		this.shockwaves.push({ x, y, r: 8, maxR: 160, life: .4, maxLife: .4, color: `#ffffff` });
 		this.spawnFloater?.(x, y - 20, `TEST IMPACT`, `#ffd700`);
-		soundEngine.playKillPitched(10);
+		soundEngine.killSound(10);
 	}
 	// Batch 7 (Lane 1): weapon defs live here because the constants.ts entries are
 	// owned by another lane — entry fields win, local defaults fill the gaps.
@@ -4427,9 +4621,9 @@ export class GameEngine {
 		this.bannerUntil = Date.now() + 2600;
 		this.trauma = Math.min(1, this.trauma + .45 * this.tune('shake') * this.motionScale());
 		this.callbacks.onRadio?.(`WJPS`, `Folks... we got a big one on the Trace. Get to high ground or get to cover.`);
-		soundEngine.tone({ f: 480, f2: 360, type: `sawtooth`, dur: .5, vol: .3 });
-		soundEngine.tone({ f: 360, f2: 240, type: `sawtooth`, dur: .5, vol: .3, delay: .5 });
-		soundEngine.tone({ f: 240, f2: 120, type: `sawtooth`, dur: .8, vol: .35, delay: 1 });
+		// Batch 9 (Lane 3): the boss warning motif (480->360->240Hz square alert)
+		// replaces the old descending sawtooth sequence — one alert, not two.
+		soundEngine.bossMotif();
 	}
 	applyAffixDefense(z, dmg) {
 		// Batch 5: riot_shield type shares the shield mechanic — shield pool absorbs,
@@ -4451,6 +4645,7 @@ export class GameEngine {
 	tryRicochet(n, hitZ) {
 		const maxB = this.boon(`ricochet`);
 		if (maxB <= 0) return false;
+		if (!supportApplies(`ricochet`, n.weaponType)) return false; // Batch 9: affinity-gated.
 		n.bouncesLeft = n.bouncesLeft ?? maxB;
 		if (n.bouncesLeft <= 0) return false;
 		let best = null, bd = 340;
@@ -4474,6 +4669,7 @@ export class GameEngine {
 	spawnForkChildren(n, a) {
 		const ranks = this.boon(`fork`);
 		if (ranks <= 0 || n.isForkChild || n.isSplinter || n.isFlare || n.isMolotov) return;
+		if (!supportApplies(`fork`, n.weaponType)) return; // Batch 9: affinity-gated.
 		for (let k = 0; k < ranks; k++) {
 			const fa = a + (k % 2 === 0 ? 1 : -1) * (.38 + .22 * ((k / 2) | 0));
 			const sp = Math.hypot(n.vx, n.vy) || 400;
@@ -4558,6 +4754,18 @@ export class GameEngine {
 			this.drops.push({ id: Math.random().toString(), type, x: this.player.x + Math.cos(a) * d, y: this.player.y + Math.sin(a) * d, amount: type === `moonshine_med` ? 40 : 1, duration: 3e4 });
 			this.spawnFloater(this.player.x, this.player.y - 56, `SUPPLY DROP`, `#4cc3ff`);
 			soundEngine.tone({ f: 660, f2: 990, type: `sine`, dur: .25, vol: .2 });
+		}
+	}
+	// Batch 9 (Lane 1): dedicated score-multiplier drops — first pickup around
+	// 25s, then every 25–40s. Separate from the generic 80s supply schedule.
+	updateScoreMulDrops() {
+		if (this.draft) return;
+		if (this.simTime >= this.nextScoreMulAt) {
+			this.nextScoreMulAt = this.simTime + 25 + this.rng() * 15;
+			const a = this.rng() * Math.PI * 2, d = 120 + this.rng() * 80;
+			this.drops.push({ id: Math.random().toString(), type: `score_surge`, x: this.player.x + Math.cos(a) * d, y: this.player.y + Math.sin(a) * d, amount: 1, duration: 3e4 });
+			this.spawnFloater(this.player.x, this.player.y - 56, `SCORE SURGE`, `#4cc3ff`);
+			soundEngine.tone({ f: 880, f2: 1320, type: `sine`, dur: .25, vol: .2 });
 		}
 	}
 
@@ -4936,7 +5144,11 @@ export class GameEngine {
 					maxLife: .7
 				}), this.noisePulses.length > 10 && this.noisePulses.shift();
 			}
-			for (let r of this.zombies) Math.hypot(r.x - e, r.y - t) <= n && (r.hearX = e, r.hearY = t, r.ai === `wander` && (r.ai = `investigate`));
+			for (let r of this.zombies) {
+				if (Math.hypot(r.x - e, r.y - t) > n) continue;
+				r.hearX = e; r.hearY = t; r.quietT = 6; // Batch 9 (Lane 1): noise is a stimulus.
+				(r.ai === `wander` || r.ai === `idle` || r.ai === `spotted`) && (r.ai = `investigate`);
+			}
 		}
 	}
 	emitNoise(x, y, radius) {
@@ -5149,12 +5361,15 @@ export class GameEngine {
 				const dx = s.x - r.x, dy = s.y - r.y, d = dx * dx + dy * dy;
 				if (d < bd) { bd = d; bk = `shrine`; bx = s.x; by = s.y; }
 			}
-			const wb = this.currentLocation.workbench;
+			const wb = this._wbHidden9 ? null : this.currentLocation.workbench; // Batch 9: stashObjectives9 hides it.
 			if (wb) {
 				const dx = wb.x - r.x, dy = wb.y - r.y, d = dx * dx + dy * dy;
 				if (d < bd) { bd = d; bk = `workbench`; bx = wb.x; by = wb.y; }
 			}
 			r.driftKind = bk; r.driftX = bx; r.driftY = by;
+			// Batch 9 (Lane 1): off-screen objective fallback — with no objectives
+			// left on the map, drift toward the map center so the edges stay alive.
+			if (!r.driftKind) { r.driftKind = `center`; r.driftX = this.currentLocation.mapWidth / 2; r.driftY = this.currentLocation.mapHeight / 2; }
 		}
 		if (r.driftKind) {
 			const dx = r.driftX - r.x, dy = r.driftY - r.y;
@@ -5338,7 +5553,7 @@ export class GameEngine {
 		this.grit.push(g0);
 	}
 	spawnGrit(z) {
-		let value = this.gritValue(z.type);
+		let value = this.gritValue(z.type) * (this.gritValueMul || 1); // Batch 9 (Lane 1): stage grit rule.
 		if (this.gritBag > 0) { value += 1; this.gritBag--; }  // bag pays out into fresh drops
 		const bits = value > 3 ? 4 : value > 1 ? 2 : 1;
 		for (let i = 0; i < bits; i++) {
@@ -5397,7 +5612,7 @@ export class GameEngine {
 			}
 		}
 		const span = this.viewSize().w;
-		const magnet = Math.max(420, span * 0.46) + this.getPerkLevel(`scavenger`) * 40 + this.gritBonus * 36;
+		const magnet = (Math.max(420, span * 0.46) + this.getPerkLevel(`scavenger`) * 40 + this.gritBonus * 36) * (this.pickupRadiusMul || 1); // Batch 9: character pickup-radius passive.
 		// Batch 4: Dust Devil surge — every ground orb flies to the player.
 		if (this.vacuumSurge > 0) {
 			this.vacuumSurge -= dt;

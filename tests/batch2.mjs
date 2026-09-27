@@ -49,7 +49,7 @@ const fork = await page.evaluate(async () => {
   const px = c.playerPos().x, py = c.playerPos().y;
   const zi = c.spawnAt("miner_brute", px + 130, py); // tough: survives the hit
   const max = c.zMax(zi);
-  c.spawnBulletAt(px, py, 420, 0, 40); // straight at the zombie
+  c.spawnBulletAt(px, py, 420, 0, 40, "shotgun"); // straight at the zombie; shotgun links fork [scatter]
   await new Promise((r) => setTimeout(r, 450)); // hit lands ~0.3s; children live ~0.5s
   return { bullets: c.bulletCount(), h: c.zHealth(zi), max };
 });

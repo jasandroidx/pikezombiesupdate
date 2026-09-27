@@ -1,5 +1,14 @@
+import { useEffect, useState } from "react";
 import { Weapon, ActivePowerup } from "@/types/game";
 import { Volume2, VolumeX, Zap, Skull, Infinity, Radio, Bell } from "lucide-react";
+
+/** Score-multiplier powerup state (Lane 1 probe shape: {active, timeLeft, mult}).
+ *  timeLeft is in ms, matching the existing ActivePowerup durationRemaining. */
+export interface ScoreMulState {
+  active: boolean;
+  timeLeft: number;
+  mult: number;
+}
 
 interface HUDProps {
   health: number;
@@ -20,6 +29,8 @@ interface HUDProps {
   reloadProgress: number;
   isMuted: boolean;
   activePowerups?: ActivePowerup[];
+  /** Batch 9 — Lane 4: Lane 1's score-multiplier powerup. Null/absent = hidden. */
+  scoreMul?: ScoreMulState | null;
   onToggleMute: () => void;
   onOpenWorkbench: () => void;
   onSkipWaveTimer: () => void;
@@ -83,6 +94,7 @@ export function HUD({
   reloadProgress,
   isMuted,
   activePowerups = [],
+  scoreMul = null,
   onToggleMute,
   onOpenWorkbench,
   onSkipWaveTimer,
@@ -129,6 +141,22 @@ export function HUD({
   const hpPercent = Math.max(0, Math.min(100, (health / maxHealth) * 100));
   const isCritical = hpPercent < 25;
   const gritPct = Math.max(0, Math.min(100, (xp / Math.max(1, xpNeed)) * 100));
+
+  // Batch 9 — Lane 4: score-multiplier countdown. Capture the peak timeLeft
+  // when the powerup activates so the bar drains against a fixed full scale.
+  // Probe absent / inactive -> badge hidden.
+  const [scoreMulMax, setScoreMulMax] = useState(0);
+  useEffect(() => {
+    if (scoreMul && scoreMul.active) {
+      if (scoreMul.timeLeft > scoreMulMax) setScoreMulMax(scoreMul.timeLeft);
+    } else if (scoreMulMax !== 0) {
+      setScoreMulMax(0);
+    }
+  }, [scoreMul, scoreMulMax]);
+  const scoreMulPct =
+    scoreMul && scoreMul.active && scoreMulMax > 0
+      ? Math.max(0, Math.min(100, (scoreMul.timeLeft / scoreMulMax) * 100))
+      : 0;
 
   return (
     <div className="hud-shell pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-3 pb-32 md:p-4 md:pb-5 select-none">
@@ -264,6 +292,37 @@ export function HUD({
               {p.type.replace("_", " ")} {Math.ceil(p.durationRemaining / 1000)}s
             </div>
           ))}
+        </div>
+      )}
+
+      {scoreMul && scoreMul.active && (
+        <div className="mt-2 flex justify-center">
+          <div
+            data-testid="score-mul-badge"
+            className="flex items-center gap-2 rounded border border-accent bg-surface px-3 py-1.5"
+          >
+            <Zap className="h-3.5 w-3.5 text-accent" />
+            <span className="font-heading text-sm font-bold tracking-wider text-accent">
+              {scoreMul.mult}× SCORE
+            </span>
+            <span data-testid="score-mul-seconds" className="font-mono text-xs text-fg">
+              {Math.ceil(scoreMul.timeLeft / 1000)}s
+            </span>
+            <div
+              className="h-2 w-24 overflow-hidden rounded bg-surface-2"
+              role="progressbar"
+              aria-label="Score multiplier time left"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(scoreMulPct)}
+            >
+              <div
+                data-testid="score-mul-bar"
+                className="h-full bg-accent transition-[width] duration-150"
+                style={{ width: `${scoreMulPct}%` }}
+              />
+            </div>
+          </div>
         </div>
       )}
 

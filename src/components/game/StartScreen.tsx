@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { GAME_LOCATIONS, OUTBREAK_ORDER } from "@/game/constants";
+import { GAME_LOCATIONS, OUTBREAK_ORDER, locationIndexById } from "@/game/constants";
 import { buyRank, loadSave, rankCost } from "@/game/save";
 import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield, Wind, CalendarDays, Settings, ScrollText, Landmark } from "lucide-react";
 import { ControlsModal } from "./ControlsModal";
 import { StatShopModal } from "./StatShopModal";
-import { dailyDateStr, dailyPlayed, getDailySeed, loadMeta, markDailyPlayed } from "@/game/meta";
+import { CharacterSelect } from "./CharacterSelect";
+import { stageDef } from "@/game/roster";
+import { dailyDateStr, dailyPlayed, getDailySeed, loadMeta, markDailyPlayed, selectedCharacterId, selectedStageId, setSelectedCharacterId, setSelectedStageId } from "@/game/meta";
 import { QUESTS } from "@/game/constants";
 
 interface StartScreenProps {
@@ -23,7 +25,10 @@ interface StartScreenProps {
 
 export function StartScreen({ onStartGame, isMuted, onToggleMute, onOpenSettings, onOpenCodex }: StartScreenProps) {
   const meta = loadMeta();
-  const [selectedLocation, setSelectedLocation] = useState(0);
+  // Batch 9 — Lane 4: stage + survivor picks persist in meta.ts. The county
+  // map picker drives the stage; the Survivor panel drives the character.
+  const [selectedLocation, setSelectedLocation] = useState(() => locationIndexById(selectedStageId()));
+  const [selectedCharacter, setSelectedCharacter] = useState(() => selectedCharacterId());
   const [difficulty, setDifficulty] = useState(1);
   const [mutators, setMutators] = useState<string[]>([]);
   const [showHelp, setShowHelp] = useState(false);
@@ -111,7 +116,11 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute, onOpenSettings
           <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.22em] text-accent">County map</div>
           <CountyMap selected={GAME_LOCATIONS[selectedLocation]?.id} cleared={save.mapsCleared} onPick={(id) => {
             const i = GAME_LOCATIONS.findIndex((l) => l.id === id);
-            if (i >= 0) setSelectedLocation(i);
+            if (i >= 0) {
+              setSelectedLocation(i);
+              // Batch 9 — Lane 4: stage pick persists; the twist card below reads it.
+              setSelectedStageId(id);
+            }
           }} />
         </div>
 
@@ -125,6 +134,28 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute, onOpenSettings
               {GAME_LOCATIONS[selectedLocation].description}
             </p>
           </div>
+
+          {(() => {
+            const stage = stageDef(GAME_LOCATIONS[selectedLocation]?.id ?? "");
+            return (
+              <div className="rounded border border-accent/40 bg-black/55 p-3 text-left backdrop-blur-[2px]">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-accent">Stage rule</span>
+                  <span className="font-heading text-sm font-bold text-fg">{stage.twist}</span>
+                </div>
+                <p className="mt-1 font-lore text-xs leading-relaxed text-muted">{stage.twistDesc}</p>
+              </div>
+            );
+          })()}
+
+          <CharacterSelect
+            selectedId={selectedCharacter}
+            onSelect={(id) => {
+              setSelectedCharacter(id);
+              // Batch 9 — Lane 4: survivor pick persists for the next run.
+              setSelectedCharacterId(id);
+            }}
+          />
 
           <div className="flex gap-2">
             {[
@@ -324,7 +355,7 @@ function CountyMap({
     { id: "honey_springs", x: 78, y: 58, label: "Spurgeon" },
   ];
   return (
-    <svg viewBox="0 0 100 100" className="h-44 w-full md:h-80">
+    <svg viewBox="0 0 100 100" data-testid="county-map" className="h-44 w-full md:h-80">
       <rect width="100" height="100" fill="#100e0c" />
       <path d="M8 40 C 22 48, 40 55, 70 58 C 82 60, 90 72, 94 88" fill="none" stroke="#6b5428" strokeWidth="1.4" />
       <path d="M8 40 C 22 48, 40 55, 70 58 C 82 60, 90 72, 94 88" fill="none" stroke="#1e3a5f" strokeWidth="3.2" opacity="0.45" />

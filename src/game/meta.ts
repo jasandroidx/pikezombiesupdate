@@ -4,6 +4,20 @@
 
 import { hashStringToSeed } from "./constants";
 import { loadSave, writeSave } from "./save";
+import {
+  DEFAULT_CHARACTER_ID,
+  DEFAULT_STAGE_ID,
+  characterDef,
+  characterExists,
+  stageDef,
+  stageExists,
+} from "./roster";
+
+// Re-export the roster contract Lane 1 consumes at run start:
+//   selectedCharacterId() / selectedStageId() — persisted picks (pure getters)
+//   characterDef(id) / stageDef(id) — roster entries (weaponId + passive mods
+//     on characters; rule flags on stages). Never throw on unknown ids.
+export { characterDef, stageDef };
 
 export interface LifetimeStats {
   kills: number;
@@ -258,4 +272,65 @@ export function getRunStatMods(): RunStatMods {
     speedMul: 1 + 0.03 * spd,
     xpMul: 1 + 0.05 * xp,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Batch 9 — Lane 4 (UI/meta): character + stage selection persistence.
+//
+// Two tiny keys beside pz_meta_v1 so roster picks survive schema migrations.
+// Getters validate against the roster and fall back to the defaults
+// (revolver-toting deputy / White Oak Springs) — a stale or hand-edited key
+// can never break run start.
+//
+// ENGINE INTEGRATION POINT (Lane 1): at run start, read
+//   selectedCharacterId() -> characterDef(id).weaponId + .passiveName/.mods
+//   selectedStageId()      -> stageDef(id).rules
+// and apply them (starting weapon swap, passive stat mods, stage rule knobs).
+// meta.ts re-exports characterDef/stageDef above for that one import.
+// ---------------------------------------------------------------------------
+
+const CHARACTER_KEY = "pz_character_v1";
+const STAGE_KEY = "pz_stage_v1";
+
+/** Persisted survivor pick. Defaults to the current survivor (the
+ *  revolver-toting Petersburg deputy) so existing flows are unchanged. */
+export function selectedCharacterId(): string {
+  try {
+    const v = localStorage.getItem(CHARACTER_KEY);
+    if (v && characterExists(v)) return v;
+  } catch {
+    // Storage blocked: fall through to the default survivor.
+  }
+  return DEFAULT_CHARACTER_ID;
+}
+
+/** Persist a survivor pick. Ignores unknown ids (no throw). */
+export function setSelectedCharacterId(id: string): void {
+  if (!characterExists(id)) return;
+  try {
+    localStorage.setItem(CHARACTER_KEY, id);
+  } catch {
+    // Storage full/blocked: the pick lasts for this session only.
+  }
+}
+
+/** Persisted stage pick. Defaults to White Oak Springs. */
+export function selectedStageId(): string {
+  try {
+    const v = localStorage.getItem(STAGE_KEY);
+    if (v && stageExists(v)) return v;
+  } catch {
+    // Storage blocked: fall through to the default stage.
+  }
+  return DEFAULT_STAGE_ID;
+}
+
+/** Persist a stage pick. Ignores unknown ids (no throw). */
+export function setSelectedStageId(id: string): void {
+  if (!stageExists(id)) return;
+  try {
+    localStorage.setItem(STAGE_KEY, id);
+  } catch {
+    // Storage full/blocked: the pick lasts for this session only.
+  }
 }

@@ -13,6 +13,38 @@ export type ShotKind = 'blunt' | 'axe' | 'thrust' | 'heavy-blade' | 'firearm' | 
 // beast (growls, howls, boss).
 export type SfxBusName = 'effort' | 'weapon' | 'impact' | 'beast';
 
+// Batch 9 (Lane 3): pure helpers — frequency tables, pitch formula, surge
+// sanitization/smoothing. No AudioContext access: testable in node via jiti
+// (see tests/batch9c.mjs).
+export interface MotifSpec {
+  freqs: number[];
+  noteMs: number;
+  wave: OscillatorType;
+  bus: SfxBusName;
+}
+// Boss warning motif: three-note descending square alert, 120ms per note.
+export const BOSS_MOTIF: MotifSpec = { freqs: [480, 360, 240], noteMs: 120, wave: 'square', bus: 'beast' };
+// County Record quest unlock: rising triangle arpeggio A5 D6 G6, 90ms per note.
+export const QUEST_ARP_SPEC: MotifSpec = { freqs: [880, 1174.66, 1567.98], noteMs: 90, wave: 'triangle', bus: 'impact' };
+// Combo-pitched kill sound: base 300Hz + min(combo,20)*30 Hz. Non-finite or
+// negative combos are treated as 0.
+export function killPitchHz(combo: number): number {
+  const c = Number.isFinite(combo) ? Math.max(0, Math.min(20, Math.floor(combo))) : 0;
+  return 300 + c * 30;
+}
+// Engine-driven surge input is 0..1; sanitize NaN/negative/>1 to the range.
+export function sanitizeSurge(x: number): number {
+  return Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0;
+}
+// One smooth-step of the internal surge toward target (fraction of the gap
+// per call; factor 0 = hold, 1 = snap). Per-frame/kill calls converge
+// without zippering.
+export function smoothSurge(current: number, target: number, factor = 0.35): number {
+  const t = sanitizeSurge(target);
+  const c = sanitizeSurge(current);
+  return c + (t - c) * Math.max(0, Math.min(1, factor));
+}
+
 class SoundEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
@@ -57,6 +89,10 @@ class SoundEngine {
   private hbTimer: number | null = null;
   // Batch 5: combo-pitched kill sound probe.
   private lastKillPitch = 0;
+  // Batch 9 (Lane 3): engine-driven kill-surge target (0..1, sanitized) and
+  // last motif/arp descriptor for probes.
+  private surgeTarget = 0;
+  private lastMotifDesc: { name: string; freqs: number[]; wave: OscillatorType; noteMs: number } | null = null;
   // Batch 6: deterministic LCG noise (seed 7777, ~0.4s) + weapon-kind shots
   // + minor-arp step sequencer state.
   private lastShotKind: ShotKind | '' = '';
@@ -109,6 +145,10 @@ class SoundEngine {
     }),
     seqAdvance: () => this.seqTick(),
     seqNotes: () => [...this.seqLast],
+    // Batch 9: motif/surge probes.
+    lastMotif: () => this.lastMotif(),
+    surgeTarget: () => this.surgeTarget,
+    killPitch: (combo: number) => killPitchHz(combo),
     // Batch 7: 4-bus + compressor topology probe.
     audioGraph: () => this.audioGraph(),
   };
@@ -174,6 +214,14 @@ class SoundEngine {
       // Batch 7: last-shot probe — verify playShotFor routed through the
       // weapon bus with the right kind/layers.
       w.__controlsTest.audioLastShot = () => this.__test.lastShot();
+      // Batch 9: motif/surge probes — motif trigger + last-played descriptor,
+      // kill sound entry point, engine-driven surge setter.
+      w.__controlsTest.audioBossMotif = () => this.bossMotif();
+      w.__controlsTest.audioQuestArp = () => this.questArp();
+      w.__controlsTest.audioKillSound = (combo: number) => this.killSound(combo);
+      w.__controlsTest.audioSetKillSurge = (x: number) => this.setKillSurge(x);
+      w.__controlsTest.audioLastMotif = () => this.lastMotif();
+      w.__controlsTest.audioSurgeTarget = () => this.surgeTarget;
     }
 
     if (this.ctx.state === 'suspended') {
@@ -366,8 +414,7 @@ class SoundEngine {
     this.init();
     if (!this.sfxGate('kill')) return;
     if (!this.ctx || !this.sfxGain) return;
-    const c = Math.max(0, Math.min(20, Math.floor(combo)));
-    const f = 300 + c * 30;
+    const f = killPitchHz(combo); // Batch 9: pure formula (NaN-safe, clamped).
     this.lastKillPitch = f;
     const t = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
@@ -382,6 +429,13 @@ class SoundEngine {
     g.connect(this.bus('impact'));
     osc.start(t);
     osc.stop(t + 0.2);
+  }
+
+  // Batch 9: kill-sound entry point — combo comes from the Harvest Streak
+  // system (engine passes its streak count). Defaults to 0 so existing
+  // call sites keep working unchanged.
+  public killSound(combo = 0) {
+    this.playKillPitched(combo);
   }
 
   // VS-1: banish — a rising whistle that runs out of town.
@@ -1231,29 +1285,66 @@ class SoundEngine {
     noise.stop(t + 1.55);
   }
 
-  // Batch 4: County Record quest unlock — rising triangle arpeggio A5 D6 G6.
-  // Raw oscillators (not sfxOsc) so the intervals stay pitch-true.
-  public playAchievement() {
+  // Batch 9 (Lane 3): boss warning motif — three-note descending square
+  // alert (480→360→240Hz, 120ms each) played as the boss banner lead-in.
+  // Routed through the beast bus; raw oscillators so the pitches stay exact.
+  // INTENDED ENGINE CALL SITE: engine.ts bossEntrance() — Lane 1 should
+  // replace/extend the existing
+  //   soundEngine.tone({ f: 480, f2: 360, type: `sawtooth`, dur: .5, vol: .3 });
+  // line there with `soundEngine.bossMotif();`.
+  public bossMotif() {
+    if (this.isMuted) return;
+    this.init();
+    if (!this.sfxGate('bossmotif')) return;
+    if (!this.ctx || !this.sfxGain) return;
+    this.lastMotifDesc = { name: 'bossMotif', freqs: [...BOSS_MOTIF.freqs], wave: BOSS_MOTIF.wave, noteMs: BOSS_MOTIF.noteMs };
+    this.playMotif(BOSS_MOTIF);
+  }
+
+  // Batch 9 (Lane 3): achievement arpeggio — rising triangle arpeggio
+  // (880→1174.66→1567.98Hz, 90ms each) for County Record quest unlock.
+  // This upgrades the old Batch 4 playAchievement() sound (same pitches,
+  // single entry point now — no doubling). All existing engine call sites
+  // keep working unchanged.
+  public questArp() {
     if (this.isMuted) return;
     this.init();
     if (!this.sfxGate('achievement')) return;
     if (!this.ctx || !this.sfxGain) return;
-    const t = this.ctx.currentTime;
-    const freqs = [880, 1174.66, 1567.98]; // A5 D6 G6
-    freqs.forEach((f, i) => {
+    this.lastMotifDesc = { name: 'questArp', freqs: [...QUEST_ARP_SPEC.freqs], wave: QUEST_ARP_SPEC.wave, noteMs: QUEST_ARP_SPEC.noteMs };
+    this.playMotif(QUEST_ARP_SPEC);
+  }
+
+  // Batch 9: legacy quest-unlock name — now just delegates to questArp().
+  public playAchievement() {
+    this.questArp();
+  }
+
+  // Shared motif player: raw oscillators (not sfxOsc) so intervals stay
+  // pitch-true; each note staggered by spec.noteMs with a short tail.
+  private playMotif(spec: MotifSpec) {
+    const t = this.ctx!.currentTime;
+    const step = spec.noteMs / 1000;
+    spec.freqs.forEach((f, i) => {
       const osc = this.ctx!.createOscillator();
       const g = this.ctx!.createGain();
-      const st = t + i * 0.11;
-      osc.type = 'triangle';
+      const st = t + i * step;
+      osc.type = spec.wave;
       osc.frequency.setValueAtTime(f, st);
       g.gain.setValueAtTime(0.0001, st);
-      g.gain.exponentialRampToValueAtTime(0.26, st + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, st + 0.5);
+      g.gain.exponentialRampToValueAtTime(spec.wave === 'square' ? 0.2 : 0.26, st + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + step * 2.8);
       osc.connect(g);
-      g.connect(this.bus('impact'));
+      g.connect(this.bus(spec.bus));
       osc.start(st);
-      osc.stop(st + 0.55);
+      osc.stop(st + step * 3);
     });
+  }
+
+  // Last motif/arp descriptor played (null before the first one) —
+  // deterministic probe surface for tests (see __test.lastMotif).
+  public lastMotif() {
+    return this.lastMotifDesc;
   }
 
   public playPlayerHurt() {
@@ -1755,6 +1846,24 @@ class SoundEngine {
 
   public getSurge(): number {
     return this.surge;
+  }
+
+  // Batch 9 (Lane 3): engine-driven kill surge — x in 0..1 scales the
+  // beast/growl layer intensity (0 = silent, 1 = full). Idempotent: the
+  // internal surge smooth-steps toward the sanitized target each call, so
+  // per-frame/per-kill calls converge without zippering. The existing surge
+  // loop + updateGrowlGain() apply it to the growl gain (which is itself
+  // smoothed via setTargetAtTime, and which decays toward 0 when the engine
+  // stops driving it). No-ops safely when muted or when audio is
+  // uninitialized. Negative, >1, and NaN inputs are clamped to 0..1.
+  public setKillSurge(x: number) {
+    if (this.isMuted) return;
+    this.surgeTarget = sanitizeSurge(x);
+    this.surge = smoothSurge(this.surge, this.surgeTarget);
+    if (this.ctx) {
+      this.ensureSurgeLoop();
+      this.updateGrowlGain();
+    }
   }
 
   // Engine integration point: feed recent damage + streak so the growl

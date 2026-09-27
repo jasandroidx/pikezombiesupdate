@@ -6,7 +6,7 @@ import { soundEngine } from "@/audio/soundEngine";
 import { loadArt } from "@/game/art";
 import { dprCap } from "@/game/mapRenderer";
 import { loadSave } from "@/game/save";
-import { markDailyPlayed } from "@/game/meta";
+import { characterDef, markDailyPlayed, selectedCharacterId } from "@/game/meta";
 import { HUD } from "@/components/game/HUD";
 import { StartScreen } from "@/components/game/StartScreen";
 import { UpgradeShopModal } from "@/components/game/UpgradeShopModal";
@@ -88,6 +88,9 @@ function GameApp() {
     isReloading: false,
     reloadProgress: 0,
     activePowerups: [] as ActivePowerup[],
+    // Batch 9 — Lane 4: Lane 1's score-multiplier powerup state, polled from
+    // window.__controlsTest.scoreMulState() in onStatsUpdate. Null = hidden.
+    scoreMul: null as { active: boolean; timeLeft: number; mult: number } | null,
     nearWorkbench: false,
     extractActive: false,
     interactHint: "",
@@ -259,7 +262,28 @@ function GameApp() {
           });
           setScreen("game_over");
         },
-        onStatsUpdate: (stats: typeof hudStats) => setHudStats(stats),
+        onStatsUpdate: (stats: typeof hudStats) => {
+          // Batch 9 — Lane 4: poll Lane 1's score-multiplier probe on the same
+          // tick the HUD already reads engine state. Probe absent (Lane 1 not
+          // landed yet) or errored -> null -> the 2x badge stays hidden.
+          let scoreMul: typeof hudStats.scoreMul = null;
+          try {
+            const probe = window.__controlsTest?.scoreMulState;
+            if (typeof probe === "function") {
+              const s = probe();
+              if (s && s.active === true) {
+                scoreMul = {
+                  active: true,
+                  timeLeft: typeof s.timeLeft === "number" ? s.timeLeft : 0,
+                  mult: typeof s.mult === "number" ? s.mult : 2,
+                };
+              }
+            }
+          } catch {
+            scoreMul = null;
+          }
+          setHudStats({ ...stats, scoreMul });
+        },
         onLoreNoteFound: (note: LoreNote) => {
           setActiveLoreNote(note);
           setFoundNotes((n) => Array.from(new Set([...n, note.id])));
@@ -283,6 +307,20 @@ function GameApp() {
 
     applySaveUnlocks(engine);
     engine.mutators = mutators;
+    // Batch 9 — Lane 4: apply the selected survivor's starting weapon.
+    // Lane 1 applies the passive mods + stage rule flags at run start by
+    // reading meta.ts (characterDef / stageDef) — this lane never touches
+    // engine internals. Idempotent: selecting the same index twice is a no-op.
+    try {
+      const def = characterDef(selectedCharacterId());
+      const wi = engine.weapons.findIndex((w: { id: string }) => w.id === def.weaponId);
+      if (wi >= 0) {
+        engine.weapons[wi].unlocked = true;
+        engine.selectWeapon(wi);
+      }
+    } catch {
+      // Default survivor (revolver) stays equipped.
+    }
     if (carry) engine.importSnapshot(carry);
     if (nextMode === "outbreak") {
       const last = step >= OUTBREAK_ORDER.length - 1;
@@ -563,6 +601,7 @@ function GameApp() {
             reloadProgress={hudStats.reloadProgress}
             isMuted={isMuted}
             activePowerups={hudStats.activePowerups}
+            scoreMul={hudStats.scoreMul}
             onToggleMute={handleToggleMute}
             onOpenWorkbench={handleToggleWorkbench}
             onSkipWaveTimer={() => engineRef.current?.skipWaveBreak()}
