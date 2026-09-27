@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { GAME_LOCATIONS, OUTBREAK_ORDER } from "@/game/constants";
 import { buyRank, loadSave, rankCost } from "@/game/save";
-import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield } from "lucide-react";
+import { Play, Volume2, VolumeX, HelpCircle, BookOpen, Skull, Bell, Zap, Shield, Wind } from "lucide-react";
+import { loadMeta } from "@/game/meta";
+import { QUESTS } from "@/game/constants";
 
 interface StartScreenProps {
   onStartGame: (locationIndex: number, difficulty: number, mode: "survival" | "outbreak", mutators?: string[]) => void;
@@ -10,6 +12,7 @@ interface StartScreenProps {
 }
 
 export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenProps) {
+  const meta = loadMeta();
   const [selectedLocation, setSelectedLocation] = useState(0);
   const [difficulty, setDifficulty] = useState(1);
   const [mutators, setMutators] = useState<string[]>([]);
@@ -183,6 +186,7 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             {[
               { icon: Zap, title: "Roll", body: "Space. I-frames. Costs wind." },
+              { icon: Wind, title: "Dash", body: "Shift. Long lunge. 2 charges." },
               { icon: Shield, title: "Bash", body: "F or right-click. Stun them." },
               { icon: Skull, title: "Stovepipe", body: "X. A pipe bomb. They step on it." },
               { icon: Bell, title: "Cedar post", body: "C. A deer rifle on a fence post." },
@@ -195,6 +199,28 @@ export function StartScreen({ onStartGame, isMuted, onToggleMute }: StartScreenP
                 <p className="mt-1 font-lore text-[11px] leading-snug text-muted">{item.body}</p>
               </div>
             ))}
+          </div>
+
+          <div className="mt-4 rounded border border-border bg-surface px-3 py-2">
+            <div className="font-heading text-sm font-bold tracking-wider text-accent">COUNTY RECORD</div>
+            <p className="font-mono text-[10px] text-muted">Lifetime deeds. Completed records grant permanent bonuses.</p>
+            <div className="mt-2 grid grid-cols-1 gap-1.5 md:grid-cols-2">
+              {QUESTS.map((q) => {
+                const done = meta.questsDone.includes(q.id);
+                const have = Math.min(meta.lifetime[q.stat], q.goal);
+                return (
+                  <div key={q.id} className="flex items-center justify-between gap-2 rounded bg-surface-2 px-2 py-1.5">
+                    <div className="min-w-0">
+                      <div className={"truncate font-mono text-[11px] font-bold " + (done ? "text-accent" : "text-fg")}>
+                        {done ? "\u2713 " : ""}{q.name}
+                      </div>
+                      <div className="truncate font-mono text-[9px] text-muted">{q.desc} — {q.bonus}</div>
+                    </div>
+                    <div className="shrink-0 font-mono text-[10px] text-muted">{have}/{q.goal}</div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>

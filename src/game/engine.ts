@@ -22,7 +22,8 @@ import {
   NoisePulse,
 } from "../types/game";
 import { rollBoons, BoonOffer } from "./boons";
-import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS } from "./constants";
+import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE } from "./constants";
+import { loadMeta, saveMeta } from "./meta";
 import { soundEngine } from "../audio/soundEngine";
 import { renderEnvironment } from "./mapRenderer";
 import { DynamicLighting } from "./lighting";
@@ -151,6 +152,26 @@ export class GameEngine {
 	camX = 0;
 	camY = 0;
 	trauma = 0;
+	// Dash: charge-based long lunge, distinct from the stamina dodge roll.
+	dashCharges = 2;
+	dashMax = 2;
+	dashRegenT = 0;
+	dashTimer = 0;
+	dashCd = 0;
+	dashDirX = 1;
+	dashDirY = 0;
+	// Brotato-style between-wave shop.
+	shopOffers: { offerId: string; locked: boolean }[] = [];
+	shopRerollCost = SHOP_REROLL_BASE;
+	shopBought = new Set<string>();
+	shopDmgMul = 1;
+	shopFireRateMul = 1;
+	shopMagnetBonus = 0;
+	// Quest meta (County Record) + shrines.
+	meta = loadMeta();
+	questDmgMul = 1;
+	questMoveMul = 1;
+	shrines: { x: number; y: number; attuned: boolean }[] = [];
 	hitstop = 0;
 	floaters = [];
 	simTime = 0;
@@ -307,12 +328,32 @@ export class GameEngine {
 				bomb: { charges: this.bombCharges, max: BOMB_MAX_CHARGES },
 				grit: { bag: Math.round(this.gritBag), ground: this.grit.length },
 				events: { fired: [...this.firedEvents], active: this.activeEvents.map((a) => a.id) },
+				dash: { charges: this.dashCharges, max: this.dashMax, cd: +this.dashCd.toFixed(2), timer: +this.dashTimer.toFixed(2) },
+				shop: { offers: this.shopOffers.map((o) => o.offerId), reroll: this.shopRerollCost, scrap: this.scrap, waveState: this.waveState },
+				shrines: this.shrines.map((s) => ({ x: Math.round(s.x), y: Math.round(s.y), attuned: s.attuned })),
+				quests: { done: [...this.meta.questsDone], lifetime: { ...this.meta.lifetime } },
 				mods: this.eventMods(),
 				evoHints: this.evolutionHints(),
 				revolver: (() => { const w = this.weapons.find((x) => x.id === `revolver`); return w ? { name: w.name, dmg: w.damage, fireRate: w.fireRate, pierce: w.pierce } : null; })(),
-				zombies: () => this.zombies.slice(0, 8).map((z) => ({ id: String(z.id).slice(-6), t: z.type, h: Math.round(z.health), d: Math.round(Math.hypot(z.x - this.player.x, z.y - this.player.y)) })),
+				zombies: () => this.zombies.map((z) => ({ id: String(z.id).slice(-6), t: z.type, h: Math.round(z.health), d: Math.round(Math.hypot(z.x - this.player.x, z.y - this.player.y)) })),
 			}),
 			detonate: () => this.detonateBomb(),
+			dash: () => this.tryDash(),
+			god: () => { this.player.maxHealth = 999999; this.player.health = 999999; },
+			buyShop: (i) => this.buyShopOffer(i),
+			rerollShop: () => this.rerollShop(),
+			lockShop: (i) => this.toggleShopLock(i),
+			rollShop: () => this.rollShop(),
+			attune: () => this.tryAttuneShrine(),
+			teleportToShrine: () => { const s = this.shrines[0]; if (s) { this.player.x = s.x; this.player.y = s.y; } },
+			bump: (stat, n = 1) => this.bumpLifetime(stat, n),
+			giveScrap: (n) => { this.scrap += n; },
+			bossMul: () => this.playerDamageMul({ type: `behemoth` }),
+			plainMul: () => this.playerDamageMul({ type: `shambler` }),
+			toBreak: () => { this.zombiesToSpawn = 0; this.zombies.length = 0; },
+			skipBreak: () => this.skipWaveBreak(),
+			draftOpen: () => !!this.draft,
+			dismissDraft: () => { if (this.draft) this.takeBoon(this.draft[0].id); },
 			giveBoon: (id, n = 1) => { this.boonStacks[id] = (this.boonStacks[id] || 0) + n; },
 			openChest: () => this.openChest(),
 			sweepGrit: () => this.sweepGritToBag(),
@@ -530,7 +571,7 @@ export class GameEngine {
 		this.zombies.length;
 		for (let e = this.zombies.length - 1; e >= 0; e--) {
 			let t = this.zombies[e];
-			this.score += t.scoreValue, this.scrap += t.scrapValue, this.stats.kills++, this.bloodDecals.push({
+			this.score += t.scoreValue, this.scrap += t.scrapValue, this.stats.kills++, this.bumpLifetime(`kills`), this.bloodDecals.push({
 				x: t.x,
 				y: t.y,
 				radius: t.radius * 1.5,
@@ -633,7 +674,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -656,7 +697,7 @@ export class GameEngine {
 		if (this.keys[e.code] = true, !this.isPaused) {
 			if (e.code === `KeyR` && this.reloadCurrentWeapon(), e.code === `KeyE`) {
 				let e = this.currentLocation.bell;
-				e && this.bellReady && !this.bellRung && Math.hypot(this.player.x - e.x, this.player.y - e.y) < 80 || this.interactLoreNote();
+				e && this.bellReady && !this.bellRung && Math.hypot(this.player.x - e.x, this.player.y - e.y) < 80 || this.tryAttuneShrine() || this.interactLoreNote();
 			}
 			e.code === `Digit1` && this.selectWeapon(0), e.code === `Digit2` && this.selectWeapon(1), e.code === `Digit3` && this.selectWeapon(2), e.code === `Digit4` && this.selectWeapon(3), e.code === `Digit5` && this.selectWeapon(4), e.code === `Digit6` && this.selectWeapon(5);
 			if (e.code === `KeyQ`) this.throwMolotov();
@@ -665,6 +706,7 @@ export class GameEngine {
 			if (e.code === `KeyX`) this.dropPipe();
 			if (e.code === `KeyB`) this.detonateBomb();
 			if (e.code === `Space`) this.tryDodge();
+			if (e.code === `ShiftLeft` || e.code === `ShiftRight`) this.tryDash();
 			if (e.code === `KeyF` || e.code === `KeyV`) this.tryBash();
 		}
 	};
@@ -1197,6 +1239,210 @@ export class GameEngine {
 		}
 		void dt;
 	}
+	initRunMeta() {
+		const done = new Set(this.meta.questsDone);
+		this.questDmgMul = 1 + (done.has(`first_blood`) ? .05 : 0) + (done.has(`deadeye`) ? .08 : 0) + (done.has(`exterminator`) ? .10 : 0);
+		this.questMoveMul = done.has(`tracebound`) ? 1.05 : 1;
+		this.shopDmgMul = 1;
+		this.shopFireRateMul = 1;
+		this.shopMagnetBonus = 0;
+		this.shopBought = new Set();
+		this.player.speed *= this.questMoveMul;
+		if (done.has(`homesteader`)) this.player.maxHealth += 15;
+		this.player.health = this.player.maxHealth;
+		if (done.has(`relic_hunter`)) this.scrap += 40;
+		this.meta.lifetime.runsPlayed++;
+		saveMeta(this.meta);
+		this.dashCharges = this.dashMax;
+		this.dashTimer = 0;
+		this.dashCd = 0;
+		this.dashRegenT = 0;
+		this.spawnShrines();
+		this.rollShop(true);
+	}
+	bumpLifetime(stat, n = 1) {
+		this.meta.lifetime[stat] += n;
+		for (const q of QUESTS) {
+			if (this.meta.questsDone.includes(q.id)) continue;
+			if (this.meta.lifetime[q.stat] >= q.goal) {
+				this.meta.questsDone.push(q.id);
+				saveMeta(this.meta);
+				this.spawnFloater(this.player.x, this.player.y - 52, `COUNTY RECORD: ` + q.name, `#d4a017`);
+				this.callbacks.onRadio?.(`WJPS`, `County record set: ${q.name}. ${q.bonus}.`);
+				soundEngine.playPowerup();
+			}
+		}
+	}
+	playerDamageMul(z) {
+		let m = this.questDmgMul * this.shopDmgMul;
+			if (z.type === `behemoth` || z.type === `miner_brute` || z.elite) {
+				let attuned = 0;
+				for (const s of this.shrines) s.attuned && attuned++;
+				m *= 1 + SHRINE_BOSS_DMG_PER * attuned;
+			}
+			return m;
+	}
+	tryDash() {
+		if (this.dashCd > 0 || this.dashTimer > 0 || this.dashCharges < 1) return false;
+		let ix = 0, iy = 0;
+		(this.keys.KeyW || this.keys.ArrowUp) && --iy;
+		(this.keys.KeyS || this.keys.ArrowDown) && (iy += 1);
+		(this.keys.KeyA || this.keys.ArrowLeft) && --ix;
+		(this.keys.KeyD || this.keys.ArrowRight) && (ix += 1);
+		let dx, dy;
+		if (Math.hypot(ix, iy) > .2) {
+			dx = ix;
+			dy = iy;
+		} else if (Math.hypot(this.moveVX, this.moveVY) > .35) {
+			dx = this.moveVX;
+			dy = this.moveVY;
+		} else {
+			dx = Math.cos(this.player.angle);
+			dy = Math.sin(this.player.angle);
+		}
+		const m = Math.hypot(dx, dy) || 1;
+		this.dashDirX = dx / m;
+		this.dashDirY = dy / m;
+		this.dashTimer = .34;
+		this.dashCd = .9;
+		this.invuln = Math.max(this.invuln, .36);
+		this.dashCharges--;
+		this.dashRegenT = 0;
+		this.trauma = Math.min(1, this.trauma + .12);
+		soundEngine.playDodge();
+		return true;
+	}
+	spawnShrines() {
+		this.shrines = [];
+		for (let i = 0; i < SHRINE_COUNT; i++) {
+			const a = (i / SHRINE_COUNT) * Math.PI * 2 + Math.random() * .8;
+			const d = 420 + Math.random() * 260;
+			this.shrines.push({ x: this.player.x + Math.cos(a) * d, y: this.player.y + Math.sin(a) * d, attuned: false });
+		}
+	}
+	nearShrine() {
+		return this.shrines.find((s) => !s.attuned && Math.hypot(this.player.x - s.x, this.player.y - s.y) < 90);
+	}
+	tryAttuneShrine() {
+		for (const s of this.shrines) {
+			if (!s.attuned && Math.hypot(this.player.x - s.x, this.player.y - s.y) < 90) {
+				s.attuned = true;
+				this.bumpLifetime(`shrinesAttuned`);
+				this.trauma = Math.min(1, this.trauma + .3);
+				soundEngine.playPowerup();
+				this.spawnFloater(s.x, s.y - 30, `SHRINE ATTUNED`, `#d4a017`);
+				this.callbacks.onRadio?.(`Unknown`, `The stones hum against your palm. Your rounds will bite the big ones harder now.`);
+				return true;
+			}
+		}
+		return false;
+	}
+	shopCost(def) {
+		return Math.round(def.baseCost * (1 + .15 * Math.max(1, this.wave)));
+	}
+	rollShop(first = false) {
+		const kept = this.shopOffers.filter((o) => o.locked);
+		const pool = SHOP_POOL.filter((d) => !kept.some((k) => k.offerId === d.id) && (d.repeatable || !this.shopBought.has(d.id)) && !(d.kind === `unlock` && d.weaponId && this.weapons.some((w) => w.id === d.weaponId && w.unlocked)));
+		const offers = kept.slice();
+		while (offers.length < SHOP_OFFER_COUNT && pool.length) {
+			const i = Math.floor(Math.random() * pool.length);
+			offers.push({ offerId: pool.splice(i, 1)[0].id, locked: false });
+		}
+		this.shopOffers = offers;
+		if (!first) this.shopRerollCost = SHOP_REROLL_BASE;
+	}
+	rerollShop() {
+		if (this.waveState !== `break` || this.scrap < this.shopRerollCost) return false;
+		this.scrap -= this.shopRerollCost;
+		this.shopRerollCost *= 2;
+		const kept = this.shopOffers.filter((o) => o.locked);
+		const pool = SHOP_POOL.filter((d) => !kept.some((k) => k.offerId === d.id) && (d.repeatable || !this.shopBought.has(d.id)) && !(d.kind === `unlock` && d.weaponId && this.weapons.some((w) => w.id === d.weaponId && w.unlocked)));
+		const offers = kept.slice();
+		while (offers.length < SHOP_OFFER_COUNT && pool.length) {
+			const i = Math.floor(Math.random() * pool.length);
+			offers.push({ offerId: pool.splice(i, 1)[0].id, locked: false });
+		}
+		this.shopOffers = offers;
+		soundEngine.playPickup();
+		return true;
+	}
+	toggleShopLock(i) {
+		const slot = this.shopOffers[i];
+		if (!slot) return false;
+		slot.locked = !slot.locked;
+		soundEngine.playPickup();
+		return true;
+	}
+	buyShopOffer(i) {
+		const slot = this.shopOffers[i];
+		if (!slot || this.waveState !== `break`) return false;
+		const def = SHOP_POOL.find((d) => d.id === slot.offerId);
+		if (!def || this.scrap < this.shopCost(def)) return false;
+		if (!this.applyShopOffer(def)) return false;
+		this.scrap -= this.shopCost(def);
+		if (!def.repeatable) {
+			this.shopBought.add(def.id);
+			this.shopOffers.splice(i, 1);
+		}
+		soundEngine.playPickup();
+		return true;
+	}
+	applyShopOffer(def) {
+		const p = this.player;
+		switch (def.kind) {
+			case `heal`:
+				if (p.health >= p.maxHealth) return false;
+				p.health = Math.min(p.maxHealth, p.health + 50);
+				return true;
+			case `ammo`:
+				let refilled = false;
+				for (const w of this.weapons) {
+					if (!w.unlocked) continue;
+					const max = w.magazineSize * 6;
+					if (w.reserveAmmo < max) {
+						w.reserveAmmo = max;
+						refilled = true;
+					}
+				}
+				return refilled;
+			case `maxhp`:
+				p.maxHealth += 25;
+				p.health = Math.min(p.maxHealth, p.health + 25);
+				return true;
+			case `molotov`:
+				if (p.molotovs >= p.maxMolotovs) return false;
+				p.molotovs++;
+				return true;
+			case `flare`:
+				if (p.flares >= p.maxFlares) return false;
+				p.flares++;
+				return true;
+			case `firerate`:
+				this.shopFireRateMul *= 1.08;
+				return true;
+			case `dmg`:
+				this.shopDmgMul *= 1.08;
+				return true;
+			case `speed`:
+				p.speed *= 1.06;
+				return true;
+			case `magnet`:
+				this.shopMagnetBonus += .3;
+				return true;
+			case `unlock`: {
+				const w = this.weapons.find((w) => w.id === def.weaponId);
+				if (!w || w.unlocked) return false;
+				w.unlocked = true;
+				this.spawnFloater(p.x, p.y - 44, w.name + ` UNLOCKED`, `#d4a017`);
+				return true;
+			}
+			case `bombcharge`:
+				if (this.bombCharges >= BOMB_MAX_CHARGES) return false;
+				this.bombCharges++;
+				return true;
+		}
+		return false;
+	}
 	skipWaveBreak() {
 		if (this.waveState !== `break` || this.extractActive || this.bellReady || this.draft || this.levelHold) return;
 		this.waveBreakCountdown = 0;
@@ -1255,7 +1501,7 @@ export class GameEngine {
 		let a = this.loreNotes.find((e) => !e.collected && Math.hypot(this.player.x - e.x, this.player.y - e.y) < 65), o = this.extractActive && Math.hypot(this.player.x - this.currentLocation.extract.x, this.player.y - this.currentLocation.extract.y) <= this.currentLocation.extract.radius + 12, s = this.currentLocation.lantern, c = !!(s && Math.hypot(this.player.x - s.x, this.player.y - s.y) < 78), l = this.nearestHole(92), u = this.currentLocation.bell, d = !!(u && Math.hypot(this.player.x - u.x, this.player.y - u.y) < 80);
 		const nearRig = !!(this.rig && Math.hypot(this.player.x - this.rig.x, this.player.y - this.rig.y) < 72);
 		const rigHint = !nearRig ? `` : !this.rigArmed ? `Find the note for the ${this.rig.name}` : this.simTime < this.rig.until ? `${this.rig.name} holding the lane` : this.simTime < this.rig.cool ? `${this.rig.name} cooling` : `Press [E] — crank ${this.rig.name}`;
-		this.interactHint = this.draft || this.levelHold ? `` : rigHint || (o ? `Hold [E] — extract` : this.bellReady && !this.bellRung && d ? `Hold [E] — ring the bell` : c && !this.lanternLit ? `Press [E] — relight lantern` : l && !l.boarded ? this.scrap < 25 ? `Need 25 scrap to board` : `Press [E] — board hole (25 scrap)` : a ? `Press [E] to read note` : this.nearWorkbench ? `Press [E] — workbench` : ``), this.callbacks.onStatsUpdate({
+		this.interactHint = this.draft || this.levelHold ? `` : rigHint || (o ? `Hold [E] — extract` : this.bellReady && !this.bellRung && d ? `Hold [E] — ring the bell` : c && !this.lanternLit ? `Press [E] — relight lantern` : l && !l.boarded ? this.scrap < 25 ? `Need 25 scrap to board` : `Press [E] — board hole (25 scrap)` : this.nearShrine() ? `Press [E] \u2014 attune shrine` : a ? `Press [E] to read note` : this.nearWorkbench ? `Press [E] — workbench` : ``), this.callbacks.onStatsUpdate({
 			health: this.player.health,
 			maxHealth: this.player.maxHealth,
 			stamina: this.player.stamina,
@@ -1286,6 +1532,15 @@ export class GameEngine {
 			bloodRush: this.bloodRush > 0,
 			lastStandReady: !this.lastStandUsed,
 			dodgeReady: this.dodgeCd <= 0 && this.player.stamina >= 20,
+			dashCharges: this.dashCharges,
+			dashMax: this.dashMax,
+			waveState: this.waveState,
+			shopOffers: this.shopOffers.map((o) => {
+				const d = SHOP_POOL.find((x) => x.id === o.offerId);
+				return d ? { id: d.id, name: d.name, desc: d.desc, cost: this.shopCost(d), locked: o.locked, afford: this.scrap >= this.shopCost(d) } : null;
+			}).filter(Boolean),
+			shopRerollCost: this.shopRerollCost,
+			shrines: this.shrines.map((s) => ({ x: s.x, y: s.y, attuned: s.attuned })),
 			fog: this.fogUntil > 0,
 			waveCall: this.waveCall || "",
 			bounty: !this.bounty ? "" : this.bounty.done ? "Bounty paid" : `${this.bounty.kind === "head" ? "Headshots" : "Drops"} ${this.bounty.have}/${this.bounty.need}`,
@@ -1378,6 +1633,27 @@ export class GameEngine {
 				life: .18,
 				maxLife: .18
 			});
+		}
+		if (this.dashTimer > 0) {
+			this.dashTimer = Math.max(0, this.dashTimer - e);
+			this.moveVX = this.dashDirX * 13.5;
+			this.moveVY = this.dashDirY * 13.5;
+			this.lastMoveSpeed = 13.5;
+			if (this.simTime * 40 % 1 < .5) this.afterimages.push({
+					x: this.player.x,
+					y: this.player.y,
+					facing: this.bodyFacing,
+				life: .22,
+				maxLife: .22
+			});
+		}
+		if (this.dashCd > 0) this.dashCd = Math.max(0, this.dashCd - e);
+		if (this.dashCharges < this.dashMax) {
+			this.dashRegenT += e;
+			if (this.dashRegenT >= 5) {
+				this.dashRegenT = 0;
+				this.dashCharges++;
+			}
 		}
 		if (this.lastMoveSpeed > .7) {
 			if (this.moveVX > .55) this.bodyFacing = 1;
@@ -1507,7 +1783,7 @@ export class GameEngine {
 			const nx = dx / dist, ny = dy / dist;
 			z.vx += nx * impulse;
 			z.vy += ny * impulse;
-			z.health -= z.type === "behemoth" ? 12 : 24;
+			z.health -= (z.type === "behemoth" ? 12 : 24) * this.playerDamageMul(z);
 			z.hitFlash = .25;
 			z.stunUntil = this.simTime + (z.type === "behemoth" ? .28 : .55);
 			hits++;
@@ -1571,7 +1847,7 @@ export class GameEngine {
 			return;
 		}
 		const hunting = !this.isMouseDown && !this.player.isSneaking && !!this.nearestTarget(this.aimReach());
-		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + this.boon(`trigger`) * .1) * (1 + (this.comboMultiplier - 1) * .06) * r);
+		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + this.boon(`trigger`) * .1) * this.shopFireRateMul * (1 + (this.comboMultiplier - 1) * .06) * r);
 		i && e - this.lastShotTime >= a && (t.currentMag > 0 || n ? (this.fireCurrentWeapon(), this.lastShotTime = e) : t.reserveAmmo > 0 ? this.reloadCurrentWeapon() : this.autoSwapFromDry());
 	}
 	nearestTarget(range) {
@@ -1745,7 +2021,7 @@ export class GameEngine {
 						}
 						this.stats.shotsHit++;
 						let e = this.checkHeadshot(n, r), i = n.damage;
-						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4, this.stats.headshots++, soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), r.health -= i, this.stats.damageDealt += i;
+						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4, this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r), r.health -= i, this.stats.damageDealt += i;
 						if (!n.isSplinter && r.health > 0 && r.health <= r.maxHealth * .2 && r.type !== `behemoth` && r.type !== `miner_brute`) r.health = 0;
 						if (e) this.tickBounty(`head`);
 						if (r.health <= 0 && !n.isSplinter) r.shatter = true;
@@ -1866,7 +2142,7 @@ export class GameEngine {
 		}
 		if (this.zombiesToSpawn === 0 && this.zombies.length === 0) {
 			this.packBetweenWaves(); this.sweepGritToBag();
-			if (this.waveState = `break`, this.waveBreakCountdown = 6, this.stats.wavesCompleted++, this.endlessMilestone(), this.scrap += 120 + this.wave * 25, soundEngine.playWaveHorn(), this.callbacks.onWaveComplete(this.wave), this.outbreakWaves > 0 && this.stats.wavesCompleted >= this.outbreakWaves) this.currentLocation.bell && !this.bellRung ? (this.bellReady = true, this.callbacks.onRadio?.(`WJPS Petersburg`, `The square is yours if you can ring it. Get to the tower before they take the steps.`)) : (this.extractActive = true, this.callbacks.onExtractReady?.());
+			if (this.waveState = `break`, this.waveBreakCountdown = 6, this.stats.wavesCompleted++, this.bumpLifetime(`wavesCleared`), this.rollShop(), this.endlessMilestone(), this.scrap += 120 + this.wave * 25, soundEngine.playWaveHorn(), this.callbacks.onWaveComplete(this.wave), this.outbreakWaves > 0 && this.stats.wavesCompleted >= this.outbreakWaves) this.currentLocation.bell && !this.bellRung ? (this.bellReady = true, this.callbacks.onRadio?.(`WJPS Petersburg`, `The square is yours if you can ring it. Get to the tower before they take the steps.`)) : (this.extractActive = true, this.callbacks.onExtractReady?.());
 			else {
 				let e = radioFor(this.currentLocation.id, this.wave);
 				this.callbacks.onRadio?.(e.call, e.body);
@@ -1933,7 +2209,7 @@ export class GameEngine {
 			this.stats.damageDealt += BOMB_DMG;
 			this.createBloodParticles(z.x, z.y, Math.atan2(dy, dx));
 		}
-		this.screenShake = Math.max(this.screenShake, 12);
+		this.screenShake = Math.max(this.screenShake, 12), this.trauma = Math.min(1, this.trauma + .8);
 		this.hitstop = Math.max(this.hitstop, .12);
 		for (let k = 0; k < 28; k++) {
 			const a = (Math.PI * 2 * k) / 28;
@@ -2307,7 +2583,7 @@ export class GameEngine {
 	}
 	killZombie(e, t) {
 		const comboBefore = Math.floor(this.comboMultiplier);
-		this.zombies.splice(t, 1), this.stats.kills++, this.lastKillTime = Date.now(), this.comboMultiplier = Math.min(5, this.comboMultiplier + .25);
+		this.zombies.splice(t, 1), this.stats.kills++, this.bumpLifetime(`kills`), this.lastKillTime = Date.now(), this.comboMultiplier = Math.min(5, this.comboMultiplier + .25);
 		const comboAfter = Math.floor(this.comboMultiplier);
 		if (comboAfter > comboBefore && comboAfter >= 2) {
 			this.spawnFloater(this.player.x, this.player.y - 56, `STREAK x${comboAfter}`, "#ffd700");
@@ -2449,10 +2725,10 @@ export class GameEngine {
 		}
 	}
 	handleGameOver() {
-		this.isRunning = false, this.stats.survivalTime = Math.floor((Date.now() - this.gameStartTime) / 1e3), this.callbacks.onGameOver(this.stats, this.score, this.lastKiller);
+		this.isRunning = false, this.stats.survivalTime = Math.floor((Date.now() - this.gameStartTime) / 1e3), saveMeta(this.meta), this.callbacks.onGameOver(this.stats, this.score, this.lastKiller);
 	}
 	updateDrops(dt = 1 / 60) {
-		const magnet = Math.max(280, this.viewSize().w * 0.28) + this.getPerkLevel(`scavenger`) * 36;
+		const magnet = (Math.max(280, this.viewSize().w * 0.28) + this.getPerkLevel(`scavenger`) * 36) * (1 + this.shopMagnetBonus);
 		for (let e = this.drops.length - 1; e >= 0; e--) {
 			let t = this.drops[e];
 			const dx = this.player.x - t.x, dy = this.player.y - t.y;
@@ -2839,9 +3115,10 @@ export class GameEngine {
 		}
 	}
 	openChest() {
+		this.bumpLifetime(`chestsOpened`);
 		if (this.boon(`lead`) >= 1 && this.evolved !== `lincoln`) {
 			this.evolved = `lincoln`;
-			this.spawnFloater(this.player.x, this.player.y - 36, "LINCOLN'S LOAD", "#f6c453");
+			this.spawnFloater(this.player.x, this.player.y - 36, "LINCOLN'S LOAD", "#f6c453"), this.trauma = Math.min(1, this.trauma + .5);
 			this.callbacks.onRadio?.(`Unknown`, `The magnum took the hand-load. It punches through, and a headshot puts blood back in you.`);
 			soundEngine.playPowerup();
 			return;
@@ -2881,6 +3158,24 @@ export class GameEngine {
 			e.fillRect(-12, -9, 24, 18);
 			e.fillStyle = "#d4a017";
 			e.fillRect(-12, -2, 24, 4);
+			e.restore();
+		}
+		for (const s of this.shrines) {
+			e.save();
+			e.translate(s.x, s.y);
+			const pulse = s.attuned ? 0 : .5 + .5 * Math.sin(this.simTime * 3);
+			e.strokeStyle = s.attuned ? "#d4a017" : `rgba(212, 160, 23, ${.35 + .3 * pulse})`;
+			e.lineWidth = 2;
+			e.beginPath();
+			e.arc(0, 0, 16, 0, Math.PI * 2);
+			e.stroke();
+			e.fillStyle = s.attuned ? "#d4a017" : "#4a4238";
+				e.beginPath();
+				e.moveTo(0, -10);
+			e.lineTo(7, 6);
+			e.lineTo(-7, 6);
+			e.closePath();
+			e.fill();
 			e.restore();
 		}
 	}

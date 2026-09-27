@@ -13,6 +13,7 @@ interface MobileControlsProps {
   onInteractHold?: (held: boolean) => void;
   onSneakToggle?: (on: boolean) => void;
   onDodge?: () => void;
+  onDash?: () => void;
   onBash?: () => void;
   onPlantPost?: () => void;
   onDropPipe?: () => void;
@@ -113,6 +114,7 @@ export function MobileControls({
   onInteractHold,
   onSneakToggle,
   onDodge,
+  onDash,
   onBash,
   onPlantPost,
   onDropPipe,
@@ -178,6 +180,11 @@ export function MobileControls({
         <div className="land-actions pointer-events-auto absolute bottom-4 left-1/2 grid -translate-x-1/2 grid-cols-2 gap-2">
           {onDodge && (
             <Act label="Roll" hot onPress={onDodge}>
+              <ChevronsRight className="h-4 w-4" />
+            </Act>
+          )}
+          {onDash && (
+            <Act label="Dash" hot onPress={onDash}>
               <ChevronsRight className="h-4 w-4" />
             </Act>
           )}
