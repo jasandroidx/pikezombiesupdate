@@ -255,6 +255,18 @@ export class GameEngine {
 	caches = [];
 	cacheOpen = null;
 	nextCacheAt = 150;
+	// Batch 2: breakpoint bonuses (6th rank), boss banner, chill, heartbeat.
+	bpDamageMul = 1;
+	bpFireMul = 1;
+	bpOrbiters = 0;
+	bpChains = 0;
+	bpBlastMul = 1;
+	breakpointsHit = new Set();
+	bannerText = ``;
+	bannerSub = ``;
+	bannerUntil = 0;
+	chillUntil = 0;
+	lastHeartbeat = 0;
 	stats = {
 		kills: 0,
 		headshots: 0,
@@ -439,6 +451,26 @@ export class GameEngine {
 			playImpact: () => soundEngine.playImpact(),
 			playKillSub: () => soundEngine.playKillSub(),
 			playBanishSfx: () => soundEngine.playBanish(),
+			// Batch 2 probes: projectile mods, breakpoints, affixes, splitter, boss banner.
+			playerPos: () => ({ x: this.player.x, y: this.player.y }),
+			spawnAt: (t, x, y) => { const z = this.pushZombie(t, x, y); z.ai = `wander`; return this.zombies.indexOf(z); },
+			zHealth: (i) => this.zombies[i] ? Math.round(this.zombies[i].health) : -1,
+			zMax: (i) => this.zombies[i] ? Math.round(this.zombies[i].maxHealth) : -1,
+			spawnElite2: () => { const z = this.spawnGuaranteedElite(); return { affix: z.affix, type: z.type }; },
+			zombieMass: (t) => this.zombieMass(t),
+			knockbackFor: (w, z) => +this.knockbackFor(w, z).toFixed(2),
+			spawnBulletAt: (x, y, vx, vy, dmg = 50) => { const b = Object.assign(this.allocBullet(), { x, y, vx, vy, damage: dmg, pierce: 1, rangeRemaining: 600, weaponType: `revolver`, radius: 3, color: `#fff` }); this.bullets.push(b); return this.bullets.length; },
+			bulletCount: () => this.bullets.length,
+			clearBullets: () => { this.bullets.length = 0; },
+			takeBoonDirect: (id) => { this.boonStacks[id] = (this.boonStacks[id] || 0) + 1; this.checkBreakpoint(id); return this.boonStacks[id]; },
+			bp: () => ({ dmg: this.bpDamageMul, fire: this.bpFireMul, orb: this.bpOrbiters, chains: this.bpChains, blast: this.bpBlastMul }),
+			forceAffix: (type, affix) => { const z = this.pushZombie(type, this.player.x + 120, this.player.y); z.elite = true; z.maxHealth = Math.round(z.maxHealth * 2.2); z.health = z.maxHealth; z.affix = affix; if (affix === `shielded`) z.shieldHp = Math.round(z.maxHealth * .3); return this.zombies.indexOf(z); },
+			zAffix: (i) => this.zombies[i] ? this.zombies[i].affix : null,
+			killAt: (i) => { const z = this.zombies[i]; if (z) this.killZombie(z, i); return this.zombies.length; },
+			hurtBy: (i) => { const z = this.zombies[i]; this.invuln = 0; this.damagePlayer(z ? z.damage : 10, z); },
+			chillState: () => Date.now() < this.chillUntil,
+			bossBanner: () => { this.pushZombie(`behemoth`, this.player.x + 300, this.player.y); return { text: this.bannerText, live: Date.now() < this.bannerUntil }; },
+			zCount: () => this.zombies.length,
 			// VS-2 probes: evolutions, family affinity, elites, wave windows.
 			forceEvo: () => this.checkEvolutions()?.evolvedName || null,
 			weap: (id) => { const w = this.weapons.find((x) => x.id === id); return w ? { name: w.name, dmg: w.damage, pellets: w.pellets, pierce: w.pierce, mag: w.magazineSize } : null; },
@@ -798,7 +830,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -958,7 +990,7 @@ export class GameEngine {
 	}
 	updateOrbit(dt) {
 		this.orbit = (this.orbit || 0) + dt * 2.6;
-		const n = 2 + this.boon(`ring`);
+		const n = 2 + this.boon(`ring`) + this.bpOrbiters;
 		const rad = 56;
 		this.orbitPts = [];
 		const dmg = 11 + this.boon(`ring`) * 4;
@@ -1008,7 +1040,7 @@ export class GameEngine {
 		}
 		if (!cur) return;
 		const hit = new Set();
-		const chains = 2 + stacks;
+		const chains = 2 + stacks + this.bpChains;
 		for (let c = 0; c < chains && cur; c++) {
 			hit.add(cur);
 			cur.health -= dmg;
@@ -1633,6 +1665,12 @@ export class GameEngine {
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && (n.onFree?.(), n.onFree = null, this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
 		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateCacheTimer(), this.updateFuse(e);
+		// Batch 2: low-HP heartbeat — a double-thump when you're almost gone.
+		if (this.player.health > 0 && this.player.health < this.player.maxHealth * .3 && Date.now() - this.lastHeartbeat > 1000) {
+			this.lastHeartbeat = Date.now();
+			soundEngine.tone({ f: 55, type: `sine`, dur: .12, vol: .4 });
+			soundEngine.tone({ f: 48, type: `sine`, dur: .15, vol: .35, delay: .18 });
+		}
 		this.dodgeCd = Math.max(0, this.dodgeCd - e);
 		this.bashCd = Math.max(0, this.bashCd - e);
 		this.bashSwing = Math.max(0, this.bashSwing - e);
@@ -1767,6 +1805,8 @@ export class GameEngine {
 		let gait = (this.player.isSneaking ? .5 : 1) * this.sprintBlend * (i ? 1.32 : 1);
 		if (this.bloodRush > 0) gait *= 1.22;
 		if (this.boon(`stride`)) gait *= 1 + this.boon(`stride`) * .06;
+		// Batch 2: frosted chill slows the player.
+		if (Date.now() < this.chillUntil) gait *= .7;
 		if (r > 0) {
 			const fwd = t * aimX + n * aimY;
 			const side = t * -aimY + n * aimX;
@@ -2014,7 +2054,7 @@ export class GameEngine {
 			return;
 		}
 		const hunting = !this.isMouseDown && !this.player.isSneaking && !!this.nearestTarget(this.aimReach());
-		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + this.boon(`trigger`) * .1) * this.shopFireRateMul * (1 + (this.comboMultiplier - 1) * .06) * r);
+		let n = this.hasPowerup(`infinite_ammo`), r = n ? 1.4 : 1, i = this.isMouseDown || this.virtualJoystickAim.x !== 0 || this.virtualJoystickAim.y !== 0 || hunting, a = 1e3 / (t.fireRate * (1 + this.getPerkLevel(`quickdraw`) * .18) * (1 + this.boon(`trigger`) * .1) * this.shopFireRateMul / this.bpFireMul * (1 + (this.comboMultiplier - 1) * .06) * r);
 		i && e - this.lastShotTime >= a && (t.currentMag > 0 || n ? (this.fireCurrentWeapon(), this.lastShotTime = e) : t.reserveAmmo > 0 ? this.reloadCurrentWeapon() : this.autoSwapFromDry());
 	}
 	nearestTarget(range) {
@@ -2047,7 +2087,7 @@ export class GameEngine {
 		else if (e.id === `chainsaw`) this.screenShake = 2;
 		else this.screenShake = 2.5;
 		if (e.id === `shotgun` || e.id === `revolver` || e.id === `lever_rifle`) this.hitstop = Math.max(this.hitstop, e.id === `shotgun` ? .04 : .02);
-		const dmgMul = (1 + this.getPerkLevel(`hollowpoint`) * .2) * (1 + this.boon(`lead`) * .08) * (this.evolved === `lincoln` && e.id === `revolver` ? 1.35 : 1) * (this.simTime < this.freshUntil ? 1.45 : 1) * (this.simTime < this.bountyBoostUntil ? 1.18 : 1);
+		const dmgMul = (1 + this.getPerkLevel(`hollowpoint`) * .2) * (1 + this.boon(`lead`) * .08) * this.bpDamageMul * (this.evolved === `lincoln` && e.id === `revolver` ? 1.35 : 1) * (this.simTime < this.freshUntil ? 1.45 : 1) * (this.simTime < this.bountyBoostUntil ? 1.18 : 1);
 		const choke = this.getPerkLevel(`choke`);
 		if (e.id === `chainsaw`) {
 			this.hitstop = Math.max(this.hitstop, .03);
@@ -2142,6 +2182,19 @@ export class GameEngine {
 		for (let t = this.bullets.length - 1; t >= 0; t--) {
 			let n = this.bullets[t], r = e * 60;
 			const ox = n.x, oy = n.y;
+			// Batch 2: heatseeker — rounds curve toward the nearest dead man.
+			if (this.boon(`seeker`) > 0 && !n.isFlare && !n.isMolotov && !n.isSplinter) {
+				const tgt = this.nearestZombie(n.x, n.y, 300);
+				if (tgt) {
+					const want = Math.atan2(tgt.y - n.y, tgt.x - n.x);
+					const cur = Math.atan2(n.vy, n.vx);
+					const turn = 3.2 * e;
+					let d = this.normalizeAngle(want - cur);
+					d = Math.max(-turn, Math.min(turn, d));
+					const sp = Math.hypot(n.vx, n.vy) || 400;
+					n.vx = Math.cos(cur + d) * sp; n.vy = Math.sin(cur + d) * sp;
+				}
+			}
 			n.x += n.vx * r;
 			n.y += n.vy * r;
 			n.rangeRemaining -= Math.hypot(n.vx, n.vy) * r;
@@ -2180,9 +2233,11 @@ export class GameEngine {
 				}
 				const bq = this.queryZombies((ox + n.x) / 2, (oy + n.y) / 2, Math.hypot(n.x - ox, n.y - oy) / 2 + this.zhashMaxR + n.radius, []);
 				bq.sort((x, y) => y - x);
-				for (const e of bq) {
+				if (n.lastHitCd > 0) n.lastHitCd -= e;
+			for (const e of bq) {
 					let r = this.zombies[e];
 					if (!r) continue;
+					if (r === n.lastHit && n.lastHitCd > 0) continue;
 					if (!this.segmentHitsCircle(ox, oy, n.x, n.y, n.radius, r.x, r.y, r.radius)) continue;
 					{
 						if (n.isFlare) {
@@ -2192,13 +2247,15 @@ export class GameEngine {
 						}
 						this.stats.shotsHit++;
 						let e = this.checkHeadshot(n, r), i = n.damage;
-						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4, this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r, n.weaponType), r.health -= i, this.stats.damageDealt += i;
+						this.hasPowerup(`insta_kill`) ? i = 99999 : e ? r.hasHelmet ? (r.hasHelmet = false, this.createHitSparks(r.x, r.y, `#eab308`), soundEngine.playZombieHit(false), i *= .6) : (i *= 2.4, this.stats.headshots++, this.bumpLifetime(`headshots`), soundEngine.playZombieHit(true)) : soundEngine.playZombieHit(false), i *= this.playerDamageMul(r, n.weaponType), i = this.applyAffixDefense(r, i), r.health -= i, this.stats.damageDealt += i;
 						if (!n.isSplinter && r.health > 0 && r.health <= r.maxHealth * .2 && r.type !== `behemoth` && r.type !== `miner_brute`) r.health = 0;
 						if (e) this.tickBounty(`head`);
 						if (r.health <= 0 && !n.isSplinter) r.shatter = true;
 						if (this.evolved === `lincoln` && n.weaponType === `revolver` && e) this.player.health = Math.min(this.player.maxHealth, this.player.health + 4);
-						let a = Math.atan2(n.vy, n.vx), o = n.weaponType === `shotgun` ? 7 : 3;
+						let a = Math.atan2(n.vy, n.vx), o = this.knockbackFor(n.weaponType, r.type);
+						this.spawnForkChildren(n, a);
 						if (r.x += Math.cos(a) * o, r.y += Math.sin(a) * o, this.createBloodParticles(n.x, n.y, a), r.hitFlash = .08, e ? this.spawnFloater(r.x, r.y - r.radius, `HEAD`, `#ff4d3a`) : this.spawnDamageNumber(r.x, r.y - r.radius, i, `#e8b34b`), soundEngine.playImpact(), this.feelHit(n, r), i > 80 && (this.hitstop = Math.max(this.hitstop, .04)), n.pierce--, n.pierce <= 0) {
+							if (this.tryRicochet(n, r)) break;
 							this.freeBulletAt(t);
 							break;
 						}
@@ -2484,6 +2541,7 @@ export class GameEngine {
 		z.ai = `chase`;
 		z.tx = this.player.x;
 		z.ty = this.player.y;
+		this.assignAffix(z);
 		this.spawnFloater(z.x, z.y - z.radius - 14, `ELITE ${type.replace(`_`, ` `).toUpperCase()}`, `#c77dff`);
 		this.callbacks.onRadio?.(`WJPS`, `Something big just walked out of the treeline. Watch yourself.`);
 		soundEngine.playWaveHorn();
@@ -2582,13 +2640,33 @@ export class GameEngine {
 			d.speed = d.speed * 1.15;
 			d.scoreValue = d.scoreValue * 3;
 			d.scrapValue = Math.round(d.scrapValue * 2);
+			this.assignAffix(d);
 		}
 		this.zombies.push(d), soundEngine.playZombieGroan(e === `crawler` ? `shambler` : e === `bomber` ? `bloater_spitter` : e === `riot` ? `miner_brute` : e);
+		// Batch 2: boss entrance — Behemoth gets a banner and a warning motif.
+		if (e === `behemoth`) this.bossEntrance(d);
 		return d;
 	}
 	updateZombies(e, t) {
 		for (let n = this.zombies.length - 1; n >= 0; n--) {
 			let r = this.zombies[n];
+			// Batch 2: affix behaviors — vampiric regen, leaping lunge.
+			if (r.affix === `vampiric` && r.health < r.maxHealth) r.health = Math.min(r.maxHealth, r.health + r.maxHealth * .02 * e);
+			if (r.affix === `leaping`) {
+				r.leapCd -= e;
+				if (r.leapTele > 0) {
+					r.leapTele -= e;
+					if (r.leapTele <= 0) {
+						const a = Math.atan2(this.player.y - r.y, this.player.x - r.x);
+						r.vx = (r.vx || 0) + Math.cos(a) * 320; r.vy = (r.vy || 0) + Math.sin(a) * 320;
+						this.createBloodParticles(r.x, r.y, a);
+						soundEngine.tone({ f: 200, f2: 600, type: `sawtooth`, dur: .2, vol: .15 });
+					}
+				} else if (r.leapCd <= 0 && Math.hypot(this.player.x - r.x, this.player.y - r.y) < 320) {
+					r.leapTele = .45; r.leapCd = 4;
+					this.spawnFloater(r.x, r.y - r.radius - 20, `!`, `#ffffff`);
+				}
+			}
 			if (r.isBurning && r.isBurning > 0 && (r.isBurning -= e * 1e3, r.health -= e * 35, Math.random() < .3 && this.particles.push(Object.assign(this.allocParticle(), {
 				x: r.x + (Math.random() - .5) * r.radius,
 				y: r.y + (Math.random() - .5) * r.radius,
@@ -2774,7 +2852,7 @@ export class GameEngine {
 				r.x = sepX;
 				r.y = sepY;
 			}
-			o <= r.radius + this.player.radius && t - r.lastAttackTime >= r.attackCooldown && (r.lastAttackTime = t, this.invuln <= 0 && (this.lastKiller = r.type, this.damagePlayer(r.damage)));
+			o <= r.radius + this.player.radius && t - r.lastAttackTime >= r.attackCooldown && (r.lastAttackTime = t, this.invuln <= 0 && (this.lastKiller = r.type, this.damagePlayer(r.damage, r)));
 		}
 	}
 	boneBurst(z) {
@@ -2783,7 +2861,7 @@ export class GameEngine {
 		const dmg = (z.type === `behemoth` ? 48 : z.type === `miner_brute` || z.type === `bloater_spitter` ? 55 : 70) + extra * 10;
 		const near = this.zombies
 			.map((o) => ({ o, d: Math.hypot(o.x - z.x, o.y - z.y) }))
-			.filter((n) => n.d < 200 && n.d > 0)
+			.filter((n) => n.d < 200 * this.bpBlastMul && n.d > 0)
 			.sort((a, b) => a.d - b.d)
 			.slice(0, count);
 		const fire = (a) => this.bullets.push(Object.assign(this.allocBullet(), {
@@ -2827,6 +2905,30 @@ export class GameEngine {
 		this.screenShake = Math.max(this.screenShake, 4);
 	}
 	killZombie(e, t) {
+		// Batch 2: volatile affix — the elite pops, and takes the crowd with it.
+		if (e.affix === `volatile`) {
+			const R = 130, dmg = Math.round(e.maxHealth * .5);
+			for (let i = this.zombies.length - 1; i >= 0; i--) {
+				const z = this.zombies[i];
+				if (z === e || Math.hypot(z.x - e.x, z.y - e.y) > R) continue;
+				z.health -= dmg;
+				this.createBloodParticles(z.x, z.y, Math.atan2(z.y - e.y, z.x - e.x));
+				if (z.health <= 0) this.killZombie(z, i);
+			}
+			if (Math.hypot(this.player.x - e.x, this.player.y - e.y) < R) this.damagePlayer(15);
+			this.shockwaves.push({ x: e.x, y: e.y, r: 10, maxR: R, life: .4, maxLife: .4, color: `#ff6b35` });
+			this.trauma = Math.min(1, this.trauma + .3);
+			soundEngine.tone({ f: 90, f2: 30, type: `sine`, dur: .5, vol: .5 });
+			this.spawnFloater(e.x, e.y - 30, `VOLATILE POP`, `#ff6b35`);
+		}
+		// Batch 2: splitter — bloaters pop into crawlers.
+		if (e.type === `bloater_spitter`) {
+			for (let k = 0; k < 2; k++) {
+				const c = this.pushZombie(`crawler`, e.x + (Math.random() - .5) * 30, e.y + (Math.random() - .5) * 30);
+				c.ai = `chase`;
+			}
+			this.createBloodParticles(e.x, e.y, Math.random() * Math.PI * 2);
+		}
 		const comboBefore = Math.floor(this.comboMultiplier);
 		this.zombies.splice(t, 1), this.stats.kills++, this.bumpLifetime(`kills`), this.lastKillTime = Date.now(), this.comboMultiplier = Math.min(5, this.comboMultiplier + .25);
 		// VS-1: Harvest Streak — 3s kill window, bonus capped at 30.
@@ -2838,6 +2940,8 @@ export class GameEngine {
 		this.score += streakBonus;
 		if (this.streak >= 10) this.spawnFloater(e.x, e.y - e.radius - 10, `HARVEST x${this.streak}`, this.streakColor());
 		soundEngine.playKillSub();
+		// Batch 2: kill SFX pitch climbs with the streak — 300 + min(streak,20)x30 Hz.
+		soundEngine.tone({ f: 300 + Math.min(this.streak, 20) * 30, type: `triangle`, dur: .07, vol: .12 });
 		this.feelKill(e);
 		const comboAfter = Math.floor(this.comboMultiplier);
 		if (comboAfter > comboBefore && comboAfter >= 2) {
@@ -2932,9 +3036,11 @@ export class GameEngine {
 			});
 		}
 	}
-	damagePlayer(e) {
+	damagePlayer(e, attacker) {
 		if (this.invuln > 0) return;
 		this.invuln = .62;
+		// Batch 2: frosted affix — the dead leave ice in your veins.
+		if (attacker && attacker.affix === `frosted`) { this.chillUntil = Date.now() + 2000; this.spawnFloater(this.player.x, this.player.y - 40, `CHILLED`, `#7dd3fc`); }
 		let t = e * (1 - this.getPerkLevel(`grit`) * .08);
 		this.player.health -= t, this.stats.damageTaken += t, this.screenShake = 5, this.trauma = Math.min(1, this.trauma + .22), soundEngine.playPlayerHurt();
 		// VS-1: getting hurt breaks the Harvest Streak.
@@ -3100,6 +3206,102 @@ export class GameEngine {
 		if (this.hurtFlash > 0) this.hurtFlash = Math.max(0, this.hurtFlash - dt * 1.4);
 	}
 	setHitFeel(on) { this.hitFeel = !!on; }
+	// Batch 2: mass-based knockback — sprinters fly, behemoths barely budge.
+	zombieMass(type) {
+		return type === `behemoth` ? 4.2 : type === `miner_brute` ? 2.6 : type === `bloater_spitter` ? 1.8 : type === `crawler` ? 0.7 : 1;
+	}
+	knockbackFor(weaponType, zombieType) {
+		const force = weaponType === `shotgun` ? 7 : 3;
+		return force / this.zombieMass(zombieType);
+	}
+	nearestZombie(x, y, maxD) {
+		let best = null, bd = maxD;
+		const near = this.queryZombies(x, y, maxD, []);
+		for (const i of near) {
+			const z = this.zombies[i];
+			if (!z || z.health <= 0) continue;
+			const d = Math.hypot(z.x - x, z.y - y);
+			if (d < bd) { bd = d; best = z; }
+		}
+		return best;
+	}
+	// Batch 2: elite affixes — readable, telegraphed, each with a visual tell.
+	assignAffix(z) {
+		if (!z.elite || z.affix) return;
+		const pool = [`volatile`, `vampiric`, `leaping`, `shielded`, `swift`, `frosted`];
+		z.affix = pool[(Math.random() * pool.length) | 0];
+		if (z.affix === `swift`) z.speed *= 1.35;
+		if (z.affix === `shielded`) z.shieldHp = Math.round(z.maxHealth * .3);
+		if (z.affix === `leaping`) { z.leapCd = 3; z.leapTele = 0; }
+		const label = { volatile: `VOLATILE`, vampiric: `VAMPIRIC`, leaping: `LEAPING`, shielded: `SHIELDED`, swift: `SWIFT`, frosted: `FROSTED` }[z.affix];
+		this.spawnFloater(z.x, z.y - z.radius - 26, label, `#ff7b72`);
+	}
+	bossEntrance(z) {
+		this.bannerText = `THE BEHEMOTH`;
+		this.bannerSub = `Something old is walking out of the treeline`;
+		this.bannerUntil = Date.now() + 2600;
+		this.trauma = Math.min(1, this.trauma + .45);
+		this.callbacks.onRadio?.(`WJPS`, `Folks... we got a big one on the Trace. Get to high ground or get to cover.`);
+		soundEngine.tone({ f: 480, f2: 360, type: `sawtooth`, dur: .5, vol: .3 });
+		soundEngine.tone({ f: 360, f2: 240, type: `sawtooth`, dur: .5, vol: .3, delay: .5 });
+		soundEngine.tone({ f: 240, f2: 120, type: `sawtooth`, dur: .8, vol: .35, delay: 1 });
+	}
+	applyAffixDefense(z, dmg) {
+		if (z.affix === `shielded` && z.shieldHp > 0) {
+			z.shieldHp -= dmg;
+			if (z.shieldHp <= 0) {
+				this.spawnFloater(z.x, z.y - z.radius - 10, `SHIELD DOWN`, `#4cc3ff`);
+				this.createHitSparks(z.x, z.y, `#4cc3ff`);
+				soundEngine.tone({ f: 300, f2: 120, type: `sawtooth`, dur: .25, vol: .2 });
+			}
+			return dmg * .4;
+		}
+		return dmg;
+	}
+	// Batch 2: ricochet — bounce to the nearest other zombie, 25% falloff per bounce.
+	tryRicochet(n, hitZ) {
+		const maxB = this.boon(`ricochet`);
+		if (maxB <= 0) return false;
+		n.bouncesLeft = n.bouncesLeft ?? maxB;
+		if (n.bouncesLeft <= 0) return false;
+		let best = null, bd = 340;
+		for (const z of this.zombies) {
+			if (z === hitZ || z.health <= 0) continue;
+			const d = Math.hypot(z.x - n.x, z.y - n.y);
+			if (d < bd) { bd = d; best = z; }
+		}
+		if (!best) return false;
+		const sp = Math.hypot(n.vx, n.vy) || 400;
+		const a = Math.atan2(best.y - n.y, best.x - n.x);
+		n.vx = Math.cos(a) * sp; n.vy = Math.sin(a) * sp;
+		n.damage *= .75;
+		n.bouncesLeft--;
+		n.lastHit = hitZ; n.lastHitCd = .2;
+		this.createHitSparks(n.x, n.y, `#4cc3ff`);
+		soundEngine.tone({ f: 900, f2: 1400, type: `sine`, dur: .08, vol: .1 });
+		return true;
+	}
+	// Batch 2: forking rounds — impact splits into spectral projectiles.
+	spawnForkChildren(n, a) {
+		const ranks = this.boon(`fork`);
+		if (ranks <= 0 || n.isForkChild || n.isSplinter || n.isFlare || n.isMolotov) return;
+		for (let k = 0; k < ranks; k++) {
+			const fa = a + (k % 2 === 0 ? 1 : -1) * (.38 + .22 * ((k / 2) | 0));
+			const sp = Math.hypot(n.vx, n.vy) || 400;
+			this.bullets.push(Object.assign(this.allocBullet(), {
+				x: n.x, y: n.y,
+				vx: Math.cos(fa) * sp, vy: Math.sin(fa) * sp,
+				damage: n.damage * .5,
+				pierce: 1,
+				rangeRemaining: 220,
+				weaponType: n.weaponType,
+				isForkChild: true,
+				radius: 3,
+				color: `#7df9ff`
+			}));
+		}
+		soundEngine.tone({ f: 1200, f2: 700, type: `triangle`, dur: .09, vol: .08 });
+	}
 	renderShockwaves(e) {
 		for (const s of this.shockwaves) {
 			const a = Math.max(0, s.life / s.maxLife) * .55;
@@ -3596,7 +3798,7 @@ export class GameEngine {
 	}
 	allocBullet() {
 		const b = this.bulletPool.pop();
-		if (b) { b.x = 0; b.y = 0; b.vx = 0; b.vy = 0; b.radius = 0; b.damage = 0; b.pierce = 0; b.rangeRemaining = 0; b.color = ``; b.id = ``; b.weaponType = ``; b.isMolotov = false; b.isFlare = false; b.isSplinter = false; b.isCrossbowBolt = false; return b; }
+		if (b) { b.x = 0; b.y = 0; b.vx = 0; b.vy = 0; b.radius = 0; b.damage = 0; b.pierce = 0; b.rangeRemaining = 0; b.color = ``; b.id = ``; b.weaponType = ``; b.isMolotov = false; b.isFlare = false; b.isSplinter = false; b.isCrossbowBolt = false; b.isForkChild = false; b.bouncesLeft = undefined; b.lastHit = null; b.lastHitCd = 0; return b; }
 		return {};
 	}
 	freeBulletAt(t) {
@@ -3615,6 +3817,22 @@ export class GameEngine {
 	offerDraft() {
 		this.draft = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.banishedBoons);
 		this.callbacks.onDraft?.(this.draft);
+	}
+	// Batch 2: breakpoint bonuses — the 6th rank of a boon pays out big, once.
+	checkBreakpoint(id) {
+		if ((this.boonStacks[id] || 0) !== 6 || this.breakpointsHit.has(id)) return;
+		this.breakpointsHit.add(id);
+		const label = { lead: `WHITE-HOT LEAD`, trigger: `HAIR TRIGGER`, bone: `BONE ORCHARD`, ring: `FULL CIRCLE`, storm: `STORM'S EYE` }[id];
+		if (!label) return;
+		if (id === `lead`) this.bpDamageMul = 1.3;
+		if (id === `trigger`) this.bpFireMul = .85;
+		if (id === `bone`) this.bpBlastMul = 1.4;
+		if (id === `ring`) this.bpOrbiters = 2;
+		if (id === `storm`) this.bpChains = 2;
+		this.spawnFloater(this.player.x, this.player.y - 64, `BREAKPOINT — ${label}`, `#ffd700`);
+		this.callbacks.onRadio?.(`Unknown`, `Six deep on that trick. The county just blinked.`);
+		soundEngine.tone({ f: 660, type: `square`, dur: .1, vol: .2 });
+		soundEngine.tone({ f: 990, type: `square`, dur: .2, vol: .2, delay: .1 });
 	}
 	takeBoon(id: string) {
 		if (!this.draft?.some((b) => b.id === id)) return;
@@ -3638,6 +3856,7 @@ export class GameEngine {
 		} else if (id === `pipe`) {
 			this.pipes = Math.min(4, this.pipes + 1);
 		}
+		this.checkBreakpoint(id);
 		const picked = this.draft.find((b) => b.id === id);
 		this.draft = null;
 		if (this.waveState === `break`) {
@@ -4045,7 +4264,7 @@ export class GameEngine {
 			e.restore();
 		}
 		beginWorld();
-		this.renderZombies(e), this.renderProjectiles(e), this.renderGrit(e), this.renderTraps(e), this.renderPlayer(e), this.renderLightning(e), this.renderSalt(e), this.renderRig(e), this.renderNoisePulses(e), this.renderFlares(e), this.renderHoleMarkers(e), this.renderLantern(e), this.renderBell(e), this.renderZombieLabels(e);
+		this.renderZombies(e), this.renderProjectiles(e), this.renderGrit(e), this.renderTraps(e), this.renderPlayer(e), this.renderLightning(e), this.renderSalt(e), this.renderRig(e), this.renderNoisePulses(e), this.renderFlares(e), this.renderHoleMarkers(e), this.renderLantern(e), this.renderBell(e), this.renderZombieLabels(e), this.renderBanner(e);
 		this.paintFloaters(e, zoom);
 		e.restore();
 		if (this.interactHint) {
@@ -4328,6 +4547,15 @@ export class GameEngine {
 				e.beginPath();
 				e.ellipse(2, t.radius * .72, t.radius * 1.35, t.radius * .55, 0, 0, Math.PI * 2);
 				e.stroke();
+				// Batch 2: affix tells — color-coded rings so elites read at a glance.
+				if (t.affix) {
+					const pulse = .6 + .4 * Math.sin(this.simTime * 5);
+					const col = { volatile: `rgba(255,107,53,${pulse})`, vampiric: `rgba(190,24,60,${pulse})`, leaping: `rgba(255,255,255,${t.leapTele > 0 ? 1 : pulse * .7})`, shielded: `rgba(76,195,255,${pulse})`, swift: `rgba(230,230,230,${pulse * .8})`, frosted: `rgba(125,211,252,${pulse})` }[t.affix];
+					e.strokeStyle = col; e.lineWidth = 2.5;
+					e.beginPath();
+					e.ellipse(2, t.radius * .72, t.radius * (t.affix === `volatile` ? 1.6 + .25 * pulse : 1.55), t.radius * .68, 0, 0, Math.PI * 2);
+					e.stroke();
+				}
 			}
 			e.save();
 			e.translate(0, -limp);
@@ -4351,6 +4579,25 @@ export class GameEngine {
 			}
 			e.restore();
 		}
+	}
+	renderBanner(e) {
+		if (Date.now() > this.bannerUntil || !this.bannerText) return;
+		const w = this.canvas.width / (window.devicePixelRatio || 1);
+		const h = this.canvas.height / (window.devicePixelRatio || 1);
+		const age = 1 - (this.bannerUntil - Date.now()) / 2600;
+		const alpha = age < .12 ? age / .12 : age > .8 ? (1 - age) / .2 : 1;
+		e.save();
+		e.globalAlpha = Math.max(0, Math.min(1, alpha));
+		e.textAlign = `center`;
+		e.font = `900 44px system-ui, sans-serif`;
+		e.fillStyle = `#7f1d1d`;
+		e.fillText(this.bannerText, w / 2, h * .3);
+		e.strokeStyle = `#fca5a5`; e.lineWidth = 1.5;
+		e.strokeText(this.bannerText, w / 2, h * .3);
+		e.font = `400 18px system-ui, sans-serif`;
+		e.fillStyle = `#e5e7eb`;
+		e.fillText(this.bannerSub, w / 2, h * .3 + 32);
+		e.restore();
 	}
 	renderZombieLabels(e) {
 		const { camL, camT, camR, camB } = this.viewCull(90);
