@@ -1,4 +1,4 @@
-export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt" | "fork" | "ricochet" | "seeker";
+export type BoonId = "lead" | "trigger" | "hide" | "shells" | "beam" | "jug" | "leavings" | "stride" | "bone" | "ring" | "post" | "pipe" | "storm" | "salt" | "fork" | "ricochet" | "seeker" | "aura";
 
 export type BoonRarity = "common" | "uncommon" | "rare";
 
@@ -30,12 +30,19 @@ export const BOON_CATALOG: BoonOffer[] = [
   { id: "fork", name: "Forking rounds", blurb: "On impact, rounds split into +1 spectral projectile per rank.", rarity: "rare" },
   { id: "ricochet", name: "Bank shots", blurb: "Rounds bounce to another dead man, losing 25% damage per bounce.", rarity: "uncommon" },
   { id: "seeker", name: "Heatseeker node", blurb: "Your rounds hunt. Every trigger pull curves toward the dead.", rarity: "rare" },
+  { id: "aura", name: "Volatile aura", blurb: "A burning plasma field around your boots. Wider and hotter per rank. Locks out Orbiting Blades.", rarity: "rare" },
 ];
+
+// Batch 3: ability forks with lockout — some picks close off alternatives.
+export const LOCKOUTS: Record<string, string[]> = {
+  aura: ["ring"],
+  ring: ["aura"],
+};
 
 export function rollBoons(stacks: Record<string, number>, molotovs: number, maxMolotovs: number, posts = 0, pipes = 0, banished: Set<string> = new Set()): BoonOffer[] {
   const pool = BOON_CATALOG.filter((b) => {
     if (banished.has(b.id)) return false;
-    if ((stacks[b.id] ?? 0) >= (b.id === "hide" ? 8 : b.id === "storm" || b.id === "salt" ? 6 : b.id === "fork" ? 3 : b.id === "seeker" ? 2 : b.id === "ricochet" ? 4 : 99)) return false;
+    if ((stacks[b.id] ?? 0) >= (b.id === "hide" ? 8 : b.id === "storm" || b.id === "salt" ? 6 : b.id === "fork" ? 3 : b.id === "seeker" ? 2 : b.id === "ricochet" ? 4 : b.id === "aura" ? 6 : 99)) return false;
     if (b.id === "jug" && molotovs >= maxMolotovs) return false;
     if (b.id === "post" && posts >= 3) return false;
     if (b.id === "pipe" && pipes >= 4) return false;

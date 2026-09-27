@@ -21,7 +21,7 @@ import {
   CellarHole,
   NoisePulse,
 } from "../types/game";
-import { rollBoons, BoonOffer } from "./boons";
+import { rollBoons, BoonOffer, LOCKOUTS, BOON_CATALOG } from "./boons";
 import { INITIAL_WEAPONS, AVAILABLE_PERKS, GAME_LOCATIONS, BOARD_COST, EVOLUTIONS, RUN_EVENTS, GRIT_GROUND_CAP, BOMB_RADIUS, BOMB_DMG, BOMB_MAX_CHARGES, BOMB_REGEN_MS, QUESTS, SHRINE_COUNT, SHRINE_BOSS_DMG_PER, SHOP_POOL, SHOP_OFFER_COUNT, SHOP_REROLL_BASE, WEAPON_FAMILIES, WAVE_WINDOWS } from "./constants";
 import { loadMeta, saveMeta } from "./meta";
 import { soundEngine } from "../audio/soundEngine";
@@ -262,11 +262,14 @@ export class GameEngine {
 	bpChains = 0;
 	bpBlastMul = 1;
 	breakpointsHit = new Set();
+	lockedBoons = new Set();
 	bannerText = ``;
 	bannerSub = ``;
 	bannerUntil = 0;
 	chillUntil = 0;
 	lastHeartbeat = 0;
+	flankTimer = 0;
+	cullTimer = 0;
 	stats = {
 		kills: 0,
 		headshots: 0,
@@ -451,6 +454,28 @@ export class GameEngine {
 			playImpact: () => soundEngine.playImpact(),
 			playKillSub: () => soundEngine.playKillSub(),
 			playBanishSfx: () => soundEngine.playBanish(),
+			// Batch 3 probes: aura, lockouts, falloff, flank, dasher, cull, casings, spawn pop.
+			forceDraftTake: (id) => { this.draft = [{ id, name: id, blurb: `` }]; this.takeBoon(id); return { stacks: this.boonStacks[id] || 0, locked: [...this.lockedBoons] }; },
+			auraState: () => ({ stacks: this.boon(`aura`), r: 80 + this.boon(`aura`) * 16 }),
+			runFlank: () => { this.wave = Math.max(this.wave, 5); this.flankTimer = 0; this.updateFlankDirector(7); return this.zombies.filter((z) => z.flankUntil > this.simTime).length; },
+			zDash: (i) => { const z = this.zombies[i]; return z ? { cd: +(z.dashCd ?? -1).toFixed(2), tele: +(z.dashTele || 0).toFixed(2) } : null; },
+			runCull: () => { this.cullTimer = 0; this.cullZombies(2.1); return this.zombies.length; },
+			zSpawnT: (i) => this.zombies[i] ? +this.zombies[i].spawnT.toFixed(3) : -1,
+			zAi: (i) => this.zombies[i] ? this.zombies[i].ai : null,
+			realAffix: (type) => { const z = this.pushZombie(type, this.player.x + 120, this.player.y); z.elite = true; z.maxHealth = Math.round(z.maxHealth * 2.2); z.health = z.maxHealth; this.assignAffix(z); return { affix: z.affix, idx: this.zombies.indexOf(z) }; },
+			spawnTracked: (t, x, y) => { this._tracked = this.pushZombie(t, x, y); return 1; },
+			trackedSpawnT: () => this._tracked ? +this._tracked.spawnT.toFixed(3) : -1,
+			settle: () => { if (this.draft) { this.draft = null; this.callbacks.onDraft?.(null); } if (this.levelHold) { this.levelHold = false; this.setPaused(false); } return this.draft === null && !this.isPaused; },
+			trackedDash: () => this._tracked ? { cd: +(this._tracked.dashCd ?? -1).toFixed(2), alive: this.zombies.includes(this._tracked) } : null,
+			trackedAlive: () => this._tracked ? this.zombies.includes(this._tracked) : false,
+			trackedPin: () => { if (this._tracked) this._tracked.health = this._tracked.maxHealth = 1e6; },
+			trackedHp: () => this._tracked ? Math.round(this._tracked.health) : -999,
+			trackedInfo: () => this._tracked ? { hp: Math.round(this._tracked.health), elite: !!this._tracked.elite, affix: this._tracked.affix || null, wave: this.wave } : null,
+			zInfo: (i) => { const z = this.zombies[i]; return z ? { type: z.type, x: Math.round(z.x), y: Math.round(z.y), elite: !!z.elite, affix: z.affix || null, hp: Math.round(z.health) } : null; },
+			simFrames: () => this._simFrames || 0,
+			runState: () => ({ running: this.isRunning, paused: this.isPaused, waveState: this.waveState, draft: !!this.draft }),
+			fireOnce: () => { const before = this.particles.length; this.fireCurrentWeapon(); return this.particles.filter((p) => p.type === `casing`).length; },
+			bombRadius: () => BOMB_RADIUS,
 			// Batch 2 probes: projectile mods, breakpoints, affixes, splitter, boss banner.
 			playerPos: () => ({ x: this.player.x, y: this.player.y }),
 			spawnAt: (t, x, y) => { const z = this.pushZombie(t, x, y); z.ai = `wander`; return this.zombies.indexOf(z); },
@@ -481,7 +506,7 @@ export class GameEngine {
 			windowFor: (w) => this.windowFor(w).name,
 			schedule: () => this.waveSchedule(),
 			curWindow: () => this.currentWindowId,
-			giveBoon: (id, n = 1) => { this.boonStacks[id] = (this.boonStacks[id] || 0) + n; },
+			giveBoon: (id, n = 1) => { this.boonStacks[id] = Math.max(0, (this.boonStacks[id] || 0) + n); },
 			// VS-3 probes: hit-feel, grit tiers/fusing, powerups, caches.
 			feelState: () => ({ on: this.hitFeel, budget: +this.hitstopBudget.toFixed(3) }),
 			setFeel: (on) => this.setHitFeel(on),
@@ -830,7 +855,7 @@ export class GameEngine {
 		this.stop(), window.removeEventListener(`keydown`, this.handleKeyDown), window.removeEventListener(`keyup`, this.handleKeyUp), this.canvas.removeEventListener(`mousemove`, this.handleMouseMove), this.canvas.removeEventListener(`mousedown`, this.handleMouseDown), window.removeEventListener(`mouseup`, this.handleMouseUp), this.canvas.removeEventListener(`wheel`, this.handleWheel);
 	}
 	start(e = 1) {
-		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
+		this.difficultyMultiplier = e, this.isRunning = true, this.isPaused = false, this.gameStartTime = Date.now(), this.lastTimestamp = performance.now(), this.wave = 0, this.waveState = `break`, this.waveBreakCountdown = 3, this.draftGraceUntil = 0, this.evolutionDone = {}, this.gritBag = 0, this.bombCharges = 1, this.bombLastRegen = Date.now(), this.postRank = 1, this.firedEvents = [], this.activeEvents = [], this.extractActive = false, this.bellReady = false, this.bellRung = false, this.bellHold = 0, this.bellLureUntil = 0, this.lastBreakTick = Date.now(), this.streak = 0, this.streakTimer = 0, this.maxStreak = 0, this.lastStreakKill = -99, this.banishedBoons = new Set(), this.banishCharges = 2, this.scorchDecals = [], this.dmgFloaters = 0, this.lastEliteAt = 0, this.currentWindowId = ``, this.hitstopBudget = .3, this.slowAfter = 0, this.zoomPunch = 0, this.camKickX = 0, this.camKickY = 0, this.shockwaves = [], this.fuseTimer = 0, this.nextPowerupAt = 80, this.caches = [], this.cacheOpen = null, this.nextCacheAt = 150, this.bpDamageMul = 1, this.bpFireMul = 1, this.bpOrbiters = 0, this.bpChains = 0, this.bpBlastMul = 1, this.breakpointsHit = new Set(), this.bannerUntil = 0, this.chillUntil = 0, this.lockedBoons = new Set(), this.flankTimer = 0, this.cullTimer = 0, this.lanternLit = this.currentLocation.lantern ? !this.lanternWentOut : false, this.initHoles(), this.applyMutators(), this.rebuildFlow(true), soundEngine.init(), soundEngine.startAtmosphericMusic(), this.initRunMeta(), this.lanternWentOut && !this.currentLocation.lantern && this.callbacks.onRadio?.(`Unknown`, `The lantern went out at the springs. They're thicker on the Trace.`), this.holes.length && this.callbacks.onRadio?.(`WJPS`, `Board those cellars or run the Trace. They come up through the floor if you linger.`), this.loop(performance.now());
 	}
 	applyMutators() {
 		if (this.mutators.includes(`dry`)) for (const w of this.weapons) w.reserveAmmo = Math.floor(w.reserveAmmo / 2);
@@ -1057,6 +1082,31 @@ export class GameEngine {
 			cur = nxt;
 		}
 	}
+	// Batch 3: volatile aura — a burning plasma field around the player.
+	updateAura(dt) {
+		const stacks = this.boon(`aura`);
+		if (stacks <= 0) return;
+		const R = 80 + stacks * 16;
+		const dps = 14 + stacks * 9;
+		for (const z of this.zombies) {
+			const d = Math.hypot(z.x - this.player.x, z.y - this.player.y);
+			if (d > R + z.radius) continue;
+			z.health -= dps * dt;
+			this.stats.damageDealt += dps * dt;
+			z.hitFlash = Math.max(z.hitFlash, .04);
+			z.auraTick = (z.auraTick || 0) + dt;
+			if (z.auraTick > .5) {
+				z.auraTick = 0;
+				this.particles.push(Object.assign(this.allocParticle(), {
+					x: z.x + (Math.random() - .5) * z.radius * 2,
+					y: z.y + (Math.random() - .5) * z.radius * 2,
+					vx: (Math.random() - .5) * 2, vy: -2 - Math.random() * 2,
+					size: 3 + Math.random() * 3, color: `#c084fc`, alpha: .9,
+					life: .4, maxLife: .4, type: `fire`
+				}));
+			}
+		}
+	}
 	updateSalt(dt) {
 		const stacks = this.boon(`salt`);
 		if (!stacks) return;
@@ -1100,6 +1150,25 @@ export class GameEngine {
 		e.lineWidth = 3;
 		e.beginPath();
 		e.arc(this.player.x, this.player.y, 95 + stacks * 18, 0, Math.PI * 2);
+		e.stroke();
+		e.restore();
+	}
+	// Batch 3: volatile aura ring render.
+	renderAura(e) {
+		const stacks = this.boon(`aura`);
+		if (stacks <= 0) return;
+		const R = 80 + stacks * 16;
+		const pulse = 0.5 + 0.5 * Math.sin(this.simTime * 6);
+		e.save();
+		e.strokeStyle = `rgba(192, 132, 252, ${0.3 + pulse * 0.25})`;
+		e.lineWidth = 4 + pulse * 3;
+		e.beginPath();
+		e.arc(this.player.x, this.player.y, R, 0, Math.PI * 2);
+		e.stroke();
+		e.strokeStyle = `rgba(240, 171, 252, ${0.15 + pulse * 0.1})`;
+		e.lineWidth = 10;
+		e.beginPath();
+		e.arc(this.player.x, this.player.y, R * 0.92, 0, Math.PI * 2);
 		e.stroke();
 		e.restore();
 	}
@@ -1664,7 +1733,8 @@ export class GameEngine {
 			let n = this.floaters[t];
 			n.y += n.vy * e, n.life -= e, n.life <= 0 && (n.onFree?.(), n.onFree = null, this.floaterPool.push(n), this.floaters.splice(t, 1));
 		}
-		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateCacheTimer(), this.updateFuse(e);
+		this._simFrames = (this._simFrames || 0) + 1,
+		this.updatePowerups(e), this.updatePlayer(e), this.updateWeapons(t), this.rebuildZombieHash(), this.updateBullets(e, t), this.updateAcidSpits(e), this.updateFirePuddles(t), this.updateFlares(e), this.updateRig(e), this.updateTraps(e), this.updateBeacon(e), this.updateOrbit(e), this.updateStorm(e), this.updateSalt(e), this.updateAura(e), this.updateLightning(e), this.updateWaveManager(t), this.updateHordeEvents(e), this.updateBomb(), this.updateEvents(), this.updateFlankDirector(e), this.updateZombies(e, t), this.updateDrops(e), this.updateParticles(e), t - this.lastKillTime > 4500 && this.comboMultiplier > 1 && (this.comboMultiplier = 1), this.streakTimer > 0 && (this.streakTimer -= e, this.streakTimer <= 0 && (this.streak = 0, this.streakTimer = 0)), this.screenShake > 0 && (this.screenShake = Math.max(0, this.screenShake - e * 25)), this.muzzleFlashTimer > 0 && (this.muzzleFlashTimer -= e * 10), this.updateDynLights(e), this.updateLantern(), this.updateBellHold(e), this.updateNoisePulses(e), this.updateScorch(e), this.updateFeel(e), this.updatePowerupDrops(), this.updateCacheTimer(), this.updateFuse(e);
 		// Batch 2: low-HP heartbeat — a double-thump when you're almost gone.
 		if (this.player.health > 0 && this.player.health < this.player.maxHealth * .3 && Date.now() - this.lastHeartbeat > 1000) {
 			this.lastHeartbeat = Date.now();
@@ -2077,6 +2147,20 @@ export class GameEngine {
 		this.addLight(this.player.x + Math.cos(this.player.angle) * 30, this.player.y + Math.sin(this.player.angle) * 30, 340, .9, .12);
 		this.recoilKick = Math.max(this.recoilKick, e.id === `shotgun` ? 12 : e.id === `lever_rifle` ? 9 : e.id === `chainsaw` ? 4 : e.id === `carbine` ? 3.5 : 7);
 		if (e.id === `shotgun`) this.pumpAnim = 10;
+		// Batch 3: shell casings + heavy self-knockback — guns feel mechanical.
+		{
+			const ca = this.player.angle + Math.PI / 2 + (Math.random() - .5) * .6;
+			this.particles.push(Object.assign(this.allocParticle(), {
+				x: this.player.x, y: this.player.y - 8,
+				vx: Math.cos(ca) * (2 + Math.random() * 2), vy: Math.sin(ca) * (2 + Math.random() * 2) - 1,
+				size: 2.5, color: `#fbbf24`, alpha: 1, life: .7, maxLife: .7, type: `casing`
+			}));
+			const shove = e.id === `shotgun` ? 11 : e.id === `lever_rifle` ? 7 : e.id === `revolver` ? 4 : 0;
+			if (shove > 0) {
+				this.moveVX -= Math.cos(this.player.angle) * shove;
+				this.moveVY -= Math.sin(this.player.angle) * shove;
+			}
+		}
 		soundEngine.playGunshot(e.soundType);
 		const hear = this.weaponHearRadius(e.id) * (this.player.isSneaking ? 0.28 : 1);
 		if (hear > 0) this.alertZombies(this.player.x, this.player.y, hear);
@@ -2439,9 +2523,11 @@ export class GameEngine {
 			const imp = 20 / mass;
 			z.vx += (dx / d) * imp;
 			z.vy += (dy / d) * imp;
-			z.health -= BOMB_DMG;
+			// Batch 3: B-bomb falloff — full damage at ground zero, 35% at the rim.
+			const bfall = BOMB_DMG * (.35 + .65 * (1 - d / (BOMB_RADIUS + z.radius)));
+			z.health -= bfall;
 			z.hitFlash = .3;
-			this.stats.damageDealt += BOMB_DMG;
+			this.stats.damageDealt += bfall;
 			this.createBloodParticles(z.x, z.y, Math.atan2(dy, dx));
 		}
 		this.emitNoise(this.player.x, this.player.y, 700),
@@ -2631,7 +2717,8 @@ export class GameEngine {
 			hearX: t,
 			hearY: n,
 			wanderAngle: Math.random() * Math.PI * 2,
-			hitFlash: 0
+			hitFlash: 0,
+			spawnT: .15
 		};
 		if (this.wave >= 2 && e !== `behemoth` && Math.random() < Math.min(.25, .08 + this.wave * .015)) {
 			d.elite = true;
@@ -2647,11 +2734,61 @@ export class GameEngine {
 		if (e === `behemoth`) this.bossEntrance(d);
 		return d;
 	}
+	// Batch 3: flanking director — peels a fraction of the horde wide to punish turtling.
+	updateFlankDirector(dt) {
+		this.flankTimer -= dt;
+		if (this.flankTimer > 0 || this.wave < 4) return;
+		this.flankTimer = 6;
+		const chasers = this.zombies.filter((z) => !z.elite && (z.ai === `chase` || z.ai === `investigate`) && z.type !== `bloater_spitter`);
+		const want = Math.min(6, Math.ceil(chasers.length * .25));
+		let assigned = 0;
+		for (const z of chasers) {
+			if (assigned >= want) break;
+			if (z.flankUntil > this.simTime) continue;
+			if (Math.random() < .5) continue;
+			z.flankUntil = this.simTime + 10;
+			z.flankSide = Math.random() < .5 ? -1 : 1;
+			assigned++;
+		}
+	}
+	// Batch 3: cull — recycle zombies past 1400u, hard cap 170. Keeps the sim bounded.
+	cullZombies(dt) {
+		this.cullTimer -= dt;
+		if (this.cullTimer > 0) return;
+		this.cullTimer = 2;
+		const px = this.player.x, py = this.player.y;
+		for (let n = this.zombies.length - 1; n >= 0; n--) {
+			const z = this.zombies[n];
+			if (Math.hypot(z.x - px, z.y - py) > 1400) this.zombies.splice(n, 1);
+		}
+		if (this.zombies.length > 170) {
+			this.zombies.sort((a, b) => (Math.hypot(b.x - px, b.y - py) - Math.hypot(a.x - px, a.y - py)));
+			this.zombies.length = 170;
+		}
+	}
 	updateZombies(e, t) {
+		this.cullZombies(e);
 		for (let n = this.zombies.length - 1; n >= 0; n--) {
 			let r = this.zombies[n];
+			// Batch 3: spawn pop — nothing appears instantly.
+			if (r.spawnT > 0) r.spawnT -= e;
 			// Batch 2: affix behaviors — vampiric regen, leaping lunge.
 			if (r.affix === `vampiric` && r.health < r.maxHealth) r.health = Math.min(r.maxHealth, r.health + r.maxHealth * .02 * e);
+			// Batch 3: dasher archetype — sprinters telegraph a lunge burst.
+			if (r.type === `sprinter` && r.affix !== `leaping`) {
+				r.dashCd = (r.dashCd ?? 2) - e;
+				if (r.dashTele > 0) {
+					r.dashTele -= e;
+					r.hitFlash = Math.max(r.hitFlash, .06);
+					if (r.dashTele <= 0) {
+						const da = Math.atan2(this.player.y - r.y, this.player.x - r.x);
+						r.vx = (r.vx || 0) + Math.cos(da) * 380; r.vy = (r.vy || 0) + Math.sin(da) * 380;
+						soundEngine.tone({ f: 300, f2: 700, type: `sawtooth`, dur: .15, vol: .1 });
+					}
+				} else if (r.dashCd <= 0 && Math.hypot(this.player.x - r.x, this.player.y - r.y) < 280) {
+					r.dashTele = .35; r.dashCd = 3.5;
+				}
+			}
 			if (r.affix === `leaping`) {
 				r.leapCd -= e;
 				if (r.leapTele > 0) {
@@ -2960,10 +3097,13 @@ export class GameEngine {
 			const R = 110;
 			this.screenShake = Math.max(this.screenShake, 7);
 			for (const z of this.zombies) {
-				if (Math.hypot(z.x - e.x, z.y - e.y) < R) { z.health -= 90; z.hitFlash = 0.08; }
+				const bd = Math.hypot(z.x - e.x, z.y - e.y);
+				// Batch 3: explosion falloff — edge of the blast hurts less.
+				if (bd < R) { const bf = 1 - bd / R; z.health -= Math.round(140 * bf); z.hitFlash = 0.08; }
 			}
 			for (let k = 0; k < 14; k++) this.particles.push(Object.assign(this.allocParticle(), { x: e.x, y: e.y, vx: (Math.random() - .5) * 6, vy: (Math.random() - .5) * 6, size: 4, life: .5, maxLife: .5, alpha: 1 }));
-			if (Math.hypot(this.player.x - e.x, this.player.y - e.y) < R * .7) this.player.health -= 18;
+			const pd = Math.hypot(this.player.x - e.x, this.player.y - e.y);
+			if (pd < R * .7) this.player.health -= Math.round(26 * (1 - pd / (R * .7)));
 			soundEngine.playBarrelExplosion();
 			this.addScorch(e.x, e.y, 80);
 		}
@@ -3136,7 +3276,7 @@ export class GameEngine {
 		this.banishedBoons.add(id);
 		this.banishCharges--;
 		this.draft = this.draft.filter((b) => b.id !== id);
-		const rest = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.banishedBoons).filter((b) => !this.draft.some((d) => d.id === b.id));
+		const rest = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.draftExclusions()).filter((b) => !this.draft.some((d) => d.id === b.id));
 		if (rest.length > 0) this.draft.push(rest[0]);
 		this.callbacks.onDraft?.(this.draft);
 		this.spawnFloater(this.player.x, this.player.y - 48, `RUN OUT OF THE COUNTY`, `#c77dff`);
@@ -3235,6 +3375,14 @@ export class GameEngine {
 		if (z.affix === `leaping`) { z.leapCd = 3; z.leapTele = 0; }
 		const label = { volatile: `VOLATILE`, vampiric: `VAMPIRIC`, leaping: `LEAPING`, shielded: `SHIELDED`, swift: `SWIFT`, frosted: `FROSTED` }[z.affix];
 		this.spawnFloater(z.x, z.y - z.radius - 26, label, `#ff7b72`);
+		// Batch 3: elite alert howl — nearby dead hear it and come running.
+		soundEngine.tone({ f: 180, f2: 420, type: `sawtooth`, dur: .7, vol: .25 });
+		soundEngine.tone({ f: 420, f2: 180, type: `sawtooth`, dur: .7, vol: .2, delay: .7 });
+		for (const o of this.zombies) {
+			if (o === z || Math.hypot(o.x - z.x, o.y - z.y) > 600) continue;
+			o.ai = `chase`; o.tx = this.player.x; o.ty = this.player.y;
+			o.hearX = this.player.x; o.hearY = this.player.y;
+		}
 	}
 	bossEntrance(z) {
 		this.bannerText = `THE BEHEMOTH`;
@@ -3714,6 +3862,12 @@ export class GameEngine {
 	}
 	personalityTarget(r, i, a, o) {
 		const px = this.player.x, py = this.player.y;
+		// Batch 3: flanked zombies swing wide around the player.
+		if (r.flankUntil > this.simTime && r.type !== `bloater_spitter`) {
+			const fdx = px - r.x, fdy = py - r.y, fd = Math.hypot(fdx, fdy) || 1;
+			const fs = r.flankSide || 1;
+			return [px + (-fdy / fd) * fs * 220, py + (fdx / fd) * fs * 220, .8];
+		}
 		switch (r.type) {
 			case `sprinter`:
 				return [px + this.moveVX * 24, py + this.moveVY * 24, .65];
@@ -3730,6 +3884,17 @@ export class GameEngine {
 				let tx = px, ty = py;
 				const pd = i * i + a * a;
 				if (ob) { const dx = ob.x - r.x, dy = ob.y - r.y; if (dx * dx + dy * dy < pd) { tx = ob.x; ty = ob.y; } }
+				// Batch 3: bombers hunt clusters — drift toward the densest nearby pack.
+				if (tx === px) {
+					const bq = this.queryZombies(r.x, r.y, 420, []);
+					let bx = 0, by = 0, bn = 0;
+					for (const k of bq) {
+						const z = this.zombies[k];
+						if (!z || z === r || z.type === `bomber`) continue;
+						bx += z.x; by += z.y; bn++;
+					}
+					if (bn >= 3) { tx = bx / bn; ty = by / bn; }
+				}
 				return [tx, ty, .8];
 			}
 			case `bloater_spitter`: {
@@ -3815,8 +3980,12 @@ export class GameEngine {
 		return this.boonStacks[id] || 0;
 	}
 	offerDraft() {
-		this.draft = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.banishedBoons);
+		this.draft = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.draftExclusions());
 		this.callbacks.onDraft?.(this.draft);
+	}
+	// Batch 3: draft exclusions — banished + locked-out boons.
+	draftExclusions() {
+		return new Set([...this.banishedBoons, ...this.lockedBoons]);
 	}
 	// Batch 2: breakpoint bonuses — the 6th rank of a boon pays out big, once.
 	checkBreakpoint(id) {
@@ -3857,6 +4026,14 @@ export class GameEngine {
 			this.pipes = Math.min(4, this.pipes + 1);
 		}
 		this.checkBreakpoint(id);
+		// Batch 3: ability forks — this pick locks out its rivals.
+		for (const l of LOCKOUTS[id] || []) {
+			if (!this.lockedBoons.has(l) && !(this.boonStacks[l] > 0)) {
+				this.lockedBoons.add(l);
+				const ln = BOON_CATALOG.find((b) => b.id === l)?.name || l;
+				this.spawnFloater(this.player.x, this.player.y - 80, `LOCKED OUT: ${ln.toUpperCase()}`, `#8a8f98`);
+			}
+		}
 		const picked = this.draft.find((b) => b.id === id);
 		this.draft = null;
 		if (this.waveState === `break`) {
@@ -3881,7 +4058,7 @@ export class GameEngine {
 	rerollDraft() {
 		if (!this.draft || this.rerolls <= 0) return;
 		this.rerolls--;
-		this.draft = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.banishedBoons);
+		this.draft = rollBoons(this.boonStacks, this.player.molotovs, this.player.maxMolotovs, this.posts, this.pipes, this.draftExclusions());
 		this.callbacks.onDraft?.(this.draft);
 	}
 	xpToNext() {
@@ -4264,7 +4441,7 @@ export class GameEngine {
 			e.restore();
 		}
 		beginWorld();
-		this.renderZombies(e), this.renderProjectiles(e), this.renderGrit(e), this.renderTraps(e), this.renderPlayer(e), this.renderLightning(e), this.renderSalt(e), this.renderRig(e), this.renderNoisePulses(e), this.renderFlares(e), this.renderHoleMarkers(e), this.renderLantern(e), this.renderBell(e), this.renderZombieLabels(e), this.renderBanner(e);
+		this.renderZombies(e), this.renderProjectiles(e), this.renderGrit(e), this.renderTraps(e), this.renderPlayer(e), this.renderLightning(e), this.renderSalt(e), this.renderAura(e), this.renderRig(e), this.renderNoisePulses(e), this.renderFlares(e), this.renderHoleMarkers(e), this.renderLantern(e), this.renderBell(e), this.renderZombieLabels(e), this.renderBanner(e);
 		this.paintFloaters(e, zoom);
 		e.restore();
 		if (this.interactHint) {
@@ -4559,7 +4736,9 @@ export class GameEngine {
 			}
 			e.save();
 			e.translate(0, -limp);
-			e.scale(facingLeft ? -1 : 1, 1);
+			// Batch 3: spawn pop scale.
+			const popS = t.spawnT > 0 ? Math.max(.1, 1 - t.spawnT / .15) : 1;
+			e.scale((facingLeft ? -1 : 1) * popS, popS);
 			const tall = t.radius * (t.type === "crawler" ? 4.2 : t.type === "behemoth" ? 4.6 : 5.1) * fs;
 			drawSprite(e, t.type, tall, t.hitFlash, false);
 			if (t.isBurning && t.isBurning > 0) {
